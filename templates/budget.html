@@ -2,13 +2,17 @@
 {% set MODE_META = {
   'estimated':       {'label': 'ESTIMATED', 'short': 'Est',  'desc': 'Baseline — revise only when scope changes',          'cls': 'mode-estimated'},
   'working':         {'label': 'WORKING',   'short': 'Work', 'desc': 'Current forecast — your live evolving projection',   'cls': 'mode-working'},
-  'actual':          {'label': 'ACTUAL',    'short': 'Act',  'desc': 'Real spend — tracking actuals against forecast',     'cls': 'mode-actual'},
 } %}
 {% set cur_mode = MODE_META.get(budget.budget_mode, MODE_META['estimated']) %}
-{# True when a Working budget version exists OR we are currently viewing one #}
-{% set working_exists = (budget.budget_mode in ('working', 'actual')) or has_working_budget %}
-{# True only when THIS budget IS the working/actual budget — enables frozen-est + variance columns #}
-{% set is_working_view = budget.budget_mode in ('working', 'actual') %}
+{# A live Working exists somewhere in the project (it may be an OLDER version
+   than the Estimated on screen) — drives the Working / variance columns. #}
+{% set working_exists = (budget.budget_mode == 'working') or has_working_budget %}
+{# True only when THIS budget IS the Working budget — enables frozen-est + variance columns #}
+{% set is_working_view = budget.budget_mode == 'working' %}
+{# The header rule (Cleanup C): a Working exists for THIS version number.
+   The Viewing toggle, the "Start Working vN" button and the yellow strip
+   all read working_for_version — never working_exists. #}
+{% set vs = version_strip or {} %}
 {# True when any per-line actuals exist for this project — coded transactions
    can exist BEFORE an Actual (or even Working) budget does (owner 2026-08-19:
    Estimated-only project with actuals coded in). The Actual column must get
@@ -90,8 +94,6 @@
         ({{ live_vg | length }} version{{ 's' if live_vg | length != 1 else '' }}) ▾
       </button>
       <div class="dropdown-menu version-menu">
-        {% set archived_count = all_budgets | selectattr('version_status', 'eq', 'archived') | list | length %}
-
         {% for vg in live_vg %}
           {% set vn = vg.version_number %}
           {% set est = vg.estimated %}
@@ -177,22 +179,39 @@
               </div>
             </div>
           {% elif est and vg.is_current %}
-            <div class="version-item version-item-subrow version-item-create">
-              <form method="POST" action="{{ url_for('create_working_from_estimated', pid=project.id, bid=est.id) }}" style="flex:1">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" class="btn btn-xs btn-ghost" style="width:100%;text-align:left;padding:.2rem .5rem">
-                  <span class="mode-badge mode-working" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem">WRK</span>
-                  + Initialize Working v{{ vn }}
-                </button>
-              </form>
+            {# No Working for this version yet — the ONE place to start one is
+               the "Start Working vN" button in the version strip (Cleanup C). #}
+            <div class="version-item version-item-subrow" style="opacity:.6">
+              <span class="version-item-link" style="cursor:default">
+                <span class="mode-badge mode-working" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem;opacity:.5">WRK</span>
+                <span class="muted" style="font-size:.72rem">No Working yet — use Start Working v{{ vn }} above</span>
+              </span>
             </div>
           {% endif %}
+        {% endfor %}
+        {# Archived versions (hidden until "Show N archived"; legacy Actual
+           budgets are never listed) — rendered like the Schedule page's picker. #}
+        {% set archived_count = all_budgets | selectattr('version_status', 'eq', 'archived') | rejectattr('is_actual') | list | length %}
+        {% for b in all_budgets if b.version_status == 'archived' and not b.is_actual %}
+        <div class="version-item version-item-archived">
+          <a href="{{ url_for('budget_view', pid=project.id, bid=b.id) }}" class="version-item-link">
+            <span class="mode-badge {{ 'mode-working' if b.budget_mode == 'working' else 'mode-estimated' }}" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem;opacity:.6">{{ 'WRK' if b.budget_mode == 'working' else 'EST' }}</span>
+            <span class="version-item-name">v{{ b.version_number or 1 }} · {{ b.name }}</span>
+            <div class="version-item-meta">
+              <span class="version-status-badge vs-archived">Archived</span>
+            </div>
+          </a>
+          <div class="version-item-actions">
+            <button class="btn btn-xs btn-ghost version-archive-btn"
+                    data-bid="{{ b.id }}" title="Restore to Previous">↩</button>
+          </div>
+        </div>
         {% endfor %}
 
         <div class="version-menu-footer">
           {% if archived_count > 0 %}
           <button class="btn btn-xs btn-ghost version-show-archived-btn" style="width:100%;margin-bottom:.35rem">
-            Show {{ archived_count }} archived
+            Show {{ archived_count }} archived version{{ 's' if archived_count != 1 else '' }}
           </button>
           {% endif %}
           <button class="btn btn-xs btn-ghost" style="width:100%;margin-bottom:.35rem" onclick="openCompareModal(event)">⇄ Compare versions…</button>
@@ -202,9 +221,11 @@
         </div>
       </div>
     </div>
-    <button class="btn btn-sm btn-outline line-comments-btn" onclick="openComments(null, 'this budget version')"
-            title="Internal notes on this budget version — @name tags a teammate. Never visible to clients.">
-      🗒 Notes{% if budget_comment_count %} <span style="color:#5fd0a0">({{ budget_comment_count }})</span>{% endif %}
+    {# Notes drawer (the existing budget-version comments) — artboard button. #}
+    <button type="button" class="btn btn-sm btn-outline notes-btn" onclick="openComments(null, 'this budget version')"
+            aria-haspopup="dialog" title="Version notes and internal notes on this budget — @name tags a teammate. Never visible to clients.">
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="M8 7h8M8 11h8M8 15h5"></path></svg>
+      Notes{% if budget_comment_count %}<span class="notes-count" aria-label="{{ budget_comment_count }} notes">{{ budget_comment_count }}</span>{% endif %}
     </button>
     <div class="dropdown">
       <button class="btn btn-sm btn-outline">Export ▾</button>
@@ -576,9 +597,9 @@
             <div id="export-var-basis-wrap" class="export-var-basis" style="display:none">
               <span class="export-opts-mini-label">Variance basis</span>
               <select id="export-var-basis" class="export-opts-select">
-                <option value="est_v_work">Estimated vs Working</option>
-                <option value="work_v_act">Working vs Actual</option>
-                <option value="est_v_act">Estimated vs Actual</option>
+                <option value="vs_estimated">vs Estimated</option>
+                <option value="vs_working">vs Working</option>
+                <option value="est_to_working">Estimated → Working</option>
               </select>
             </div>
           </div>
@@ -779,140 +800,276 @@
 <script src="{{ url_for('static', filename='budget-js/b01.js') }}?v={{ APP_COMMIT }}"></script>
 {% endif %}
 
-<!-- Tabs + Mode switcher row -->
-<div class="tabs-row">
-  <div class="tabs">
-    {% if not dept_filter %}<button class="tab-btn {% if not sections %}{% else %}active{% endif %}" data-tab="topsheet">Dashboard</button>{% endif %}
-    {% if not dept_filter %}<button class="tab-btn" data-tab="topsheet-detail">Top Sheet</button>{% endif %}
-    <button class="tab-btn {% if dept_filter or not sections %}active{% elif not sections %}active{% endif %}" data-tab="working">Budget</button>
-    <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=budget.id) }}">Schedule</a>
-    <button class="tab-btn" data-tab="travel">Travel</button>
-    <button class="tab-btn" data-tab="catering">Catering</button>
-    <button class="tab-btn" data-tab="contacts">People</button>
-    <button class="tab-btn" data-tab="locations">Locations</button>
-    <button class="tab-btn" data-tab="assumptions">Assumptions</button>
-    <a class="tab-btn tab-link" href="{{ url_for('po_list_page', pid=project.id) }}?return_bid={{ budget.id }}">POs</a>
-    <a class="tab-btn tab-link" href="{{ url_for('sub_budgets_page', pid=project.id) }}?return_bid={{ budget.id }}">Sub-Budgets</a>
-    <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
-    {# Docs and Actuals are their own screens: the Docs inbox and the Actuals
-       workspace (Cleanup B, 2026-11-02 — the in-page #tab-docs / #tab-actuals
-       panes and their hidden tab buttons are gone). Styled like the other
-       <a class="tab-btn tab-link"> tabs (Schedule, POs, Sub-Budgets). #}
-    <a class="tab-btn tab-link" href="{{ url_for('docs_inbox_page', pid=project.id) }}">Docs</a>
-    <a class="tab-btn tab-link" href="{{ url_for('actuals_workspace_page', pid=project.id) }}">Actuals</a>
-    <button class="tab-btn" data-tab="activity">Activity</button>
-    <button class="tab-btn" data-tab="import-tools">Tools</button>
-    {% if not dept_filter %}<button class="tab-btn" data-tab="settings">⚙ Settings</button>{% endif %}
+{# ═══ Version strip + one-row tab strip (Cleanup C, 2026-11-02 — TabStrip
+   artboard). The strip reads version_strip (built in budget_view from the
+   LIVE pair: newest Estimated, newest Working) and renders one of three
+   states: paired (A), ahead = Estimated vN+1 with no Working yet (B), none =
+   no Working at all (C). The "Start Working vN" button here is the ONE way
+   to create a Working; the Viewing toggle enables Working only when THIS
+   version has one (working_for_version). #}
+<div class="version-strip {% if vs.state == 'ahead' %}version-strip-ahead{% endif %}" id="version-strip" data-state="{{ vs.state }}">
+  <div class="vs-left">
+    <div class="vs-pills">
+      {% if vs.estimated_vn %}<span class="vs-pill">Estimated v{{ vs.estimated_vn }}</span>{% endif %}
+      <span class="vs-sep" aria-hidden="true">·</span>
+      {% if vs.working_vn %}
+      <span class="vs-pill"><span class="vs-live-dot" aria-hidden="true"></span>Working v{{ vs.working_vn }}<span class="vs-live">live</span></span>
+      {% else %}
+      <span class="vs-pill vs-pill-dashed">No Working yet</span>
+      {% endif %}
+    </div>
+    <span class="vs-sentence">
+      {% if vs.state == 'paired' %}
+        Spend is tracked on Working v{{ vs.working_vn }}.
+      {% elif vs.state == 'ahead' %}
+        <strong>Spend is tracked on Working v{{ vs.working_vn }}.</strong>
+        <span class="muted">Estimated v{{ vs.estimated_vn }} has no Working yet, so edits there do not change what is being tracked.</span>
+      {% else %}
+        Nothing is tracked yet. Start a Working budget when charges begin.
+      {% endif %}
+    </span>
   </div>
-  <div class="mode-switcher-seg">
-    {% if peer_estimated_bid %}
-    <a href="{{ url_for('budget_view', pid=project.id, bid=peer_estimated_bid) }}"
-       class="mode-seg-btn {% if not is_actual_view and budget.budget_mode not in ('working','actual') %}active mode-estimated{% endif %}">Estimated</a>
-    {% else %}
-    <span class="mode-seg-btn mode-seg-inactive" title="No estimated budget">Estimated</span>
+  <div class="vs-right">
+    {% if vs.state != 'paired' and vs.start_from_bid and not dept_filter %}
+    <form method="POST" action="{{ url_for('create_working_from_estimated', pid=project.id, bid=vs.start_from_bid) }}" class="vs-start-form" style="margin:0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-sm btn-primary vs-start-btn" id="start-working-btn"
+              title="Creates Working v{{ vs.start_vn }} from Estimated v{{ vs.start_vn }}{% if vs.working_vn %} and carries the coded charges over from Working v{{ vs.working_vn }}{% endif %}">
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
+        Start Working v{{ vs.start_vn }}
+      </button>
+    </form>
     {% endif %}
-    {% if peer_working_bid %}
-    <a href="{{ url_for('budget_view', pid=project.id, bid=peer_working_bid) }}"
-       class="mode-seg-btn {% if not is_actual_view and budget.budget_mode in ('working','actual') %}active mode-working{% endif %}"
-       title="Working budget — live spend, with each line's transactions expandable inline">Working</a>
-    {% else %}
-    <span class="mode-seg-btn mode-seg-inactive" title="No Working budget for this version — initialize one from the version picker">Working</span>
-    {% endif %}
-    {# Actual segment removed (Migration P3, User 2026-07): actuals now live on
-       Working. Archived Actual budgets remain reachable read-only by direct URL
-       for audit. The actuals_init_actual_budget route stays defined but is no
-       longer referenced. #}
+    <span class="vs-label">Viewing</span>
+    <div class="viewing-seg" role="group" aria-label="Estimated or Working">
+      {% if peer_estimated_bid %}
+      <a href="{{ url_for('budget_view', pid=project.id, bid=peer_estimated_bid) }}"
+         class="mode-seg-btn {% if budget.budget_mode != 'working' %}active mode-estimated{% endif %}"
+         {% if budget.budget_mode != 'working' %}aria-current="page"{% endif %}>Estimated</a>
+      {% else %}
+      <span class="mode-seg-btn mode-seg-inactive" aria-disabled="true" title="No Estimated budget">Estimated</span>
+      {% endif %}
+      {% if working_for_version and peer_working_bid %}
+      <a href="{{ url_for('budget_view', pid=project.id, bid=peer_working_bid) }}"
+         class="mode-seg-btn {% if budget.budget_mode == 'working' %}active mode-working{% endif %}"
+         {% if budget.budget_mode == 'working' %}aria-current="page"{% endif %}
+         title="Working v{{ vs.viewed_vn }} — live spend, with each line's transactions expandable inline">Working</a>
+      {% else %}
+      <span class="mode-seg-btn mode-seg-inactive" aria-disabled="true" title="No Working budget for v{{ vs.viewed_vn }} yet">Working</span>
+      {% endif %}
+    </div>
   </div>
 </div>
 
-<!-- ═══ TOP SHEET ═══════════════════════════════════════════════════════════ -->
-<div class="tab-panel {% if sections %}active{% endif %}" id="tab-topsheet">
-  {% if budget.budget_mode not in ('working','actual') and current_working_bid %}
-  <div class="mode-safety-banner" id="mode-safety-banner">
-    <span>⚠ You are editing the <strong>Estimated</strong> budget — a Working budget already exists. Changes here will <em>not</em> affect the Working budget.</span>
-    <div style="display:flex;gap:.5rem;align-items:center;flex-shrink:0">
-      <a href="{{ url_for('budget_view', pid=project.id, bid=current_working_bid) }}" class="btn btn-sm btn-primary">Switch to Working</a>
-      <button class="btn btn-xs btn-ghost" onclick="dismissModeSafetyBanner()">Dismiss</button>
+<nav class="tabs-row budget-tabstrip" aria-label="Budget sections">
+  <div class="tabs">
+    {% if not dept_filter %}<button class="tab-btn {% if sections %}active{% endif %}" data-tab="topsheet">Overview</button>{% endif %}
+    {% if not dept_filter %}<button class="tab-btn" data-tab="topsheet-detail">Top Sheet</button>{% endif %}
+    <button class="tab-btn {% if dept_filter or not sections %}active{% endif %}" data-tab="working">Budget</button>
+    <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=budget.id) }}">Schedule</a>
+    <button class="tab-btn" data-tab="contacts">People</button>
+    {# Docs and Actuals are their own screens (Cleanup B). #}
+    <a class="tab-btn tab-link" href="{{ url_for('actuals_workspace_page', pid=project.id) }}">Actuals</a>
+    <a class="tab-btn tab-link" href="{{ url_for('docs_inbox_page', pid=project.id) }}">Docs</a>
+    <div class="tab-more-wrap">
+      <button type="button" class="tab-btn tab-more-btn" id="tab-more-btn" aria-haspopup="menu" aria-expanded="false">
+        <span class="tab-more-label">More</span>
+        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>
+      </button>
+      {# Every item keeps its data-tab key so ?tab= deep links still work;
+         the links go to their own pages. #}
+      <div class="tab-more-menu" id="tab-more-menu" role="menu" aria-label="More sections" hidden>
+        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="travel">Travel</button>
+        <a class="tab-btn tab-menu-item tab-link" role="menuitem" href="{{ url_for('po_list_page', pid=project.id) }}?return_bid={{ budget.id }}">POs{% if project_pos %}<span class="tab-menu-count">{{ project_pos | length }}</span>{% endif %}</a>
+        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="catering">Catering</button>
+        <a class="tab-btn tab-menu-item tab-link" role="menuitem" href="{{ url_for('sub_budgets_page', pid=project.id) }}?return_bid={{ budget.id }}">Sub-Budgets{% if sub_budgets_for_project %}<span class="tab-menu-count">{{ sub_budgets_for_project | rejectattr('archived') | list | length }}</span>{% endif %}</a>
+        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="locations">Locations</button>
+        <a class="tab-btn tab-menu-item tab-link" role="menuitem" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets{% if callsheet_count %}<span class="tab-menu-count">{{ callsheet_count }}</span>{% endif %}</a>
+        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="assumptions">Assumptions</button>
+        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="activity">Activity</button>
+        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="import-tools">Tools</button>
+      </div>
     </div>
-  </div>
-  {% endif %}
-  {% if not working_exists %}
-  <div class="init-working-banner">
-    <strong>No Working Budget for v{{ budget.version_number or 1 }} yet.</strong>
-    The Estimated is your locked baseline. Create a paired Working budget to track the live forecast without touching the Estimated.
-    <form method="POST" action="{{ url_for('create_working_from_estimated', pid=project.id, bid=peer_estimated_bid) }}" style="display:inline;margin:0">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <button type="submit" class="btn btn-sm btn-primary">Initialize Working v{{ budget.version_number or 1 }}</button>
-    </form>
-  </div>
-  {% endif %}
-
-  {# ── Dashboard summary + Action Center (2026-06-18) ─────────────────── #}
-  {% set _ts = top_sheet or {} %}
-  {% set _gte = (_ts.get('grand_total_estimated', 0) or 0) %}
-  {% set _gta = (_ts.get('grand_total_actual', 0) or 0) %}
-  {% set _var = _gte - _gta %}
-  {% set _ds = dashboard_stats or {} %}
-  <div class="dashboard-head" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 12px">
-    <h3 style="margin:0;font-size:1.05rem">📊 Dashboard</h3>
-    <span style="flex:1"></span>
-    <button type="button" class="btn btn-sm" onclick="dashCleanup(this)"
-            title="Run AI cleanup over receipts AND charges: normalize vendor names and flag bad extractions. Auto-applies high-confidence fixes; lower-confidence ones land in the review queue below.">✨ Clean up</button>
-    <button type="button" class="btn btn-sm" onclick="dashScanDupes(this)"
-            title="Scan for issues: the same spend coded twice (double-counted), plus budget mismatches — POs billed over their cap and lines over plan.">🔍 Scan for issues</button>
-  </div>
-
-  <div class="dash-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
-    <div class="dash-card" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card)">
-      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Estimated</div>
-      <div style="font-size:1.15rem;font-weight:700;font-variant-numeric:tabular-nums">${{ '{:,.0f}'.format(_gte) }}</div>
-    </div>
-    <div class="dash-card" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card)">
-      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Actual</div>
-      <div style="font-size:1.15rem;font-weight:700;font-variant-numeric:tabular-nums">${{ '{:,.0f}'.format(_gta) }}</div>
-    </div>
-    <div class="dash-card" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card)">
-      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Variance (Est − Act)</div>
-      <div style="font-size:1.15rem;font-weight:700;font-variant-numeric:tabular-nums;color:{% if _var >= 0 %}#74c69d{% else %}#e08080{% endif %}">{% if _var < 0 %}−{% endif %}${{ '{:,.0f}'.format(_var if _var >= 0 else -_var) }}</div>
-    </div>
-    {# Cleanup B (2026-11-02): the four review cards open the Actuals workspace
-       (Unclaimed / Needs backup / Receipts views) and the Docs inbox — the
-       in-page panes they used to switch to are gone. #}
-    <a class="dash-card" href="{{ url_for('actuals_workspace_page', pid=project.id) }}" style="display:block;color:inherit;text-decoration:none;border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card);cursor:pointer" title="Open Actuals — unclaimed charges">
-      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Uncoded charges</div>
-      <div style="font-size:1.15rem;font-weight:700">{{ _ds.get('uncoded', 0) }}{% if _ds.get('ai_pending', 0) %} <span style="font-size:.62rem;color:#b79dff;font-weight:600">✨{{ _ds.get('ai_pending', 0) }} suggested</span>{% endif %}</div>
-    </a>
-    <a class="dash-card" href="{{ url_for('actuals_workspace_page', pid=project.id) }}?view=needs_backup" style="display:block;color:inherit;text-decoration:none;border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card);cursor:pointer" title="Open Actuals — charges that need backup">
-      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Unmatched charges</div>
-      <div style="font-size:1.15rem;font-weight:700">{{ _ds.get('unmatched', 0) }}</div>
-    </a>
-    <a class="dash-card" href="{{ url_for('docs_inbox_page', pid=project.id) }}" style="display:block;color:inherit;text-decoration:none;border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card);cursor:pointer" title="Open the Docs inbox">
-      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Docs to review</div>
-      <div style="font-size:1.15rem;font-weight:700">{{ _ds.get('docs_review', 0) }}</div>
-    </a>
-    {% if _ds.get('matches_to_review', 0) %}
-    <a class="dash-card" href="{{ url_for('actuals_workspace_page', pid=project.id) }}?view=receipts" style="display:block;color:inherit;text-decoration:none;border:1px solid #4a3a1a;border-radius:8px;padding:10px 12px;background:#2a2414;cursor:pointer" title="Open Actuals — receipts with a suggested charge">
-      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:#f0c060">⚡ Matches to review</div>
-      <div style="font-size:1.15rem;font-weight:700;color:#f0c060">{{ _ds.get('matches_to_review', 0) }} <span style="font-size:.62rem;font-weight:600">→ review</span></div>
-    </a>
+    {% if not dept_filter %}
+    <button class="tab-btn tab-settings" data-tab="settings">
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"></path></svg>
+      Settings
+    </button>
     {% endif %}
   </div>
+</nav>
 
-  <div id="dash-action-center" style="margin-bottom:16px">
+<!-- ═══ OVERVIEW (replaces the Dashboard; data-tab key "topsheet" kept for old links) ═══ -->
+<div class="tab-panel {% if sections %}active{% endif %}" id="tab-topsheet">
+  {% set _ts = top_sheet or {} %}
+  {% set _gte = (est_top_sheet.grand_total_estimated if est_top_sheet else (_ts.get('grand_total_estimated', 0) or 0)) or 0 %}
+  {% set _gta = (_ts.get('grand_total_actual', 0) or 0) %}
+  {% set _ov_sub_w = working_subtotal_pre_fee or 0 %}
+  {% set _ov_fee_w = working_company_fee or 0 %}
+  {% set _ov_sum_w_post = working_by_section.values() | sum %}
+  {% set _ov_grand_w = (_ov_sum_w_post if _ts.get('company_fee_dispersed') else (_ov_sub_w + _ov_fee_w)) if working_exists else 0 %}
+  {% set _ov_plan = _ov_grand_w if working_exists else _gte %}
+  {% set _ov_est_vn = (budget.version_number or 1) if budget.budget_mode != 'working' else vs.estimated_vn %}
+  {% set _oc = overview_counts or {} %}
+  <div class="ov-cards" aria-label="Totals">
+    <div class="ov-card">
+      <div class="ov-card-label">Estimated{% if _ov_est_vn %} · v{{ _ov_est_vn }}{% endif %}</div>
+      <div class="ov-card-value">${{ '{:,.0f}'.format(_gte) }}</div>
+      <div class="ov-card-sub">
+        {% if estimate_approval %}Client-approved baseline · {{ estimate_approval.responded_disp.split(' ·')[0] if estimate_approval.responded_disp else '' }}
+        {% elif estimate_latest and estimate_latest.status in ('sent', 'viewed') %}Sent to client · awaiting approval
+        {% else %}The baseline this version was planned to{% endif %}
+      </div>
+    </div>
+    <div class="ov-card">
+      <div class="ov-card-label">Working{% if vs.working_vn %} · v{{ vs.working_vn }}{% endif %}</div>
+      {% if working_exists %}
+      {% set _ov_dw = _ov_grand_w - _gte %}
+      <div class="ov-card-value">${{ '{:,.0f}'.format(_ov_grand_w) }}</div>
+      <div class="ov-card-sub">
+        <span class="{{ 'ov-over' if _ov_dw > 0.5 else ('ov-under' if _ov_dw < -0.5 else '') }}">{% if _ov_dw > 0.5 %}+{% elif _ov_dw < -0.5 %}−{% endif %}${{ '{:,.0f}'.format(_ov_dw | abs) }}</span>
+        vs Estimated{% if _gte %} · {{ '{:.1f}'.format((_ov_dw | abs) / _gte * 100) }}% {{ 'over' if _ov_dw > 0.5 else 'under' }}{% endif %}
+      </div>
+      {% else %}
+      <div class="ov-card-value muted">—</div>
+      <div class="ov-card-sub">No Working yet · spend is not being tracked</div>
+      {% endif %}
+    </div>
+    <div class="ov-card">
+      <div class="ov-card-label">Actual to date</div>
+      <div class="ov-card-value">${{ '{:,.0f}'.format(_gta) }}</div>
+      {% set _ov_left = _ov_plan - _gta %}
+      <div class="ov-card-sub">
+        <span class="{{ 'ov-under' if _ov_left >= 0 else 'ov-over' }}">{% if _ov_left < 0 %}−{% endif %}${{ '{:,.0f}'.format(_ov_left | abs) }}</span>
+        {% if _ov_left >= 0 %}left on {{ 'Working' if working_exists else 'Estimated' }}{% else %}over {{ 'Working' if working_exists else 'Estimated' }}{% endif %}{% if _ov_plan %} · {{ '{:.0f}'.format(_gta / _ov_plan * 100) }}% spent{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="ov-grid">
+    <section class="ov-panel" aria-labelledby="ov-bydept">
+      <div class="ov-panel-head">
+        <h2 id="ov-bydept">By department</h2>
+        <a href="#" class="ov-link" onclick="event.preventDefault(); document.querySelector('.tab-btn[data-tab=&quot;topsheet-detail&quot;]')?.click()">Full Top Sheet</a>
+      </div>
+      <div class="ov-table-wrap">
+        <table class="ov-table">
+          <thead>
+            <tr>
+              <th scope="col">Section</th>
+              <th scope="col" class="num">Est</th>
+              <th scope="col" class="num">Working</th>
+              <th scope="col" class="num">Actual</th>
+              <th scope="col" class="num">Var</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% set _ovn = namespace(rows=[]) %}
+            {% for row in _ts.get('rows', []) %}
+              {% set _e_row = est_section_lookup.get(row.code) %}
+              {% set _ov_e = (_e_row.estimated if _e_row else 0) or 0 %}
+              {% set _ov_w = (working_by_section.get(row.code, 0) or 0) if working_exists else 0 %}
+              {% set _ov_a = row.actual or 0 %}
+              {% if _ov_e or _ov_w or _ov_a %}
+                {% set _ovn.rows = _ovn.rows + [{'code': row.code, 'name': row.account, 'e': _ov_e, 'w': _ov_w, 'a': _ov_a, 'plan': (_ov_w if working_exists else _ov_e)}] %}
+              {% endif %}
+            {% endfor %}
+            {% set _ov_rows = _ovn.rows %}
+            {% for r in (_ov_rows | sort(attribute='plan', reverse=true))[:8] %}
+            {% set _v = r.plan - r.a %}
+            <tr ondblclick="goToSection({{ r.code }})" title="Double-click to open this section">
+              <td><span class="muted" style="margin-right:8px">{{ r.code }}</span>{{ r.name }}</td>
+              <td class="num">{{ '{:,.0f}'.format(r.e) }}</td>
+              <td class="num {% if working_exists %}strong{% else %}muted{% endif %}">{% if working_exists %}{{ '{:,.0f}'.format(r.w) }}{% else %}—{% endif %}</td>
+              <td class="num">{{ '{:,.0f}'.format(r.a) }}</td>
+              <td class="num {{ 'ov-under' if _v >= 0 else 'ov-over' }}">{% if _v < 0 %}−{% endif %}{{ '{:,.0f}'.format(_v | abs) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="muted" style="padding:14px 16px">No sections with numbers yet.</td></tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            {% set _ov_gv = _ov_plan - _gta %}
+            <tr>
+              <td>Grand total <span class="muted" style="font-weight:500">· {{ _ov_rows | length }} section{{ 's' if (_ov_rows | length) != 1 else '' }}</span></td>
+              <td class="num">{{ '{:,.0f}'.format(_gte) }}</td>
+              <td class="num">{% if working_exists %}{{ '{:,.0f}'.format(_ov_grand_w) }}{% else %}—{% endif %}</td>
+              <td class="num">{{ '{:,.0f}'.format(_gta) }}</td>
+              <td class="num {{ 'ov-under' if _ov_gv >= 0 else 'ov-over' }}">{% if _ov_gv < 0 %}−{% endif %}{{ '{:,.0f}'.format(_ov_gv | abs) }}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </section>
+
+    <div class="ov-side">
+      <section class="ov-panel" aria-labelledby="ov-needsyou">
+        <div class="ov-panel-head">
+          <h2 id="ov-needsyou">Needs you</h2>
+          <span class="muted" style="font-size:12px">{{ _oc.get('total', 0) }} item{{ 's' if _oc.get('total', 0) != 1 else '' }}</span>
+        </div>
+        <ul class="ov-list">
+          <li><a href="{{ url_for('actuals_workspace_page', pid=project.id) }}" class="ov-row">
+            <span class="ov-count {% if _oc.get('unclaimed', 0) %}ov-count-hot{% endif %}">{{ _oc.get('unclaimed', 0) }}</span>
+            <span class="ov-row-text">Unclaimed charges{% if _oc.get('unclaimed_amount') %} <span class="muted">· ${{ '{:,.2f}'.format(_oc.get('unclaimed_amount', 0)) }}</span>{% endif %}</span>
+            <span class="ov-row-where">Actuals</span>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+          </a></li>
+          <li><a href="{{ url_for('actuals_workspace_page', pid=project.id) }}?view=receipts" class="ov-row">
+            <span class="ov-count">{{ _oc.get('receipts', 0) }}</span>
+            <span class="ov-row-text">Receipts to place</span>
+            <span class="ov-row-where">Actuals · Receipts</span>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+          </a></li>
+          <li><a href="{{ url_for('docs_inbox_page', pid=project.id) }}" class="ov-row">
+            <span class="ov-count">{{ _oc.get('docs_review', 0) }}</span>
+            <span class="ov-row-text">Documents to review</span>
+            <span class="ov-row-where">Docs inbox</span>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+          </a></li>
+          <li><a href="{{ url_for('actuals_workspace_page', pid=project.id) }}?view=needs_backup" class="ov-row">
+            <span class="ov-count">{{ _oc.get('matches_to_review', 0) }}</span>
+            <span class="ov-row-text">Matches to review <span class="muted">· receipt to charge</span></span>
+            <span class="ov-row-where">Actuals</span>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+          </a></li>
+        </ul>
+      </section>
+
+      <section class="ov-panel" aria-labelledby="ov-recent">
+        <div class="ov-panel-head">
+          <h2 id="ov-recent">Recent activity</h2>
+          <a href="#" class="ov-link" onclick="event.preventDefault(); document.querySelector('.tab-btn[data-tab=&quot;activity&quot;]')?.click()">All activity</a>
+        </div>
+        <ul class="ov-list ov-list-plain">
+          {% for r in recent_activity %}
+          <li class="ov-activity">
+            <span class="ov-row-text">{{ r.text }}</span>
+            <span class="ov-row-where">{{ r.who }}{% if r.when %} · {{ r.when | in_tz(budget.timezone, '%b %-d') }}{% endif %}</span>
+          </li>
+          {% else %}
+          <li class="ov-activity"><span class="muted">No activity on this project yet.</span></li>
+          {% endfor %}
+        </ul>
+      </section>
+    </div>
+  </div>
+
+  {# Review queue (AnomalyFlag) — still fed by the scans that run after
+     ingestion and from Settings → Maintenance → Scan for issues. #}
+  <div id="dash-action-center" style="margin-top:16px">
     <div style="font-size:.7rem;color:var(--text-muted)">Loading review queue…</div>
   </div>
-</div>{# /Dashboard pane — widgets + Action Center only (User 2026-06-22) #}
+</div>
 
 {# ═══ TOP SHEET (the budget rollup table, split out of the Dashboard) ═════ #}
 <div class="tab-panel" id="tab-topsheet-detail">
 
+  {# The ONE variance control sits on the Budget tab's control bar (Cleanup
+     C); the Top Sheet reads the same stored choice and its Variance column
+     header says which one. #}
   <div class="topsheet-controls">
-    <span class="muted" style="font-size:.8rem">Variance basis:</span>
-    <div class="var-basis-toggle" id="varBasisToggle">
-      <button type="button" class="var-btn {% if working_exists %}active{% endif %}" data-basis="e_vs_w" title="Estimated minus Working. Negative = Working is over Estimated (in the red).">Estimated V Working</button>
-      <button type="button" class="var-btn" data-basis="w_vs_a" title="Working minus Actual. Negative = Actual is over Working (in the red).">Working V Actual</button>
-      <button type="button" class="var-btn {% if not working_exists %}active{% endif %}" data-basis="e_vs_a" title="Estimated minus Actual. Negative = Actual is over Estimated (in the red).">Estimated V Actual</button>
-    </div>
+    <span class="muted" style="font-size:.8rem">Variance <span class="var-basis-label">vs Working</span> <span class="muted" style="font-size:.72rem">· change it on the Budget tab</span></span>
   </div>
 
   <table class="data-table topsheet-table">
@@ -923,7 +1080,7 @@
         <th class="col-num var-col-header" data-budget="estimated">Estimated</th>
         <th class="col-num var-col-header" data-budget="working">Working</th>
         <th class="col-num var-col-header" data-budget="actual">Actual</th>
-        <th class="col-num">Variance <span class="muted" style="font-size:.7rem;font-weight:400">(+ under)</span></th>
+        <th class="col-num"><span class="var-col-label">Var vs Working</span> <span class="muted" style="font-size:.7rem;font-weight:400">(+ under)</span></th>
       </tr>
     </thead>
     <tbody>
@@ -1082,9 +1239,7 @@
          editing. Shown next to the Subtotal / Grand Total labels so
          when the totals shift between Estimated / Working / Actual
          columns, it's clear which one is the "live" focus. #}
-      {% if is_actual_view %}
-        {% set _active_mode_label = 'Actual' %}
-      {% elif budget.budget_mode in ('working', 'actual') %}
+      {% if budget.budget_mode == 'working' %}
         {% set _active_mode_label = 'Working' %}
       {% else %}
         {% set _active_mode_label = 'Estimated' %}
@@ -1201,26 +1356,40 @@
 
 <!-- ═══ WORKING BUDGET ══════════════════════════════════════════════════════ -->
 <div class="tab-panel {% if not sections %}active{% endif %}" id="tab-working">
-  <div class="working-toolbar">
-    <button class="btn btn-outline btn-sm" onclick="addLineModal()">+ Single Line</button>
-    <button class="btn btn-primary btn-sm" onclick="openCascade()">⚡ Quick Entry</button>
-    <span class="muted" style="font-size:.85rem">Changes save automatically.</span>
-    {# Variance basis selector — same three options as the Top Sheet.
-       Drives every per-line + per-section variance cell on this tab.
-       Default basis follows the active view: Working → W vs E,
-       Estimated → A vs E, Actual → A vs E. #}
-    <div style="display:flex;align-items:center;gap:.4rem;margin-left:1rem">
-      <span class="muted" style="font-size:.78rem">Variance basis:</span>
-      <div class="var-basis-group" style="display:flex;gap:.2rem">
-        <button type="button" class="var-btn budget-var-btn {% if budget.budget_mode in ('working','actual') and not is_actual_view %}active{% endif %}" data-basis="e_vs_w" title="Estimated minus Working. Negative = Working is over Estimated (in the red).">Estimated V Working</button>
-        <button type="button" class="var-btn budget-var-btn" data-basis="w_vs_a" title="Working minus Actual. Negative = Actual is over Working (in the red).">Working V Actual</button>
-        <button type="button" class="var-btn budget-var-btn {% if not (budget.budget_mode in ('working','actual')) or is_actual_view %}active{% endif %}" data-basis="e_vs_a" title="Estimated minus Actual. Negative = Actual is over Estimated (in the red).">Estimated V Actual</button>
+  <div class="working-toolbar" id="budget-control-bar">
+    <div class="wt-left">
+      <div class="entry-seg" role="group" aria-label="Entry mode">
+        <button type="button" class="entry-seg-btn" onclick="addLineModal()">Single Line</button>
+        <button type="button" class="entry-seg-btn entry-seg-primary" onclick="openCascade()" aria-pressed="true">
+          <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"></path></svg>
+          Quick Entry
+        </button>
+      </div>
+      <span class="muted" style="font-size:12px">Changes save automatically.</span>
+      <div class="wb-search-wrap">
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+        <label for="wb-search" class="sr-only">Search lines</label>
+        <input type="search" id="wb-search" class="wb-search-input" placeholder="Search lines"
+               oninput="filterWorkingBudget(this.value)" autocomplete="off">
       </div>
     </div>
-    <div class="wb-search-wrap" style="margin-left:auto">
-      <input type="search" id="wb-search" class="wb-search-input" placeholder="Search lines…"
-             oninput="filterWorkingBudget(this.value)" autocomplete="off">
-      <button class="btn btn-xs btn-ghost" onclick="filterWorkingBudget('');document.getElementById('wb-search').value=''" style="margin-left:.25rem">✕</button>
+    <div class="wt-right">
+      <button type="button" class="btn btn-sm btn-outline notes-btn" onclick="openComments(null, 'this budget version')"
+              aria-haspopup="dialog" title="Version notes and internal notes on this budget">
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="M8 7h8M8 11h8M8 15h5"></path></svg>
+        Notes{% if budget_comment_count %}<span class="notes-count">{{ budget_comment_count }}</span>{% endif %}
+      </button>
+      <span class="wt-divider" aria-hidden="true"></span>
+      {# ONE variance control for the whole page (Top Sheet + Budget + Export
+         read the same stored choice). Keys: vs_estimated · vs_working ·
+         est_to_working — the old e_vs_w / w_vs_a / e_vs_a and the Export
+         dialog's est_v_work / work_v_act / est_v_act are gone (Cleanup C). #}
+      <span class="vs-label">Variance</span>
+      <div class="var-basis-group" id="varBasisToggle" role="group" aria-label="Variance basis">
+        <button type="button" class="var-btn" data-basis="vs_estimated" title="Estimated minus Actual. Positive = under the estimate.">vs Estimated</button>
+        <button type="button" class="var-btn" data-basis="vs_working" title="Working minus Actual. Positive = under the working budget.">vs Working</button>
+        <button type="button" class="var-btn" data-basis="est_to_working" title="What changed between the estimate and the working budget (Estimated minus Working).">Estimated → Working</button>
+      </div>
     </div>
   </div>
 
@@ -1257,6 +1426,7 @@
           <td class="col-num col-variance"></td>
           {% endif %}
           <td class="col-act"></td>
+          <td class="col-rowact"></td>
         </tr>
   {%- endmacro %}
   <div id="working-budget-wrap">
@@ -1409,8 +1579,9 @@
         <col style="width:120px"><!-- estimated -->
         <col style="width:{{ '112px' if working_exists else '0' }}"><!-- working -->
         <col style="width:{{ '116px' if (has_actual_budget or has_line_actuals) else '0' }}"><!-- actual (collapsed unless an Actual budget OR any coded actuals exist) -->
-        <col style="width:{{ '102px' if (is_working_view or has_actual_budget or working_exists or has_line_actuals) else '0' }}"><!-- variance (visible whenever two comparable columns exist) -->
+        <col style="width:{{ '112px' if (is_working_view or has_actual_budget or working_exists or has_line_actuals) else '0' }}"><!-- variance (visible whenever two comparable columns exist) -->
         <col><!-- act: auto -->
+        <col style="width:68px"><!-- row actions: + and ⋯, sticky at the right edge (Cleanup C) -->
       </colgroup>
       <thead>
         <tr>
@@ -1426,9 +1597,10 @@
           <th class="col-num{% if not ns.has_agent_or_disc %} col-empty{% endif %}">{% if ns.has_agent_or_disc %}{{ 'Agent%' if ns.has_labor else 'Disc%' }}{% endif %}</th>
           <th class="col-num {% if is_working_view %}frozen-est-header{% endif %} var-col-header" data-budget="estimated">Estimated</th>
           <th class="col-num col-working var-col-header" data-budget="working">Working</th>
-          <th class="col-num col-actual var-col-header" data-budget="actual" title="{% if actuals_frozen %}Per-line actuals frozen when this version was superseded — the live transactions have since moved to the newer Working version{% elif is_actual_view %}Actual planned (top) + cumulative transaction spend (bottom){% else %}Sum of linked transaction amounts{% endif %}">{% if is_actual_view or has_actual_budget or has_line_actuals %}Actual{% endif %}{% if actuals_frozen %}<span style="display:block;font-weight:400;font-size:.62rem;color:#c084fc;text-transform:none;letter-spacing:0;line-height:1.1;margin-top:1px" title="These figures were frozen when a newer Working version was created.">❄ frozen at supersede</span>{% endif %}</th>
-          <th class="col-num col-variance" title="{% if has_actual_budget %}Working − Actual{% else %}Estimated − Working{% endif %}">{% if has_actual_budget or is_working_view or working_exists or has_line_actuals %}Variance{% endif %}</th>
+          <th class="col-num col-actual var-col-header" data-budget="actual" title="{% if actuals_frozen %}Per-line actuals frozen when this version was superseded — the live transactions have since moved to the newer Working version{% else %}Sum of linked transaction amounts{% endif %}">{% if has_actual_budget or has_line_actuals %}Actual{% endif %}{% if actuals_frozen %}<span style="display:block;font-weight:400;font-size:.62rem;color:#c084fc;text-transform:none;letter-spacing:0;line-height:1.1;margin-top:1px" title="These figures were frozen when a newer Working version was created.">❄ frozen at supersede</span>{% endif %}</th>
+          <th class="col-num col-variance" title="Positive = under budget on the chosen basis">{% if has_actual_budget or is_working_view or working_exists or has_line_actuals %}<span class="var-col-label">Var vs Working</span>{% endif %}</th>
           <th class="col-act"></th>
+          <th class="col-rowact"><span class="sr-only">Row actions</span></th>
         </tr>
       </thead>
       <tbody>
@@ -1437,51 +1609,7 @@
            header in Actuals. Surface them at the top of the section's
            tbody as a clickable row that expands to show details.
            Drag onto a specific line below to reassign. #}
-        {% if is_actual_view %}
-          {% set _sec_only_txns = txns_by_section_only_code.get(sec.code, []) %}
-          {% if _sec_only_txns %}
-        <tr class="actual-section-only-row" data-section-code="{{ sec.code }}"
-            style="cursor:pointer;background:rgba(168,85,247,.06)">
-          <td colspan="14" style="padding:7px 12px;font-size:.78rem;color:var(--text)">
-            <span class="actual-section-only-chev" style="display:inline-block;width:12px;font-size:.7rem;color:var(--text-muted)">▸</span>
-            <span style="color:#c084fc;font-weight:600">Section-only ({{ _sec_only_txns | length }})</span>
-            <span class="muted" style="margin-left:6px;font-size:.72rem">— transactions coded to this section without a specific line. Drag onto a line below to assign.</span>
-            <span style="margin-left:auto;float:right;font-weight:600;font-variant-numeric:tabular-nums">
-              ${{ '%.2f'|format(_sec_only_txns | map(attribute='amount') | reject('none') | map('float') | sum) }}
-            </span>
-          </td>
-        </tr>
-        <tr class="actual-section-only-detail" data-for-section="{{ sec.code }}" style="display:none">
-          <td colspan="14" style="padding:6px 12px 12px 32px;background:rgba(168,85,247,.04);border-left:3px solid #a855f7">
-            <table style="width:100%;font-size:.78rem;border-collapse:collapse">
-              <tbody>
-                {% for _t in _sec_only_txns %}
-                {% set _doc = docs_by_id.get(_t.doc_upload_id) if _t.doc_upload_id else None %}
-                <tr class="actual-txn-subrow" draggable="true" data-tid="{{ _t.id }}"
-                    style="border-top:1px solid var(--border);cursor:grab"
-                    title="Drag onto a specific line to assign">
-                  <td style="padding:5px 6px;color:var(--text-muted);font-variant-numeric:tabular-nums;width:90px">{{ _t.txn_date or '—' }}</td>
-                  <td style="padding:5px 6px;width:40%">{{ _t.vendor or '—' }}</td>
-                  <td style="padding:5px 6px;width:25%">
-                    {% if _doc %}
-                    <a href="#" onclick="event.preventDefault();openDocDetail(null, {{ _doc.id }})"
-                       style="color:#5b8af9;text-decoration:none">📎 {{ (_doc.filed_filename or _doc.original_filename or 'receipt')[:40] }}</a>
-                    {% else %}
-                    <span class="muted" style="font-style:italic;font-size:.72rem">no receipt</span>
-                    {% endif %}
-                  </td>
-                  <td style="padding:5px 6px;color:var(--text-muted);font-size:.72rem">{{ (_t.note or '')[:50] }}</td>
-                  <td style="padding:5px 6px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;color:{% if (_t.amount or 0) | float < 0 %}#fb7185{% else %}var(--text){% endif %}">
-                    {% if _t.amount %}${{ '%.2f'|format(_t.amount|float|abs) }}{% else %}—{% endif %}
-                  </td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </td>
-        </tr>
-          {% endif %}
-        {% endif %}
+        
         {# P3 (User 2026-07): Working-view section-only spend row. When
            transactions are coded to this SECTION but no specific line
            (actual_section_only_by_code), surface them as a dimmed, expandable
@@ -1494,7 +1622,7 @@
         {# P4: suppressed on a FROZEN (superseded) Working view —
            actual_section_only_by_code is project-scoped/live, so it would show
            current section-coded spend, not this version's frozen history. #}
-        {% if not is_actual_view and has_actual_budget and not actuals_frozen %}
+        {% if has_actual_budget and not actuals_frozen %}
         {% set _sec_only_amt = (actual_section_only_by_code.get(sec.code, 0) or 0) | float %}
         {% if _sec_only_amt %}
         <tr class="line-row work-section-only-row cs-screen-only" data-section-code="{{ sec.code }}"
@@ -1556,13 +1684,12 @@
                          padding:2px 4px;user-select:none">⋮⋮</span>
             <div style="height:14px;border-top:1px dashed var(--border);margin:0 32px"></div>
           </td>
-          <td class="col-act" style="padding:0">
-            <button class="btn btn-xs btn-ghost line-row-menu-btn"
-                    data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
-                    title="Insert / Move row" onclick="openLineRowMenu(this)"
-                    style="font-size:.65rem;opacity:.4">⋮</button>
-            <button class="btn btn-xs btn-ghost del-line-btn" data-id="{{ ln.id }}"
-                    title="Delete spacer" style="font-size:.65rem;opacity:.4">✕</button>
+          <td class="col-act" style="padding:0"></td>
+          <td class="col-rowact" style="padding:0">
+            <span class="line-actions" role="group" aria-label="Actions for this spacer">
+              <button type="button" class="line-act-btn line-add-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" aria-label="Add below" aria-haspopup="menu" title="Add below" onclick="openLineAddMenu(this)"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg></button>
+              <button type="button" class="line-act-btn line-row-menu-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-kind="spacer" aria-label="Spacer menu" aria-haspopup="menu" title="Spacer menu" onclick="openLineRowMenu(this)"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg></button>
+            </span>
           </td>
         </tr>
         {% elif ln.line_tag == 'header' %}
@@ -1621,12 +1748,12 @@
                             padding:0;cursor:pointer;vertical-align:middle">
             </span>
           </td>
-          <td class="col-act">
-            <button class="btn btn-xs btn-ghost line-row-menu-btn"
-                    data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
-                    title="Insert / Move row" onclick="openLineRowMenu(this)">⋮</button>
-            <button class="btn btn-xs btn-ghost del-line-btn" data-id="{{ ln.id }}"
-                    title="Delete header">✕</button>
+          <td class="col-act"></td>
+          <td class="col-rowact">
+            <span class="line-actions" role="group" aria-label="Actions for this sub-header">
+              <button type="button" class="line-act-btn line-add-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" aria-label="Add below" aria-haspopup="menu" title="Add below" onclick="openLineAddMenu(this)"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg></button>
+              <button type="button" class="line-act-btn line-row-menu-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-kind="header" aria-label="Sub-header menu" aria-haspopup="menu" title="Sub-header menu" onclick="openLineRowMenu(this)"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg></button>
+            </span>
           </td>
         </tr>
         {% else %}
@@ -1657,22 +1784,11 @@
           {% set ns.prev_sub_group = _sg %}
           {% endif %}
         {% endif %}
-        {# Actual view: precompute the line's transaction sum once. Used
-           by the subtotal cell (replaces qty×days×rate) and by the
-           expandable detail row. Lets the user track live spend per
-           line instead of editing planned numbers. 2026-05-07. #}
-        {% set _act_txn_sum_ns = namespace(t=0) %}
-        {% if is_actual_view %}
-          {% for _t in txns_by_line.get(ln.id, []) %}
-            {% if _t.amount %}{% set _act_txn_sum_ns.t = _act_txn_sum_ns.t + (_t.amount | float) %}{% endif %}
-          {% endfor %}
-        {% endif %}
-        {% set _act_txn_sum = _act_txn_sum_ns.t %}
         {# This line's dispersed Prod Co Fee share (whole dollars; user
            override or auto first pass). 0 when not dispersed / exempt. #}
         {% set _ln_fee = fee_ln.get(ln.id, 0) | float %}
-        {% set _ln_fee_has_chip = budget.company_fee_dispersed and not is_actual_view and ln.id in fee_ln %}
-        <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }} {{ 'sync-line' if ln.line_tag else '' }} {{ 'sync-omitted' if ln.sync_omit else '' }} {{ 'schedule-driven' if ln.use_schedule else '' }} {{ 'discussion-row' if ln.discussion_note else '' }} {% if is_actual_view %}actual-view-row{% endif %}" data-id="{{ ln.id }}"
+        {% set _ln_fee_has_chip = budget.company_fee_dispersed and ln.id in fee_ln %}
+        <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }} {{ 'sync-line' if ln.line_tag else '' }} {{ 'sync-omitted' if ln.sync_omit else '' }} {{ 'schedule-driven' if ln.use_schedule else '' }} {{ 'discussion-row' if ln.discussion_note else '' }} " data-id="{{ ln.id }}"
             data-discussion="{{ ln.discussion_note or '' }}"
             data-code="{{ ln.account_code }}" data-code-name="{{ ln.account_name }}"
             data-agent="{{ res.agent_amount | default(0) | float | round(2) }}"
@@ -1687,20 +1803,13 @@
                their parent after a drag. Without it the children stayed
                put visually until the user refreshed the page. #}
             {% if ln.parent_line_id %}data-parent-id="{{ ln.parent_line_id }}"{% endif %}
-            {% if is_actual_view %}data-actual-spent="{{ _act_txn_sum | round(2) }}"{% endif %}>
+            >
           <td class="col-desc">
             {# Actual view: chevron + count badge when this line has linked
                transactions, signaling it's expandable. Click anywhere on
                the line row toggles the detail (handled by the actuals JS
                IIFE). When no txns, no chevron. #}
-            {% if is_actual_view %}
-              {% set _line_txns_n = (txns_by_line.get(ln.id, []) | length) %}
-              {% if _line_txns_n %}
-              <span class="actual-line-chev" style="display:inline-block;width:10px;color:#22c55e;font-size:.75rem;cursor:pointer">▸</span>
-              <span style="font-size:.65rem;color:#22c55e;background:rgba(34,197,94,.1);padding:1px 5px;border-radius:8px;margin-right:4px"
-                    title="{{ _line_txns_n }} transaction{{ 's' if _line_txns_n != 1 else '' }} linked — click to expand">{{ _line_txns_n }}</span>
-              {% endif %}
-            {% endif %}
+            
             <span class="line-number">{{ sec.code }}-{{ '%02d' % ns.line_counter }}</span><span class="editable" data-field="description"
                   data-id="{{ ln.id }}">{{ ln.description or '' }}</span>
             {# Estimated-ancestor title (owner 2026-09-22): when a Working/
@@ -1713,12 +1822,34 @@
               ↳ Est: {{ est_origin_desc_by_wlid.get(ln.id) }}
             </div>
             {% endif %}
-            {# 🚩 Discussion flag (owner 2026-09-10). Click to edit/clear;
-               set via the row's right-click / ⋮ menu. #}
-            <span class="discussion-flag" data-line-id="{{ ln.id }}"
-                  onclick="editDiscussionNote({{ ln.id }})"
+            {# Flags (LineActions artboard, Cleanup C): a "Discussion" chip
+               (blue) for a flagged talking point and a "Lever" chip (orange)
+               for a line a lever is built on; set from the row's ⋯ menu.
+               Click the Discussion chip to edit / clear the note. #}
+            <span class="discussion-flag line-chip line-chip-discussion" data-line-id="{{ ln.id }}" role="button" tabindex="0"
+                  onclick="editDiscussionNote({{ ln.id }})" onkeydown="if(event.key==='Enter'){editDiscussionNote({{ ln.id }})}"
                   {% if not ln.discussion_note %}style="display:none"{% endif %}
-                  title="Discussion point: {{ (ln.discussion_note or '') | e }} — click to edit">🚩</span>
+                  title="Discussion point: {{ (ln.discussion_note or '') | e }} — click to edit">
+              <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>Discussion</span>
+            {% if ln.id in lever_line_ids %}
+            <span class="line-chip line-chip-lever" data-line-id="{{ ln.id }}" role="button" tabindex="0"
+                  onclick="document.querySelector('.tab-btn[data-tab=&quot;assumptions&quot;]')?.click()"
+                  title="A lever is built on this line — open Assumptions to edit it">
+              <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path></svg>Lever</span>
+            {% endif %}
+            {% set _cm_latest = comment_latest.get(ln.id) %}
+            <span class="line-note-wrap {% if not comment_counts.get(ln.id) %}line-note-empty{% endif %}" data-line-id="{{ ln.id }}">
+              <button type="button" class="line-note-dot" aria-label="Internal note on this line" aria-describedby="line-note-{{ ln.id }}"
+                      onclick='openComments({{ ln.id }}, {{ ((ln.description or ln.account_name or "line") | truncate(40)) | tojson }})'>
+                <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+              </button>
+              {% if _cm_latest %}
+              <div id="line-note-{{ ln.id }}" role="tooltip" class="line-note-card">
+                <span class="line-note-card-head">Internal note <span class="line-note-card-meta">· {{ _cm_latest.who }}{% if _cm_latest.when %} · {{ _cm_latest.when | in_tz(budget.timezone, '%b %-d') }}{% endif %}{% if comment_counts.get(ln.id, 0) > 1 %} · {{ comment_counts.get(ln.id) }} notes{% endif %}</span></span>
+                <span class="line-note-card-body">{{ _cm_latest.body }}</span>
+              </div>
+              {% endif %}
+            </span>
             {% if ln.discussion_note %}
             <div class="discussion-note-text" style="font-size:.72rem;margin-top:.1rem;color:#fbbf24;font-style:italic">
               🗣 {{ ln.discussion_note }}
@@ -1760,9 +1891,7 @@
             {% else %}<span class="muted">—</span>{% endif %}
           </td>
           <td class="col-qty">
-            {% if is_actual_view %}
-              <span class="muted" style="font-size:.7rem">—</span>
-            {% elif ln.is_labor %}
+            {% if ln.is_labor %}
               {# Labor lines: qty>1 badge is rendered inline with the
                  description (above) since the .col-qty column is
                  width:0 in labor sections. Keep this cell empty. #}
@@ -1773,9 +1902,7 @@
             {% endif %}
           </td>
           <td class="col-days col-days-cell">
-            {% if is_actual_view %}
-            <span class="muted" style="font-size:.7rem">—</span>
-            {% elif ln.use_schedule %}
+            {% if ln.use_schedule %}
             <span class="sched-days" title="Driven by schedule ({{ res.day_count }} days) — edit on the Schedule tab">
               {{ res.day_count if res.day_count is defined else ln.days | float | round(2) }}
             </span>
@@ -1840,9 +1967,7 @@
             {% endif %}
           </td>
           <td class="col-num col-rate-cell">
-            {% if is_actual_view %}
-              <span class="muted" style="font-size:.7rem">—</span>
-            {% elif not ln.is_labor %}
+            {% if not ln.is_labor %}
               {% set _nl_rate = ln.rate | float %}
               {% set _nl_qty  = ln.quantity | float %}
               {% set _nl_days = ln.days | float %}
@@ -1857,9 +1982,7 @@
             <span class="fee-disp-badge" style="display:none">+{{ (budget.company_fee_pct | float * 100) | round(1) }}%</span>
           </td>
           <td class="col-rt">
-            {% if is_actual_view %}
-            <span class="muted" style="font-size:.7rem">—</span>
-            {% elif ln.is_labor %}
+            {% if ln.is_labor %}
             {# Labor: Type column = rate_type (10hr Day / Flat / Per Week
                / Hourly / Custom). Affects OT calc basis. #}
             <select class="inline-select" data-field="rate_type" data-id="{{ ln.id }}">
@@ -1919,29 +2042,14 @@
             {% endif %}
           </td>
           <td class="col-num line-subtotal">
-            {% if is_actual_view %}
-              {# Subtotal in Actual view = sum of linked transactions
-                 for this line. Replaces qty×days×rate, since Actual is
-                 about tracking real spend, not planned. Click chevron
-                 in description cell to expand the underlying txns. #}
-              {% if _act_txn_sum > 0 %}
-                <strong style="color:#22c55e">{{ _act_txn_sum | currency }}</strong>
-              {% else %}
-                <span class="muted" style="font-size:.85rem">$0.00</span>
-              {% endif %}
-            {# Components show RAW (pre-fee) — the dispersed fee is an
-               explicit editable share on the TOTAL cell now (2026-09-04),
-               so inflating each component would double-tell the story. #}
-            {% elif ln.is_labor %}{{ res.subtotal | currency }}
+            {% if ln.is_labor %}{{ res.subtotal | currency }}
             {% else %}
               {% set _nl_pre = (ln.quantity|float) * (ln.days|float) * (ln.rate|float) %}
               {% if _nl_pre > 0 %}{{ _nl_pre | round(2) | currency }}{% else %}{{ res.est_total | currency }}{% endif %}
             {% endif %}
           </td>
           <td class="col-num">
-            {% if is_actual_view %}
-            <span class="muted" style="font-size:.7rem">—</span>
-            {% elif ln.is_labor %}
+            {% if ln.is_labor %}
             {% if ln.use_schedule and res.ot_amount is defined and res.ot_amount > 0 %}
             {# Schedule-driven OT — currency formatted, blue italic to
                match the schedule-driven row treatment elsewhere. #}
@@ -1961,9 +2069,7 @@
             {% endif %}
           </td>
           <td class="col-fr">
-            {% if is_actual_view %}
-            <span class="muted" style="font-size:.7rem">—</span>
-            {% elif ln.is_labor %}
+            {% if ln.is_labor %}
             <select class="inline-select" data-field="fringe_type" data-id="{{ ln.id }}">
               {% for fr in fringes %}
               <option value="{{ fr.fringe_type }}"
@@ -2051,19 +2157,7 @@
              is already accessible via res.est_total elsewhere).
              2026-05-07. #}
           <td class="col-num col-working line-working">
-            {% if is_actual_view %}
-              {% set _wlt_act = working_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
-              {# Positional fallback only for TOP-LEVEL lines — child fee/kit
-                 rows share the parent's sort_order and matched the PARENT's
-                 working total (2026-09-08: Agent Fee showed \$1,268). #}
-              {% if _wlt_act is none and not ln.parent_line_id %}{% set _wlt_act = working_line_totals.get((ln.account_code, ln.sort_order), none) %}{% endif %}
-              {% if _wlt_act is not none %}
-                <span class="muted" style="font-size:.85rem"
-                      title="Live total from the current Working budget for this line">{{ _wlt_act | currency }}</span>
-              {% else %}
-                <span class="muted" style="font-size:.75rem">—</span>
-              {% endif %}
-            {% else %}
+            
               <strong data-base="{{ res.est_total }}">{{ (res.est_total + _ln_fee) | currency }}</strong>
               {% if _ln_fee_has_chip %}
               <span class="fee-chip {{ 'fee-chip-auto' if fee_ln_auto.get(ln.id) else 'fee-chip-override' }}"
@@ -2072,7 +2166,7 @@
                     onclick="editLineFee(event, {{ ln.id }})"
                     title="Includes dispersed Prod Co Fee share ({{ 'auto' if fee_ln_auto.get(ln.id) else 'custom' }}) — click to edit; blank resets to auto">+<span class="fee-chip-val">{{ _ln_fee | currency }}</span></span>
               {% endif %}
-            {% endif %}
+            
           </td>
           {# Per-line ACTUAL: sum of Transaction.amount for this line.
              Resolved across all three views via actual_line_totals,
@@ -2088,9 +2182,7 @@
              collide for same-named or same-position lines (e.g. a freshly
              created kit fee mirror picking up another 2000-level line's spend,
              user 2026-06-01), so they must never drive the Actual view. #}
-          {% if is_actual_view %}
-            {% set _actual = actual_line_totals_by_lid.get(ln.id, 0) %}
-          {% elif not actuals_frozen %}
+          {% if not actuals_frozen %}
             {# CURRENT Working: post-P4 every txn points DIRECTLY at this
                line (by-lid), and legacy Actual-peer codings resolve via
                the EXACT source-link bridge (xb_act). The desc/positional
@@ -2111,18 +2203,7 @@
           {% endif %}
           {% set _actual = (_actual or 0) | float %}
           <td class="col-num col-actual line-actual" data-acell-line="{{ ln.id }}">
-            {% if is_actual_view %}
-              {# Actual view: the Actual column IS the rollup of charges
-                 linked to this line. Per user 2026-05-08, the Actual
-                 budget never shows the planned amount as its primary
-                 value — it's the spend tracker. The "planned:" subtitle
-                 previously below this cell was removed 2026-05-11 as
-                 redundant: the Estimated and Working columns alongside
-                 already carry that information. #}
-              <strong style="color:{% if _actual > 0 %}var(--green){% else %}var(--text-muted){% endif %}">
-                {{ _actual | currency }}
-              </strong>
-            {% elif actuals_frozen %}
+            {% if actuals_frozen %}
               {# P4 (User 2026-07): superseded Working — actuals were FROZEN at
                  supersede time. Show the immutable snapshot as a plain figure;
                  NO ▸ expander (the live txns have moved to the newer Working).
@@ -2194,9 +2275,7 @@
              positional are only valid when ln is a sister-budget line; they
              collide for same-account lines and made a freshly created kit-fee
              mirror show another 2000-level line's spend (user 2026-06-01). #}
-          {% if is_actual_view %}
-            {% set _actual_e = actual_line_totals_by_lid.get(ln.id, 0) %}
-          {% else %}
+          
             {# Estimated view: ln can carry DIRECT-coded txns (no-Working
                flow) — by-lid first, then the exact source-link bridge
                (xb_act). Only then the cross-budget desc fallback,
@@ -2207,7 +2286,7 @@
             {% set _aek = (ln.account_code, (ln.description or '').strip().lower()) %}
             {% if _actual_e is none and actual_desc_first_lid.get(_aek) == ln.id %}{% set _actual_e = actual_line_totals_by_desc.get(_aek, none) %}{% endif %}
             {% if _actual_e is none %}{% set _actual_e = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
-          {% endif %}
+          
           {% set _actual_e = (_actual_e or 0) | float %}
           <td class="col-num col-actual line-actual" data-acell-line="{{ ln.id }}">
             {% if has_actual_budget or has_line_actuals %}
@@ -2251,15 +2330,13 @@
                  its Actual clones. Effective name resolves per view, with
                  a fallback to the line's own assignment when there's no
                  Working sister yet. Revised 2026-05-20 from Working-only. #}
-              {% if is_working_view and not is_actual_view %}
+              {% if is_working_view %}
                 {% set _crew_id   = ln.assigned_crew_id %}
                 {% set _crew_name = ln.assigned_crew.name if ln.assigned_crew else None %}
               {% else %}
-                {% if is_actual_view %}
-                  {% set _wc = working_crew_by_wlid.get(ln.source_line_id) if ln.source_line_id else None %}
-                {% else %}
+                
                   {% set _wc = working_crew_by_key.get((ln.account_code, ln.sort_order)) %}
-                {% endif %}
+                
                 {% if _wc %}
                   {% set _crew_id   = _wc[0] %}
                   {% set _crew_name = _wc[1] %}
@@ -2268,7 +2345,7 @@
                   {% set _crew_name = ln.assigned_crew.name if ln.assigned_crew else None %}
                 {% endif %}
               {% endif %}
-              {% set _crew_hint = '' if (is_working_view and not is_actual_view) else ' (saves to Working + Actuals)' %}
+              {% set _crew_hint = '' if is_working_view else ' (saves to Working)' %}
               <span class="assigned-crew-name {{ '' if _crew_id else 'no-assignment' }}"
                     data-id="{{ ln.id }}"
                     onclick="openCrewAssign({{ ln.id }})"
@@ -2315,12 +2392,7 @@
                   • Actual      → green editable badge (own po_id,
                                    which the canonical write keeps
                                    in sync with Working) #}
-              {% if is_actual_view %}
-                {# Actual: own po_id, fall back to Working sister
-                   lookup if Actual was cloned before PO assignment. #}
-                {% set _w_po_id = working_po_by_wlid.get(ln.source_line_id) if ln.source_line_id else None %}
-                {% set _eff_po_id = ln.po_id or _w_po_id %}
-              {% elif is_working_view %}
+              {% if is_working_view %}
                 {# Working: own po_id, no lookup needed. #}
                 {% set _eff_po_id = ln.po_id %}
               {% else %}
@@ -2335,30 +2407,22 @@
                 {% set _eff_po_id = ln.po_id or working_po_by_key.get((ln.account_code, ln.sort_order)) %}
               {% endif %}
               {% set _po = pos_by_id.get(_eff_po_id) if _eff_po_id else None %}
-              {% set _hint = ' (saves to Working + Actuals)' if not (is_working_view and not is_actual_view) else '' %}
+              {% set _hint = ' (saves to Working)' if not is_working_view else '' %}
+              {# The PO chip shows only when a PO is attached; "Attach PO" lives
+                 in the row's ⋯ menu (LineActions artboard, Cleanup C). #}
               <span class="line-po-badge {{ '' if _po else 'no-assignment' }}"
                     data-id="{{ ln.id }}"
                     onclick="openLinePoPicker({{ ln.id }})"
-                    title="{% if _po %}{{ _po.po_number }} — {{ _po.vendor_name }}{{ _hint }}{% else %}Click to assign a Purchase Order{{ _hint }}{% endif %}"
+                    title="{% if _po %}{{ _po.po_number }} — {{ _po.vendor_name }}{{ _hint }} · click to change{% else %}Click to assign a Purchase Order{{ _hint }}{% endif %}"
                     style="cursor:pointer;font-size:.72rem;padding:2px 8px;border-radius:10px;
                            {% if _po %}background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.25);
-                           {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}
-                           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;display:inline-block;vertical-align:middle">
-                {% if _po %}📋 {{ _po.po_number }}{% else %}+ PO{% endif %}
+                           {% else %}display:none;{% endif %}
+                           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;vertical-align:middle">
+                {% if _po %}📋 {{ _po.po_number }}{% endif %}
               </span>
-              {# ── Sub-Budget membership badge (2026-05-26) ──────────
-                 Shows which sub-budgets this line is in. Resolves the
-                 same way as the PO badge: Working = own id, Actual =
-                 source_line_id chain, Estimated = (account_code, sort_
-                 order) match. Click opens the multi-select picker.
-                 The picker writes to the canonical Working line id (so
-                 a single click from any view propagates correctly).
-                 Hidden when no sub-budgets exist on the project. #}
+              {# Sub-Budget membership chip (2026-05-26) — shown only when the
+                 line is in one; "Add to sub-budget…" is in the ⋯ menu. #}
               {% if sub_budgets_for_project %}
-                {# Union of every resolution path, deduped by id — direct
-                   membership on THIS line (any view; versions carry their
-                   own rows since 2026-08-19), the source-chain line, and
-                   the (code, sort_order) cross-view mirror. #}
                 {% set _sb_seen = namespace(ids=[], list=[]) %}
                 {% for _cand in [sb_by_wline.get(ln.id),
                                  (sb_by_wline.get(ln.source_line_id) if ln.source_line_id else None),
@@ -2371,11 +2435,8 @@
                   {% endfor %}
                 {% endfor %}
                 {% set _sb_list = _sb_seen.list %}
-                {% set _sb_target_lid = (ln.source_line_id if (is_actual_view and ln.source_line_id) else ln.id) %}
+                {% set _sb_target_lid = ln.id %}
                 {% set _sb_n = _sb_list | length %}
-                {# Show the NAMES on the line (owner 2026-08-19: "have the
-                   sub budgets an item belongs to show on the line") — first
-                   name + "+N" overflow; full list in the tooltip. #}
                 <span class="line-sb-badge {{ '' if _sb_n else 'no-assignment' }}"
                       data-id="{{ ln.id }}"
                       data-target-lid="{{ _sb_target_lid or ln.id }}"
@@ -2383,9 +2444,9 @@
                       title="{% if _sb_n %}In {{ _sb_n }} sub-budget{{ 's' if _sb_n != 1 else '' }}: {{ _sb_list | map(attribute='name') | join(', ') }} — click to change{% else %}Click to add to a sub-budget{% endif %}"
                       style="cursor:pointer;font-size:.72rem;padding:2px 8px;border-radius:10px;margin-left:3px;
                              {% if _sb_n %}background:rgba(167,139,250,.12);color:#a78bfa;border:1px solid rgba(167,139,250,.3);
-                             {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}
-                             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;display:inline-block;vertical-align:middle">
-                  {% if _sb_n %}🧩 {{ _sb_list[0].name }}{% if _sb_n > 1 %} +{{ _sb_n - 1 }}{% endif %}{% else %}+ SB{% endif %}
+                             {% else %}display:none;{% endif %}
+                             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;vertical-align:middle">
+                  {% if _sb_n %}🧩 {{ _sb_list[0].name }}{% if _sb_n > 1 %} +{{ _sb_n - 1 }}{% endif %}{% endif %}
                 </span>
               {% endif %}
             {% endif %}
@@ -2400,17 +2461,26 @@
                     data-pid="{{ project.id }}" data-bid="{{ budget.id }}" data-lid="{{ ln.id }}"
                     title="View per-day, per-person breakdown of this auto-calculated line">Schedule Detail</button>
             {% endif %}
-            {# 💬 internal comments on this line (owner 2026-07-22) #}
-            <button class="btn btn-xs btn-ghost line-comments-btn {% if comment_counts.get(ln.id) %}has-notes{% endif %}"
-                    title="Comments / notes on this line — @name tags a teammate"
-                    onclick='openComments({{ ln.id }}, {{ ((ln.description or ln.account_name or "line") | truncate(40)) | tojson }})'
-                    style="{% if not comment_counts.get(ln.id) %}opacity:.4{% endif %}"
-                    title="{% if comment_counts.get(ln.id) %}{{ comment_counts.get(ln.id) }} internal note{{ 's' if comment_counts.get(ln.id) != 1 else '' }} on this line — click to read{% else %}Add an internal note to this line{% endif %}">💬{% if comment_counts.get(ln.id) %}<span class="cm-count" style="font-size:.66rem;font-weight:700;color:#fbbf24;margin-left:2px">{{ comment_counts.get(ln.id) }}</span>{% endif %}</button>
-            <button class="btn btn-xs btn-ghost line-row-menu-btn"
-                    data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
-                    title="Insert / Move row" onclick="openLineRowMenu(this)">⋮</button>
-            <button class="btn btn-xs btn-ghost del-line-btn" data-id="{{ ln.id }}"
-                    title="Delete line">✕</button>
+          </td>
+          <td class="col-rowact">
+            {# Row actions (LineActions artboard, Cleanup C): revealed on
+               hover / focus-within. "+" adds below (line / sub-header /
+               spacer / duplicate); "⋯" holds Flag, Note and Line actions.
+               The old always-visible "+ PO 💬 ⋮ ✕" cluster is gone. The cell
+               sticks to the right edge so the buttons never scroll away. #}
+            <span class="line-actions" role="group" aria-label="Actions for {{ (ln.description or ln.account_name or 'this line') | e }}">
+              <button type="button" class="line-act-btn line-add-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
+                      aria-label="Add below this line" aria-haspopup="menu" aria-expanded="false" title="Add below"
+                      onclick="openLineAddMenu(this)">
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+              </button>
+              <button type="button" class="line-act-btn line-row-menu-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
+                      data-has-lever="{{ '1' if ln.id in lever_line_ids else '0' }}" data-has-po="{{ '1' if _po is defined and _po else '0' }}"
+                      aria-label="Line menu" aria-haspopup="menu" aria-expanded="false" title="Line menu"
+                      onclick="openLineRowMenu(this)">
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg>
+              </button>
+            </span>
           </td>
         </tr>
         {# P3 (User 2026-07): Working-view per-line transaction detail. Empty
@@ -2422,7 +2492,7 @@
            2026-07: one shared actuals reality). _adet picks the view's own
            per-line value; `!= 0` so refund-net lines are expandable too. #}
         {% set _adet = none %}
-        {% if not is_actual_view and has_actual_budget and not actuals_frozen %}
+        {% if has_actual_budget and not actuals_frozen %}
           {% if is_working_view %}{% set _adet = _actual %}{% else %}{% set _adet = _actual_e %}{% endif %}
         {% endif %}
         {% if _adet is not none and _adet != 0 %}
@@ -2489,58 +2559,7 @@
            cell to toggle. Per user 2026-05-01 — replaces the By
            Department sub-tab as the canonical phase-3 view, with
            drag-drop reassignment available inline. #}
-        {% if is_actual_view %}
-        {% set _line_txns = txns_by_line.get(ln.id, []) %}
-        {# Resolve the PO for this line. Actual line's source_line_id
-           points back to the Working line whose po_id is the canonical
-           link. Used for both the txn detail header and per-row badges
-           below. 2026-05-10. #}
-        {% set _line_po_id = working_po_by_wlid.get(ln.source_line_id) if ln.source_line_id else None %}
-        {% set _line_po = pos_by_id.get(_line_po_id) if _line_po_id else None %}
-        {% if _line_txns %}
-        <tr class="actual-line-detail" data-for-line="{{ ln.id }}" style="display:none">
-          <td colspan="14" style="padding:6px 12px 12px 32px;background:rgba(34,197,94,.04);border-left:3px solid #22c55e">
-            <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <span>{{ _line_txns | length }} transaction{{ 's' if _line_txns | length != 1 else '' }} · drag onto another line to reassign</span>
-              {% if _line_po %}
-              <span style="font-size:.7rem;font-weight:600;letter-spacing:0;text-transform:none;
-                           padding:1px 7px;border-radius:9px;
-                           background:rgba(167,139,250,.12);color:#a78bfa;
-                           border:1px solid rgba(167,139,250,.3);"
-                    title="All transactions on this line bill against {{ _line_po.po_number }} — {{ _line_po.vendor_name }}">
-                📋 {{ _line_po.po_number }} · {{ _line_po.vendor_name }}
-              </span>
-              {% endif %}
-            </div>
-            <table style="width:100%;font-size:.78rem;border-collapse:collapse">
-              <tbody>
-                {% for _t in _line_txns %}
-                {% set _doc = docs_by_id.get(_t.doc_upload_id) if _t.doc_upload_id else None %}
-                <tr class="actual-txn-subrow" draggable="true" data-tid="{{ _t.id }}"
-                    style="border-top:1px solid var(--border);cursor:grab"
-                    title="Drag onto another line or section to reassign">
-                  <td style="padding:5px 6px;color:var(--text-muted);font-variant-numeric:tabular-nums;width:90px">{{ _t.txn_date or '—' }}</td>
-                  <td style="padding:5px 6px;width:40%">{{ _t.vendor or '—' }}</td>
-                  <td style="padding:5px 6px;width:25%">
-                    {% if _doc %}
-                    <a href="#" onclick="event.preventDefault();openDocDetail(null, {{ _doc.id }})"
-                       style="color:#5b8af9;text-decoration:none">📎 {{ (_doc.filed_filename or _doc.original_filename or 'receipt')[:40] }}{% if (_doc.filed_filename or _doc.original_filename or '')|length > 40 %}…{% endif %}</a>
-                    {% else %}
-                    <span class="muted" style="font-style:italic;font-size:.72rem">no receipt</span>
-                    {% endif %}
-                  </td>
-                  <td style="padding:5px 6px;color:var(--text-muted);font-size:.72rem">{{ (_t.note or '')[:50] }}</td>
-                  <td style="padding:5px 6px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;color:{% if (_t.amount or 0) | float < 0 %}#fb7185{% else %}var(--text){% endif %}">
-                    {% if _t.amount %}${{ '%.2f'|format(_t.amount|float|abs) }}{% else %}—{% endif %}
-                  </td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </td>
-        </tr>
-        {% endif %}
-        {% endif %}
+        
         {% endif %}{# /spacer-elif-header-else block #}
         {% endfor %}
         {# ── Computed rows at the section foot (Phase 4, Steven Oct 30 2026) ──
@@ -2809,22 +2828,12 @@
              section-only pool is keyed by account_code, so we look it
              up once per section. #}
           {% set _sec_actual_ns = namespace(total=0) %}
-          {% if is_actual_view %}
-            {# In Actual view, ln.id is the Actual line id and txns_by_line keys on it. #}
-            {% for _ln in sec.lines %}
-              {% for _t in txns_by_line.get(_ln.id, []) %}
-                {% if _t.amount %}{% set _sec_actual_ns.total = _sec_actual_ns.total + (_t.amount | float) %}{% endif %}
-              {% endfor %}
-            {% endfor %}
-            {% for _t in txns_by_section_only_code.get(sec.code, []) %}
-              {% if _t.amount %}{% set _sec_actual_ns.total = _sec_actual_ns.total + (_t.amount | float) %}{% endif %}
-            {% endfor %}
-          {% else %}
+          
             {% for _ln in sec.lines %}
               {% set _sec_actual_ns.total = _sec_actual_ns.total + (actual_by_line_id.get(_ln.id, 0) or 0) | float %}
             {% endfor %}
             {% set _sec_actual_ns.total = _sec_actual_ns.total + (actual_section_only_by_code.get(sec.code, 0) or 0) | float %}
-          {% endif %}
+          
           {% set _sec_actual = _sec_actual_ns.total %}
           {# Live Working-section total — sum working_line_totals for
              every line in this section (matched by (account_code,
@@ -2835,35 +2844,18 @@
              can read it (Jinja {% set %} inside {% if %} doesn't
              escape the if's scope across separate {% if %} blocks). #}
           {% set _sec_w_live_ns = namespace(t=0) %}
-          {% if is_actual_view %}
-            {% for _ln in sec.lines %}
-              {% set _wlt_sec = working_line_totals.get((_ln.account_code, _ln.sort_order), none) %}
-              {% if _wlt_sec is not none %}{% set _sec_w_live_ns.t = _sec_w_live_ns.t + (_wlt_sec | float) %}{% endif %}
-            {% endfor %}
-          {% endif %}
+          
           {% if is_working_view %}
           <td class="col-num sec-est-total" style="font-size:.8rem">
             <span class="frozen-est" data-raw="{{ sec_working.total }}">{{ sec_working.total | currency }}</span>
           </td>
           <td class="col-num col-working sec-working-total" style="font-size:.8rem">
-            {% if is_actual_view %}
-              {% if _sec_w_live_ns.t > 0 %}
-                <span class="muted">{{ _sec_w_live_ns.t | currency }}</span>
-              {% else %}<span class="muted">—</span>{% endif %}
-            {% else %}
+            
               <strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total + _sec_fee_add) | currency }}</strong>
-            {% endif %}
+            
           </td>
           <td class="col-num col-actual sec-actual-total" style="font-size:.8rem">
-            {% if is_actual_view %}
-              {# Actual section total IS the rollup of charges. The
-                 "planned:" subtitle was removed 2026-05-11 — the
-                 Estimated and Working columns alongside already show
-                 the planned amount. #}
-              <strong style="color:{% if _sec_actual > 0 %}var(--green){% else %}var(--text-muted){% endif %}">
-                {{ _sec_actual | currency }}
-              </strong>
-            {% elif _sec_actual > 0 %}
+            {% if _sec_actual > 0 %}
               <strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>
             {% endif %}
           </td>
@@ -2874,7 +2866,7 @@
                             Actual lines don't carry estimated_total), A = _sec_actual. #}
           <td class="col-num col-variance sec-variance-total line-var-cell" style="font-size:.8rem"
               data-e="{{ sec_working.total }}"
-              data-w="{{ _sec_w_live_ns.t if is_actual_view else (ns.sec_total + _sec_fee_add) }}"
+              data-w="{{ ns.sec_total + _sec_fee_add }}"
               data-a="{{ _sec_actual }}">
           </td>
           {% else %}
@@ -2899,27 +2891,7 @@
           <td colspan="10" class="col-desc" style="padding:.55rem .6rem;font-weight:700;font-size:.88rem;text-align:right;letter-spacing:.02em;text-transform:uppercase;color:var(--text)">
             Total {{ sec.name }}
           </td>
-          {% if is_actual_view %}
-          {# Actual view: this branch is structurally distinct from
-             Working view because ns.sec_total sums res.est_total of
-             Actual budget lines (typically 0 — Actual lines don't
-             carry estimated_total). Working column must come from
-             _sec_w_live_ns.t (live sister-Working rollup) instead. #}
-          <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem"><strong data-base="{{ sec_working.total }}">{{ sec_working.total | currency }}</strong></td>
-          <td class="col-num col-working sec-grand-working" style="font-weight:700;font-size:.95rem">
-            {% if _sec_w_live_ns.t > 0 %}
-              <span class="muted">{{ _sec_w_live_ns.t | currency }}</span>
-            {% else %}<span class="muted">—</span>{% endif %}
-          </td>
-          <td class="col-num col-actual sec-grand-actual" style="font-weight:700;font-size:.92rem">
-            <strong style="color:{% if _sec_actual > 0 %}var(--green){% else %}var(--text-muted){% endif %}">{{ _sec_actual | currency }}</strong>
-          </td>
-          <td class="col-num col-variance sec-grand-variance line-var-cell" style="font-weight:700;font-size:.88rem"
-              data-e="{{ sec_working.total }}"
-              data-w="{{ _sec_w_live_ns.t }}"
-              data-a="{{ _sec_actual }}">
-          </td>
-          {% elif is_working_view %}
+          {% if is_working_view %}
           <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem"><strong data-base="{{ sec_working.total }}">{{ sec_working.total | currency }}</strong></td>
           <td class="col-num col-working sec-grand-working" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total + _sec_fee_add) | currency }}</strong></td>
           <td class="col-num col-actual sec-grand-actual" style="font-weight:700;font-size:.92rem">
@@ -4305,7 +4277,19 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
 
 <div class="tab-panel" id="tab-settings">
   <div class="settings-panel">
-    <h2 class="settings-heading">Project Settings</h2>
+    {# Settings regrouped (Settings artboard, Cleanup C 2026-11-02): Budget
+       Info · Display · Payroll and fees · Project Fringes · Maintenance.
+       Company-wide things (company profile, QuickBooks, fringe library,
+       company-wide maintenance) live in Admin — the Production Company
+       Profile card that used to sit here moved there. #}
+    <div class="settings-note-bar">
+      <div class="settings-note-text">
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto;color:var(--text-muted)"><circle cx="12" cy="12" r="9"></circle><path d="M12 8h.01M11 12h1v4h1"></path></svg>
+        <span>Company profile, QuickBooks connection, fringe library and company-wide maintenance tools moved to Admin. <span class="muted">These settings apply to this project only.</span></span>
+      </div>
+      <a href="{{ url_for('admin_panel') }}#company-profile" class="btn btn-sm btn-outline" style="white-space:nowrap">Open Admin
+        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-left:4px"><path d="M7 17L17 7M8 7h9v9"></path></svg></a>
+    </div>
     <div class="settings-grid">
 
       <div class="settings-section">
@@ -4327,6 +4311,134 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
           <div class="field">
             <label>Target Budget ($)</label>
             <input type="number" id="set-target" value="{{ budget.target_budget | float | round(0) | int if budget.target_budget else '' }}" min="0" step="1000" placeholder="Optional">
+          </div>
+        </div>
+        <div class="field">
+          <label>Client / Agency</label>
+          <input type="text" id="set-client-name" value="{{ budget.client_name or '' }}" placeholder="e.g. Nike, BBDO New York">
+        </div>
+        <div class="field-row-2">
+          <div class="field">
+            <label>Prepared by (Name)</label>
+            <input type="text" id="set-prepared-by" value="{{ budget.prepared_by or '' }}" placeholder="Line Producer name">
+          </div>
+          <div class="field">
+            <label>Title</label>
+            <input type="text" id="set-prepared-by-title" value="{{ budget.prepared_by_title or '' }}" placeholder="Line Producer">
+          </div>
+        </div>
+        <div class="field-row-2">
+          <div class="field">
+            <label>Email</label>
+            <input type="email" id="set-prepared-by-email" value="{{ budget.prepared_by_email or '' }}">
+          </div>
+          <div class="field">
+            <label>Phone</label>
+            <input type="text" id="set-prepared-by-phone" value="{{ budget.prepared_by_phone or '' }}">
+          </div>
+        </div>
+        <div class="field">
+          <label>Notes</label>
+          <textarea id="set-notes" rows="3" placeholder="Project notes, scope, client info…">{{ budget.notes or '' }}</textarea>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Display</h3>
+        <div class="field">
+          <label>Timezone</label>
+          <select id="set-timezone">
+            <optgroup label="United States">
+              <option value="America/New_York"     {{ 'selected' if budget.timezone == 'America/New_York'     }}>Eastern — New York</option>
+              <option value="America/Chicago"      {{ 'selected' if budget.timezone == 'America/Chicago'      }}>Central — Chicago</option>
+              <option value="America/Denver"       {{ 'selected' if budget.timezone == 'America/Denver'       }}>Mountain — Denver</option>
+              <option value="America/Phoenix"      {{ 'selected' if budget.timezone == 'America/Phoenix'      }}>Mountain (no DST) — Phoenix</option>
+              <option value="America/Los_Angeles"  {{ 'selected' if budget.timezone == 'America/Los_Angeles' or not budget.timezone }}>Pacific — Los Angeles</option>
+              <option value="America/Anchorage"    {{ 'selected' if budget.timezone == 'America/Anchorage'    }}>Alaska — Anchorage</option>
+              <option value="Pacific/Honolulu"     {{ 'selected' if budget.timezone == 'Pacific/Honolulu'     }}>Hawaii — Honolulu</option>
+            </optgroup>
+            <optgroup label="Canada">
+              <option value="America/Toronto"      {{ 'selected' if budget.timezone == 'America/Toronto'      }}>Eastern — Toronto</option>
+              <option value="America/Vancouver"    {{ 'selected' if budget.timezone == 'America/Vancouver'    }}>Pacific — Vancouver</option>
+            </optgroup>
+            <optgroup label="Europe">
+              <option value="Europe/London"        {{ 'selected' if budget.timezone == 'Europe/London'        }}>London</option>
+              <option value="Europe/Paris"         {{ 'selected' if budget.timezone == 'Europe/Paris'         }}>Paris / Berlin / Rome</option>
+            </optgroup>
+            <optgroup label="Other">
+              <option value="Australia/Sydney"     {{ 'selected' if budget.timezone == 'Australia/Sydney'     }}>Sydney</option>
+              <option value="Asia/Tokyo"           {{ 'selected' if budget.timezone == 'Asia/Tokyo'           }}>Tokyo</option>
+              <option value="UTC"                  {{ 'selected' if budget.timezone == 'UTC'                  }}>UTC</option>
+            </optgroup>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Payroll and fees <span class="muted" style="font-weight:400;font-size:.8rem">— also editable on their lines in 6000 and 6500</span></h3>
+        <div class="field">
+          <label>Payroll Profile</label>
+          <select id="set-payroll-profile">
+            <option value="">— None (flat rate) —</option>
+            {% for pp in payroll_profiles %}
+            <option value="{{ pp.id }}" {{ 'selected' if budget.payroll_profile_id == pp.id else '' }}
+                    title="{{ pp.description or '' }}">{{ pp.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label>Payroll Week Start</label>
+          <select id="set-payroll-week-start">
+            {% set cur_ws = budget.payroll_week_start %}
+            {% for val, lbl in [(0,'Monday'),(1,'Tuesday'),(2,'Wednesday'),(3,'Thursday'),(4,'Friday'),(5,'Saturday'),(6,'Sunday')] %}
+            <option value="{{ val }}" {{ 'selected' if cur_ws == val else '' }}>{{ lbl }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label>Workers' Comp <span class="muted" style="font-weight:400;font-size:.8rem">(% of labor wages → Insurance)</span></label>
+          <div style="display:flex;align-items:center;gap:.5rem">
+            <input type="number" id="set-workers-comp" value="{{ (((budget.workers_comp_pct if budget.workers_comp_pct is not none else 0.03) | float) * 100) | round(2) }}" min="0" max="100" step="0.1" style="width:90px">
+            <span class="muted">%</span>
+            <span class="muted" id="workers-comp-display" style="font-size:.85rem">= {{ top_sheet.workers_comp_amount | currency }}</span>
+          </div>
+        </div>
+        <div class="field">
+          <label>Payroll Service Fee <span class="muted" style="font-weight:400;font-size:.8rem">(% of labor wages → Administrative)</span></label>
+          <div style="display:flex;align-items:center;gap:.5rem">
+            <input type="number" id="set-payroll-fee" value="{{ (((budget.payroll_fee_pct if budget.payroll_fee_pct is not none else 0.0175) | float) * 100) | round(2) }}" min="0" max="100" step="0.1" style="width:90px">
+            <span class="muted">%</span>
+            <span class="muted" id="payroll-fee-display" style="font-size:.85rem">= {{ top_sheet.payroll_fee_amount | currency }}</span>
+          </div>
+        </div>
+        {# Production Insurance — same auto-calc shape as Workers' Comp +
+           Payroll Service Fee, but with a mode picker so the user can
+           pick % of labor / flat $ / off. Off = excluded entirely. #}
+        <div class="field">
+          <label>Production Liability Insurance <span class="muted" style="font-weight:400;font-size:.8rem">(auto-calculated → Insurance)</span></label>
+          <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+            <select id="set-pi-mode" style="width:120px"
+                    onchange="
+                      document.getElementById('pi-pct-wrap').style.display  = (this.value === 'pct')  ? 'flex' : 'none';
+                      document.getElementById('pi-flat-wrap').style.display = (this.value === 'flat') ? 'flex' : 'none';
+                    ">
+              <option value="off"  {% if top_sheet.production_insurance_mode == 'off'  %}selected{% endif %}>Off</option>
+              <option value="pct"  {% if top_sheet.production_insurance_mode == 'pct'  %}selected{% endif %}>% of labor</option>
+              <option value="flat" {% if top_sheet.production_insurance_mode == 'flat' %}selected{% endif %}>Flat amount</option>
+            </select>
+            <span id="pi-pct-wrap" style="display:{% if top_sheet.production_insurance_mode == 'pct' %}flex{% else %}none{% endif %};align-items:center;gap:.4rem">
+              <input type="number" id="set-pi-pct"
+                     value="{{ ((top_sheet.production_insurance_pct or 0) | float * 100) | round(2) }}"
+                     min="0" max="100" step="0.1" style="width:90px">
+              <span class="muted">%</span>
+            </span>
+            <span id="pi-flat-wrap" style="display:{% if top_sheet.production_insurance_mode == 'flat' %}flex{% else %}none{% endif %};align-items:center;gap:.4rem">
+              <span class="muted">$</span>
+              <input type="number" id="set-pi-flat"
+                     value="{{ (top_sheet.production_insurance_flat or 0) | float | round(2) }}"
+                     min="0" step="100" style="width:120px">
+            </span>
+            <span class="muted" style="font-size:.85rem">= {{ top_sheet.production_insurance_amount | currency }}</span>
           </div>
         </div>
         <div class="field">
@@ -4395,110 +4507,6 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
             {% endif %}
             {% if excluded_codes %}· <span style="color:#f59e0b">{{ excluded_codes|length }} section{{ 's' if excluded_codes|length != 1 else '' }} exempt</span>{% endif %}
           </div>
-        </div>
-        <div class="field">
-          <label>Workers' Comp <span class="muted" style="font-weight:400;font-size:.8rem">(% of labor wages → Insurance)</span></label>
-          <div style="display:flex;align-items:center;gap:.5rem">
-            <input type="number" id="set-workers-comp" value="{{ (((budget.workers_comp_pct if budget.workers_comp_pct is not none else 0.03) | float) * 100) | round(2) }}" min="0" max="100" step="0.1" style="width:90px">
-            <span class="muted">%</span>
-            <span class="muted" id="workers-comp-display" style="font-size:.85rem">= {{ top_sheet.workers_comp_amount | currency }}</span>
-          </div>
-        </div>
-        <div class="field">
-          <label>Payroll Service Fee <span class="muted" style="font-weight:400;font-size:.8rem">(% of labor wages → Administrative)</span></label>
-          <div style="display:flex;align-items:center;gap:.5rem">
-            <input type="number" id="set-payroll-fee" value="{{ (((budget.payroll_fee_pct if budget.payroll_fee_pct is not none else 0.0175) | float) * 100) | round(2) }}" min="0" max="100" step="0.1" style="width:90px">
-            <span class="muted">%</span>
-            <span class="muted" id="payroll-fee-display" style="font-size:.85rem">= {{ top_sheet.payroll_fee_amount | currency }}</span>
-          </div>
-        </div>
-        {# Production Insurance — same auto-calc shape as Workers' Comp +
-           Payroll Service Fee, but with a mode picker so the user can
-           pick % of labor / flat $ / off. Off = excluded entirely. #}
-        <div class="field">
-          <label>Production Liability Insurance <span class="muted" style="font-weight:400;font-size:.8rem">(auto-calculated → Insurance)</span></label>
-          <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
-            <select id="set-pi-mode" style="width:120px"
-                    onchange="
-                      document.getElementById('pi-pct-wrap').style.display  = (this.value === 'pct')  ? 'flex' : 'none';
-                      document.getElementById('pi-flat-wrap').style.display = (this.value === 'flat') ? 'flex' : 'none';
-                    ">
-              <option value="off"  {% if top_sheet.production_insurance_mode == 'off'  %}selected{% endif %}>Off</option>
-              <option value="pct"  {% if top_sheet.production_insurance_mode == 'pct'  %}selected{% endif %}>% of labor</option>
-              <option value="flat" {% if top_sheet.production_insurance_mode == 'flat' %}selected{% endif %}>Flat amount</option>
-            </select>
-            <span id="pi-pct-wrap" style="display:{% if top_sheet.production_insurance_mode == 'pct' %}flex{% else %}none{% endif %};align-items:center;gap:.4rem">
-              <input type="number" id="set-pi-pct"
-                     value="{{ ((top_sheet.production_insurance_pct or 0) | float * 100) | round(2) }}"
-                     min="0" max="100" step="0.1" style="width:90px">
-              <span class="muted">%</span>
-            </span>
-            <span id="pi-flat-wrap" style="display:{% if top_sheet.production_insurance_mode == 'flat' %}flex{% else %}none{% endif %};align-items:center;gap:.4rem">
-              <span class="muted">$</span>
-              <input type="number" id="set-pi-flat"
-                     value="{{ (top_sheet.production_insurance_flat or 0) | float | round(2) }}"
-                     min="0" step="100" style="width:120px">
-            </span>
-            <span class="muted" style="font-size:.85rem">= {{ top_sheet.production_insurance_amount | currency }}</span>
-          </div>
-        </div>
-        <div class="field">
-          <label>Notes</label>
-          <textarea id="set-notes" rows="3" placeholder="Project notes, scope, client info…">{{ budget.notes or '' }}</textarea>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h3>Display</h3>
-        <div class="field">
-          <label>Timezone</label>
-          <select id="set-timezone">
-            <optgroup label="United States">
-              <option value="America/New_York"     {{ 'selected' if budget.timezone == 'America/New_York'     }}>Eastern — New York</option>
-              <option value="America/Chicago"      {{ 'selected' if budget.timezone == 'America/Chicago'      }}>Central — Chicago</option>
-              <option value="America/Denver"       {{ 'selected' if budget.timezone == 'America/Denver'       }}>Mountain — Denver</option>
-              <option value="America/Phoenix"      {{ 'selected' if budget.timezone == 'America/Phoenix'      }}>Mountain (no DST) — Phoenix</option>
-              <option value="America/Los_Angeles"  {{ 'selected' if budget.timezone == 'America/Los_Angeles' or not budget.timezone }}>Pacific — Los Angeles</option>
-              <option value="America/Anchorage"    {{ 'selected' if budget.timezone == 'America/Anchorage'    }}>Alaska — Anchorage</option>
-              <option value="Pacific/Honolulu"     {{ 'selected' if budget.timezone == 'Pacific/Honolulu'     }}>Hawaii — Honolulu</option>
-            </optgroup>
-            <optgroup label="Canada">
-              <option value="America/Toronto"      {{ 'selected' if budget.timezone == 'America/Toronto'      }}>Eastern — Toronto</option>
-              <option value="America/Vancouver"    {{ 'selected' if budget.timezone == 'America/Vancouver'    }}>Pacific — Vancouver</option>
-            </optgroup>
-            <optgroup label="Europe">
-              <option value="Europe/London"        {{ 'selected' if budget.timezone == 'Europe/London'        }}>London</option>
-              <option value="Europe/Paris"         {{ 'selected' if budget.timezone == 'Europe/Paris'         }}>Paris / Berlin / Rome</option>
-            </optgroup>
-            <optgroup label="Other">
-              <option value="Australia/Sydney"     {{ 'selected' if budget.timezone == 'Australia/Sydney'     }}>Sydney</option>
-              <option value="Asia/Tokyo"           {{ 'selected' if budget.timezone == 'Asia/Tokyo'           }}>Tokyo</option>
-              <option value="UTC"                  {{ 'selected' if budget.timezone == 'UTC'                  }}>UTC</option>
-            </optgroup>
-          </select>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h3>Payroll</h3>
-        <div class="field">
-          <label>Payroll Profile</label>
-          <select id="set-payroll-profile">
-            <option value="">— None (flat rate) —</option>
-            {% for pp in payroll_profiles %}
-            <option value="{{ pp.id }}" {{ 'selected' if budget.payroll_profile_id == pp.id else '' }}
-                    title="{{ pp.description or '' }}">{{ pp.name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="field">
-          <label>Payroll Week Start</label>
-          <select id="set-payroll-week-start">
-            {% set cur_ws = budget.payroll_week_start %}
-            {% for val, lbl in [(0,'Monday'),(1,'Tuesday'),(2,'Wednesday'),(3,'Thursday'),(4,'Friday'),(5,'Saturday'),(6,'Sunday')] %}
-            <option value="{{ val }}" {{ 'selected' if cur_ws == val else '' }}>{{ lbl }}</option>
-            {% endfor %}
-          </select>
         </div>
       </div>
 
@@ -4570,72 +4578,23 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
         </div>
       </div>
 
-      <div class="settings-section">
-        <h3>Production Details <span class="muted" style="font-weight:400;font-size:.8rem">— appears on PDF exports</span></h3>
-        <div class="field">
-          <label>Client / Agency</label>
-          <input type="text" id="set-client-name" value="{{ budget.client_name or '' }}" placeholder="e.g. Nike, BBDO New York">
-        </div>
-        <div class="field-row-2">
-          <div class="field">
-            <label>Prepared by (Name)</label>
-            <input type="text" id="set-prepared-by" value="{{ budget.prepared_by or '' }}" placeholder="Line Producer name">
+      <div class="settings-section settings-section-wide" id="settings-maintenance">
+        <h3>Maintenance <span class="muted" style="font-weight:400;font-size:.8rem">— this project only</span></h3>
+        <div class="maint-grid">
+          <div class="maint-row">
+            <div class="maint-text">
+              <span class="maint-title">Clean up vendor names</span>
+              <span class="maint-sub">Normalizes vendors on this project's receipts and charges. Low-confidence fixes go to the review queue on the Overview.</span>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline" onclick="dashCleanup(this)">Run clean up</button>
           </div>
-          <div class="field">
-            <label>Title</label>
-            <input type="text" id="set-prepared-by-title" value="{{ budget.prepared_by_title or '' }}" placeholder="Line Producer">
+          <div class="maint-row">
+            <div class="maint-text">
+              <span class="maint-title">Scan for issues</span>
+              <span class="maint-sub">Finds spend coded twice, POs billed over their cap and lines over plan on the live Working. Results land in the review queue on the Overview.</span>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline" onclick="dashScanDupes(this)">Scan now</button>
           </div>
-        </div>
-        <div class="field-row-2">
-          <div class="field">
-            <label>Email</label>
-            <input type="email" id="set-prepared-by-email" value="{{ budget.prepared_by_email or '' }}">
-          </div>
-          <div class="field">
-            <label>Phone</label>
-            <input type="text" id="set-prepared-by-phone" value="{{ budget.prepared_by_phone or '' }}">
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-section" id="company-settings-section">
-        <h3>Production Company Profile <span class="muted" style="font-weight:400;font-size:.8rem">— appears on all PDF exports</span></h3>
-        <div class="field">
-          <label>Company Name</label>
-          <input type="text" id="cs-company-name" placeholder="Framework Productions">
-        </div>
-        <div class="field">
-          <label>Address</label>
-          <input type="text" id="cs-address-line1" placeholder="Street address">
-          <input type="text" id="cs-address-line2" placeholder="Suite / Floor (optional)" style="margin-top:.35rem">
-        </div>
-        <div class="field-row-3">
-          <div class="field">
-            <label>City</label>
-            <input type="text" id="cs-city">
-          </div>
-          <div class="field">
-            <label>State</label>
-            <input type="text" id="cs-state" style="max-width:80px">
-          </div>
-          <div class="field">
-            <label>ZIP</label>
-            <input type="text" id="cs-zip" style="max-width:90px">
-          </div>
-        </div>
-        <div class="field-row-2">
-          <div class="field">
-            <label>Phone</label>
-            <input type="text" id="cs-phone">
-          </div>
-          <div class="field">
-            <label>Email</label>
-            <input type="email" id="cs-email">
-          </div>
-        </div>
-        <div class="field">
-          <label>Website</label>
-          <input type="text" id="cs-website" placeholder="https://...">
         </div>
       </div>
 
@@ -4676,7 +4635,7 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
            cluttered this picker). Un-archive one to copy from it. #}
         {% for vb in all_budgets if not vb.is_actual and vb.version_status != 'archived' %}
         <option value="{{ vb.id }}" {% if vb.id == cur_est.id %}selected{% endif %}>
-          v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode in ('working', 'actual') else 'Estimated' }}){% if vb.version_status != 'current' %} · previous{% endif %}{% if vb.internal_label %} · “{{ vb.internal_label }}”{% endif %}
+          v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode == 'working' else 'Estimated' }}){% if vb.version_status != 'current' %} · previous{% endif %}{% if vb.internal_label %} · “{{ vb.internal_label }}”{% endif %}
         </option>
         {% endfor %}
       </select>
@@ -5014,7 +4973,7 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
        server-side, and Actual = sum-of-transactions which already lives
        in Grand Total). Hide them in Actual view so only the meaningful
        Grand Total (Actual) is shown. 2026-05-11. #}
-    {% if not is_actual_view %}
+    
     <div class="float-bar-item">
       <span class="float-bar-label">Subtotal</span>
       <span class="float-bar-value" id="float-subtotal">{{ top_sheet.subtotal_estimated | currency }}</span>
@@ -5023,10 +4982,10 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
       <span class="float-bar-label">Prod. Fee ({{ (top_sheet.company_fee_pct * 100) | round(1) }}%{% if top_sheet.company_fee_dispersed %} · Dispersed{% else %} · Line Item{% endif %})</span>
       <span class="float-bar-value" id="float-fee">{{ top_sheet.company_fee | currency }}</span>
     </div>
-    {% endif %}
+    
     <div class="float-bar-item float-bar-grand">
-      <span class="float-bar-label">{% if is_actual_view %}Actual Spend{% else %}Grand Total{% endif %}</span>
-      <span class="float-bar-value" id="float-grand">{{ (top_sheet.grand_total_actual if is_actual_view else top_sheet.grand_total_estimated) | currency }}</span>
+      <span class="float-bar-label">Grand Total</span>
+      <span class="float-bar-value" id="float-grand">{{ top_sheet.grand_total_estimated | currency }}</span>
     </div>
     {# Running Actual + Variance, revealed on demand (user 2026-07-08: "now
        that we've gotten rid of our actual tab... reveal the actual on the
@@ -5034,7 +4993,7 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
        selectively, like a little eye button"). Hidden by default; the 👁
        toggle persists per-browser in localStorage. Suppressed on frozen
        (superseded) versions — the live rollup isn't that version's history. #}
-    {% if not is_actual_view and not actuals_frozen %}
+    {% if not actuals_frozen %}
     <div class="float-bar-item fb-actual-item fb-hidden">
       <span class="float-bar-label" style="color:#c084fc">Actual Spend</span>
       <span class="float-bar-value" id="float-actual" style="color:#c084fc">{{ top_sheet.grand_total_actual | currency }}</span>
@@ -5051,7 +5010,7 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
   </div>
 </div>
 <style>.fb-hidden { display:none !important; }</style>
-{% if not is_actual_view and not actuals_frozen %}
+{% if not actuals_frozen %}
 <script>
 (function floatBarActualEye() {
   var KEY = 'fpbudget.floatbar.showActual';
@@ -5185,7 +5144,7 @@ var BID = {{ budget.id }};
 var SAVE_URL = `/projects/${PID}/budget/${BID}/line`;
 var _workingInitialized = {{ 'true' if working_exists else 'false' }};
 var _IS_WORKING_MODE = {{ 'true' if is_working_view else 'false' }};
-var _IS_ACTUAL_VIEW = {{ 'true' if is_actual_view else 'false' }};
+var _IS_ACTUAL_VIEW = false;
 
 // Tag <body> with the active view so CSS can color borders / mode-
 // indicator strips per view (estimated=blue, working=orange,
@@ -6686,6 +6645,61 @@ setTimeout(function() {
   _showFloatBar(activeBtn && _FLOAT_BAR_TABS.has(activeBtn.dataset.tab));
   applyFeeDisplay();
 }, 0);
+
+// ── Internal-note hover card (Cleanup C) — placed under its lock-dot with
+// fixed coordinates so the section's horizontal scroll never clips it.
+document.addEventListener('mouseover', e => {
+  const wrap = e.target.closest && e.target.closest('.line-note-wrap');
+  if (!wrap) return;
+  const card = wrap.querySelector('.line-note-card');
+  const dot = wrap.querySelector('.line-note-dot');
+  if (!card || !dot) return;
+  const r = dot.getBoundingClientRect();
+  card.style.top = (r.bottom + 6) + 'px';
+  card.style.left = Math.max(8, Math.min(r.left - 6, window.innerWidth - 336)) + 'px';
+});
+document.addEventListener('focusin', e => {
+  const dot = e.target.closest && e.target.closest('.line-note-dot');
+  if (!dot) return;
+  const card = dot.parentElement.querySelector('.line-note-card');
+  if (!card) return;
+  const r = dot.getBoundingClientRect();
+  card.style.top = (r.bottom + 6) + 'px';
+  card.style.left = Math.max(8, Math.min(r.left - 6, window.innerWidth - 336)) + 'px';
+});
+
+// ── "More ▾" tab menu (Cleanup C, 2026-11-02) ───────────────────────────────
+// The menu's items are ordinary .tab-btn[data-tab] buttons (so the handlers
+// above, the Travel / Catering / Activity loaders and ?tab= deep links keep
+// working); this only opens / closes the menu and lights the More button
+// when one of its tabs is the active one.
+(function () {
+  const btn  = document.getElementById('tab-more-btn');
+  const menu = document.getElementById('tab-more-menu');
+  if (!btn || !menu) return;
+  const label = btn.querySelector('.tab-more-label');
+  function sync() {
+    const active = menu.querySelector('.tab-btn.active[data-tab]');
+    btn.classList.toggle('active', !!active);
+    if (label) label.textContent = active ? ('More · ' + active.textContent.replace(/\d+$/, '').trim()) : 'More';
+  }
+  function close() { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
+  function open()  { menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); menu.querySelector('[role="menuitem"]')?.focus(); }
+  btn.addEventListener('click', e => { e.stopPropagation(); menu.hidden ? open() : close(); });
+  document.addEventListener('click', e => { if (!e.target.closest('.tab-more-wrap')) close(); });
+  document.addEventListener('keydown', e => {
+    if (menu.hidden) return;
+    if (e.key === 'Escape') { close(); btn.focus(); return; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+      const i = items.indexOf(document.activeElement);
+      e.preventDefault();
+      (e.key === 'ArrowDown' ? items[(i + 1) % items.length] : items[(i - 1 + items.length) % items.length]).focus();
+    }
+  });
+  document.querySelectorAll('.tab-btn[data-tab]').forEach(b => b.addEventListener('click', () => { close(); sync(); }));
+  setTimeout(sync, 0);
+})();
 
 // ── Mode switcher: preserve active tab when switching Estimated ↔ Working ──
 document.querySelectorAll('.mode-seg-btn[href]').forEach(a => {
@@ -8216,8 +8230,12 @@ async function _qtyReduceConfirm() {
 document.addEventListener('click', async e => {
   const btn = e.target.closest('.del-line-btn');
   if (!btn) return;
-  if (!confirm('Delete this line?')) return;
-  const id = parseInt(btn.dataset.id);
+  deleteLineWithConfirm(parseInt(btn.dataset.id));
+});
+// Called from the row's ⋯ menu (Cleanup C) and any legacy .del-line-btn.
+window.deleteLineWithConfirm = async function(id, label) {
+  if (!id) return;
+  if (!confirm(label ? `Delete "${label}"?` : 'Delete this line?')) return;
   const res = await fetch(`/projects/${PID}/budget/${BID}/line/${id}`, {method:'DELETE'});
   if (res.ok) {
     _afterLineDelete(id);
@@ -8254,7 +8272,7 @@ document.addEventListener('click', async e => {
   }
   // Generic error path.
   alert(data.error || `Delete failed (HTTP ${res.status}).`);
-});
+};
 
 function _afterLineDelete(id) {
   const row = document.querySelector(`.line-row[data-id="${id}"]`);
@@ -8786,7 +8804,7 @@ document.addEventListener('click', e => {
   const pop = document.getElementById('comments-popup');
   if (pop && !pop.classList.contains('hidden')
       && !e.target.closest('#comments-popup')
-      && !e.target.closest('.line-comments-btn')) closeComments();
+      && !e.target.closest('.line-comments-btn, .notes-btn, .line-note-dot, #line-row-menu')) closeComments();
 });
 
 // ── Pull-in from another version (2026-07-22) ────────────────────────────
@@ -9003,8 +9021,6 @@ async function _saveSettingsInner() {
     fee_exclude_fringes: document.getElementById('set-fee-exclude-fringes')?.checked ?? true,
   };
 
-  await saveCompanySettings();
-
   const res = await fetch(SETTINGS_URL, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -9052,31 +9068,36 @@ async function _saveSettingsInner() {
 
 
 
-// ── Variance basis toggle ─────────────────────────────────────────────────
+// ── Variance basis (ONE control, ONE key set — Cleanup C 2026-11-02) ──────
+// Keys: vs_estimated · vs_working · est_to_working. Convention on every
+// basis: positive = under (money left), negative = over. Stored per
+// project in localStorage so the Top Sheet, the Budget tab and the Export
+// dialog all read the same choice; the old e_vs_w / w_vs_a / e_vs_a values
+// are migrated on read.
 // Two cell flavors share this logic:
 //   .var-cell        — Top Sheet (renders <span class="over|under">…</span>)
 //   .line-var-cell   — Budget tab line/section/grand totals (renders
-//                      <span class="var-pos|var-neg|var-zero">…</span>
-//                      to match the existing budget styling)
+//                      <span class="var-pos|var-neg|var-zero">…</span>)
 // Both expose data-e / data-w / data-a so any basis can be computed.
 (function() {
+  const VAR_BASES = ['vs_estimated', 'vs_working', 'est_to_working'];
+  const VAR_ALIASES = { e_vs_w: 'est_to_working', w_vs_a: 'vs_working', e_vs_a: 'vs_estimated',
+                        est_v_work: 'est_to_working', work_v_act: 'vs_working', est_v_act: 'vs_estimated' };
+  const VAR_LABELS = { vs_estimated: 'Var vs Estimated', vs_working: 'Var vs Working', est_to_working: 'Est → Working' };
+  const VAR_SHORT  = { vs_estimated: 'vs Estimated', vs_working: 'vs Working', est_to_working: 'Estimated → Working' };
+  window.FP_VARIANCE = { bases: VAR_BASES, aliases: VAR_ALIASES, labels: VAR_LABELS };
   const fmt = v => {
     const n = parseFloat(v||0);
     const sign = n < 0 ? '-' : '';
     return sign + '$' + Math.abs(n).toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2});
   };
   function compute(basis, e, w, a) {
-    // Convention: "X V Y" computes (X - Y). Positive = Y under X (remaining
-    // budget). Negative = Y over X (in the red). Renamed 2026-05-10 to
-    // make the labels read in the same order as the math — was previously
-    // labeled "W vs E" but computed E - W, which made every variance read
-    // backwards.
-    if (basis === 'e_vs_w') return e - w;        // + = Working under Estimated
-    if (basis === 'w_vs_a') return w - a;        // + = Actual under Working
-    return e - a;                                 // + = Actual under Estimated (e_vs_a)
+    if (basis === 'est_to_working') return e - w;   // + = Working under Estimated
+    if (basis === 'vs_working')     return w - a;   // + = Actual under Working
+    return e - a;                                   // + = Actual under Estimated (vs_estimated)
   }
+  window.computeVariance = compute;
   function applyVariance(basis) {
-    // Top Sheet cells
     document.querySelectorAll('.var-cell').forEach(cell => {
       const e = parseFloat(cell.dataset.e || 0);
       const w = parseFloat(cell.dataset.w || 0);
@@ -9085,11 +9106,8 @@ async function _saveSettingsInner() {
       const cls = v < 0 ? 'over' : (v > 0 ? 'under' : '');
       cell.innerHTML = `<span class="${cls}">${fmt(v)}</span>`;
     });
-    // Budget tab line + section + grand cells.
-    // GUARD (owner 2026-09-01, "odd spacing in the actual total column"):
-    // when the Variance column is collapsed (0-width, blank header) these
-    // cells must stay EMPTY — filled text in a 0-width cell overflows on
-    // top of the neighboring Actual/actions cells.
+    // GUARD (owner 2026-09-01): when the Variance column is collapsed
+    // (0-width, blank header) these cells must stay EMPTY.
     const _thVar = document.querySelector('th.col-variance');
     const _varVisible = !!(_thVar && _thVar.textContent.trim());
     document.querySelectorAll('.line-var-cell').forEach(cell => {
@@ -9104,20 +9122,20 @@ async function _saveSettingsInner() {
       else cls = 'var-neg';
       cell.innerHTML = `<span class="${cls}">${fmt(v)}</span>`;
     });
+    // Column headers say which basis is on ("Var vs Working" / "Var vs
+    // Estimated" / "Est → Working") — Budget grid and Top Sheet alike.
+    document.querySelectorAll('.var-col-label').forEach(el => { el.textContent = VAR_LABELS[basis] || basis; });
+    document.querySelectorAll('.var-basis-label').forEach(el => { el.textContent = VAR_SHORT[basis] || basis; });
+    const exportSel = document.getElementById('export-var-basis');
+    if (exportSel) exportSel.value = basis;
   }
 
-  // Map each basis to which budget column is the FIRST (positive cue,
-  // blue) and which is the SECOND (negative cue, red) being compared.
-  // The "third" column gets no highlight. Per user request 2026-05-08
-  // — "blue box around the first budget, red around the second so I
-  // can see at a glance which two are being compared".
-  // First column shown in blue (the "minuend" / starting tier), second in
-  // red (the "subtrahend" / what's being checked against it). Matches the
-  // X V Y reading order. 2026-05-10.
+  // Blue box around the first budget being compared, red around the
+  // second (user request 2026-05-08).
   const BASIS_COLOR_MAP = {
-    'e_vs_w': { first: 'estimated', second: 'working'   },
-    'w_vs_a': { first: 'working',   second: 'actual'    },
-    'e_vs_a': { first: 'estimated', second: 'actual'    },
+    'est_to_working': { first: 'estimated', second: 'working' },
+    'vs_working':     { first: 'working',   second: 'actual'  },
+    'vs_estimated':   { first: 'estimated', second: 'actual'  },
   };
   function applyBasisHighlight(basis) {
     const map = BASIS_COLOR_MAP[basis] || {};
@@ -9128,42 +9146,36 @@ async function _saveSettingsInner() {
     });
   }
 
-  // Sync state between Top Sheet selector and Budget-tab selector so
-  // switching basis on one updates the other (single source of truth
-  // for the user's intent). Also persists to localStorage so the
-  // user's basis choice carries across budget-mode navigation
-  // (Estimated → Working → Actual). 2026-05-10 user-requested.
-  const _BASIS_KEY = 'fpbudget.varianceBasis';
-  const _VALID_BASES = new Set(['e_vs_w', 'w_vs_a', 'e_vs_a']);
+  const _BASIS_KEY = 'fpbudget.varianceBasis.' + PID;
+  const _LEGACY_KEY = 'fpbudget.varianceBasis';
+  function normalize(b) { return VAR_ALIASES[b] || b; }
   function setActiveBasis(basis) {
+    basis = normalize(basis);
+    if (!VAR_BASES.includes(basis)) basis = _workingInitialized ? 'vs_working' : 'vs_estimated';
     document.querySelectorAll('.var-btn').forEach(b => {
-      b.classList.toggle('active', b.dataset.basis === basis);
+      const on = b.dataset.basis === basis;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
     applyVariance(basis);
     applyBasisHighlight(basis);
     try { localStorage.setItem(_BASIS_KEY, basis); } catch (e) {}
   }
+  window.setVarianceBasis = setActiveBasis;
 
-  // Read previous basis from localStorage; fall back to the per-mode
-  // default if absent or unrecognized (e.g. migrated from old keys).
   let _stored = null;
-  try { _stored = localStorage.getItem(_BASIS_KEY); } catch (e) {}
-  const defaultBasis = (_stored && _VALID_BASES.has(_stored))
+  try { _stored = localStorage.getItem(_BASIS_KEY) || localStorage.getItem(_LEGACY_KEY); } catch (e) {}
+  _stored = normalize(_stored);
+  const defaultBasis = (_stored && VAR_BASES.includes(_stored))
     ? _stored
-    : (_workingInitialized ? 'e_vs_w' : 'e_vs_a');
+    : (_workingInitialized ? 'vs_working' : 'vs_estimated');
   setActiveBasis(defaultBasis);
 
   document.querySelectorAll('.var-btn').forEach(btn => {
-    btn.addEventListener('click', function() {
-      setActiveBasis(this.dataset.basis);
-    });
+    btn.addEventListener('click', function() { setActiveBasis(this.dataset.basis); });
   });
 
-  // Expose a re-apply hook so save handlers can refresh variance cells
-  // after editing data-e/-w/-a on the cells. Without this, edits to a
-  // budget line update the line's own total cell but the variance cell
-  // keeps reading the original page-load values (user-reported 2026-05-10
-  // — "edited Estimated, no variance shown despite a real difference").
+  // Re-apply hook for save handlers that edit data-e/-w/-a on the cells.
   window._reapplyVarianceBasis = function() {
     const active = document.querySelector('.var-btn.active');
     setActiveBasis((active && active.dataset.basis) || defaultBasis);
@@ -9258,25 +9270,44 @@ async function _saveSettingsInner() {
   <button type="button" class="ctx-menu-item" id="ctx-toggle-sync-omit"></button>
 </div>
 
-<!-- ── Line Row Context Dropdown (insert above/below, duplicate, move) ─────── -->
-<div id="line-row-menu" class="line-row-menu hidden">
-  <button type="button" onclick="lineInsert('above')">Insert Row Above</button>
-  <button type="button" onclick="lineInsert('below')">Insert Row Below</button>
-  <button type="button" onclick="lineDuplicate()">Duplicate Row</button>
-  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
-  <button type="button" onclick="lineInsert('above', 'spacer')">Insert Spacer Above</button>
-  <button type="button" onclick="lineInsert('below', 'spacer')">Insert Spacer Below</button>
-  <button type="button" onclick="lineInsert('above', 'header')">Insert Sub-header Above</button>
-  <button type="button" onclick="lineInsert('below', 'header')">Insert Sub-header Below</button>
-  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
-  <button type="button" onclick="openLineMoveModal()">Move to…</button>
-  <button type="button" id="line-menu-change-group-btn" onclick="openChangeGroupModal()" style="display:none">Change Group…</button>
-  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
-  <button type="button" onclick="reconcileMenuLine()">⚖ Reconcile actuals…</button>
-  {% if not is_actual_view and not actuals_frozen %}
-  <button type="button" onclick="lineLedgerMenuLine()">📒 Line ledger…</button>
-  {% endif %}
-  <button type="button" onclick="discussionNoteMenuLine()">🚩 Discussion note…</button>
+<!-- ── Row "+" menu: add below this line (LineActions artboard) ─────────── -->
+<div id="line-add-menu" class="line-row-menu hidden" role="menu" aria-label="Add">
+  <button type="button" role="menuitem" onclick="lineInsert('below')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h9M19 15v6M16 18h6"></path></svg>Line below</button>
+  <button type="button" role="menuitem" onclick="lineInsert('below', 'header')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"></path></svg>Sub-header</button>
+  <button type="button" role="menuitem" onclick="lineInsert('below', 'spacer')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18M3 19h18M4 12h2M9 12h2M14 12h2M19 12h1"></path></svg>Spacer</button>
+  <button type="button" role="menuitem" class="line-menu-line-only" onclick="lineDuplicate()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>Duplicate line</button>
+</div>
+
+<!-- ── Row "⋯" menu: Flag / Note / Line (LineActions artboard) ─────────── -->
+<div id="line-row-menu" class="line-row-menu line-row-menu-wide hidden" role="menu" aria-label="Line menu">
+  <div class="line-menu-group line-menu-line-only">
+    <div class="line-menu-label">Flag</div>
+    <button type="button" role="menuitem" onclick="discussionNoteMenuLine()">
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9fb8ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+      <span class="line-menu-two"><span>Discussion point</span><span class="line-menu-sub">Shows in Assumptions and the client deck</span></span>
+    </button>
+    <button type="button" role="menuitem" id="line-menu-lever-btn" onclick="leverMenuLine()">
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f3a35a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path></svg>
+      <span class="line-menu-two"><span>Lever</span><span class="line-menu-sub">A cost the client can choose</span></span>
+    </button>
+  </div>
+  <div class="line-menu-group line-menu-line-only">
+    <div class="line-menu-label">Note</div>
+    <button type="button" role="menuitem" onclick="noteMenuLine()">
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+      <span class="line-menu-two"><span>Internal note</span><span class="line-menu-sub">Never leaves FPBudget</span></span>
+    </button>
+  </div>
+  <div class="line-menu-group">
+    <div class="line-menu-label">Line</div>
+    <button type="button" role="menuitem" class="line-menu-line-only" onclick="attachPoMenuLine()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg><span id="line-menu-po-label">Attach PO</span></button>
+    {% if sub_budgets_for_project %}
+    <button type="button" role="menuitem" class="line-menu-line-only" onclick="subBudgetMenuLine()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><path d="M17 14v7M14 17h7"></path></svg>Add to sub-budget…</button>
+    {% endif %}
+    <button type="button" role="menuitem" onclick="openLineMoveModal()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"></path></svg>Move to section…</button>
+    <button type="button" role="menuitem" id="line-menu-change-group-btn" onclick="openChangeGroupModal()" style="display:none">Change group…</button>
+    <button type="button" role="menuitem" class="line-menu-danger" onclick="deleteMenuLine()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"></path></svg>Delete line</button>
+  </div>
 </div>
 
 <!-- ── Change Group Modal (section 2000 role_group picker) ─────────────────── -->
@@ -11207,7 +11238,7 @@ function normalizePhone(v) {
   <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-top:.5rem">Copy from</label>
   <select id="vpull-src" style="width:100%;margin-top:2px" onchange="loadPullCandidates()">
     {% for vb in all_budgets if vb.id != budget.id and not vb.is_actual %}
-    <option value="{{ vb.id }}" {% if vb.budget_mode == 'working' and loop.first %}selected{% endif %}>v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode in ('working','actual') else 'Estimated' }})</option>
+    <option value="{{ vb.id }}" {% if vb.budget_mode == 'working' and loop.first %}selected{% endif %}>v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode == 'working' else 'Estimated' }})</option>
     {% endfor %}
   </select>
   <div id="vpull-list" style="max-height:280px;overflow:auto;margin-top:.5rem;font-size:.78rem"></div>
@@ -11405,7 +11436,7 @@ window.__BJ = window.__BJ || {};
 __BJ["b13__isDispNow"] = {{ 'true' if budget.company_fee_dispersed else 'false' }};
 __BJ["b13__hasActual"] = {{ 'true' if has_actual_budget else 'false' }};
 __BJ["b13__isWorkView"] = {{ 'true' if is_working_view else 'false' }};
-__BJ["b13__isActView"] = {{ 'true' if is_actual_view  else 'false' }};
+__BJ["b13__isActView"] = false;
 </script>
 <script src="{{ url_for('static', filename='budget-js/b13.js') }}?v={{ APP_COMMIT }}"></script>
 

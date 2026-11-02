@@ -618,7 +618,7 @@ def _ledger_resolve_line(pid, lid):
     working_line = None
     for l in sib_rows:
         b = Budget.query.get(l.budget_id)
-        if b and (b.budget_mode or '') in ('working', 'actual'):
+        if b and (b.budget_mode or '') == 'working':
             working_line = l
             break
     return line, sib_ids, working_line
@@ -3569,6 +3569,30 @@ def _ws_line_estimates(budget, lines):
         return {l.id: float(l.estimated_total or 0) for l in lines}
 
 
+def actuals_counts(pid):
+    """The Actuals workspace's "Needs you" numbers for one project, computed
+    by the SAME row-flag logic the workspace itself uses (no second copy of
+    the rules — Cleanup C, 2026-11-02). Skips the matchers and the budget
+    rollup, which the counts do not need. Fail-open: {} on any error.
+
+      unclaimed / unclaimed_amount — charges with no line
+      needs_backup                 — assigned charges with no receipt / reason
+      receipts                     — receipts and invoices with no charge
+      matches_to_review            — charges with a suggested receipt match
+    """
+    try:
+        ws = _build_workspace(pid, run_matchers=False, with_budget=False)
+    except Exception as _e:
+        logging.warning(f"[actuals_counts] failed for project {pid}: {_e}")
+        return {}
+    rows = ws.get("transactions") or []
+    out = dict(ws.get("counts") or {})
+    out["unclaimed_amount"] = round(sum(
+        float(r.get("amount") or 0) for r in rows if 'no_line' in r["flags"]["red"]), 2)
+    out["matches_to_review"] = sum(1 for r in rows if r.get("receipt_suggestion"))
+    return out
+
+
 @app.route("/projects/<int:pid>/actuals/workspace.json", methods=["GET"])
 @login_required
 def actuals_workspace_json(pid):
@@ -3594,20 +3618,29 @@ def actuals_workspace_json(pid):
                           variance and is_drop_target.
     Runs the heuristic + incremental AI matchers first, fail-open, like the
     register does — suggestions are shown, never applied."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    return jsonify(_build_workspace(pid))
+
+
+def _build_workspace(pid, run_matchers=True, with_budget=True):
+    """The workspace payload as a plain dict (see actuals_workspace_json).
+    run_matchers=False skips the heuristic / AI matchers; with_budget=False
+    skips the budget-side rollup — both for actuals_counts, which only needs
+    the rows and their flags."""
     from actuals import (run_auto_match, counts_as_spend, signed_amount_value,
                          split_sums_by_line, group_pool_rows, compute_row_flags)
     from models import ExpenseEvidence
     from budget_calc import FP_COA_NAMES as _WS_COA
-    ProjectSheet.query.get_or_404(pid)
-    _require_project_role(pid, 'viewer')
-    try:
-        run_auto_match(pid)
-    except Exception as _e:
-        logging.warning(f"[workspace.json] auto-match failed (continuing): {_e}")
-    try:
-        _ai_match_batch(pid, limit=8)
-    except Exception as _ae:
-        logging.warning(f"[workspace.json] AI batch failed (continuing): {_ae}")
+    if run_matchers:
+        try:
+            run_auto_match(pid)
+        except Exception as _e:
+            logging.warning(f"[workspace.json] auto-match failed (continuing): {_e}")
+        try:
+            _ai_match_batch(pid, limit=8)
+        except Exception as _ae:
+            logging.warning(f"[workspace.json] AI batch failed (continuing): {_ae}")
 
     budget, lines_by_id = _ws_working_budget_and_lines(pid)
     _proj_names = {}
@@ -3862,7 +3895,7 @@ def actuals_workspace_json(pid):
     # Budget side — sections and lines of the current Working with estimate,
     # actual (counts_as_spend direct sums + splits), variance.
     sections = []
-    if budget:
+    if budget and with_budget:
         _lines = list(lines_by_id.values())
         _ests = _ws_line_estimates(budget, _lines)
         _parents = _split_parent_id_set(pid)
@@ -3945,15 +3978,15 @@ def actuals_workspace_json(pid):
               "not_project": len(not_project),
               "sync": (0 if sync["connected"] else 1),
               "claimed_elsewhere": len(claimed_elsewhere)}
-    return jsonify({"ok": True, "project_id": pid,
-                    "budget_id": (budget.id if budget else None),
-                    "transactions": transactions, "receipts": receipts,
-                    "not_project": not_project,
-                    "claimed_elsewhere": claimed_elsewhere,
-                    "sync": sync, "counts": counts,
-                    "budget": {"sections": sections,
-                               "name": (budget.name if budget else None),
-                               "mode": (getattr(budget, 'budget_mode', None) if budget else None)}})
+    return {"ok": True, "project_id": pid,
+            "budget_id": (budget.id if budget else None),
+            "transactions": transactions, "receipts": receipts,
+            "not_project": not_project,
+            "claimed_elsewhere": claimed_elsewhere,
+            "sync": sync, "counts": counts,
+            "budget": {"sections": sections,
+                       "name": (budget.name if budget else None),
+                       "mode": (getattr(budget, 'budget_mode', None) if budget else None)}}
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/split", methods=["POST", "DELETE"])

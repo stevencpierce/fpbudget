@@ -18,25 +18,86 @@
     _menuCode   = (code !== undefined && code !== null && code !== '') ? parseInt(code) : null;
   };
   const _menu = document.getElementById('line-row-menu');
+  const _addMenu = document.getElementById('line-add-menu');
+  let _menuOpener = null;   // the button that opened the current menu (focus returns here)
 
-  window.openLineRowMenu = function(btn) {
-    _menuLineId = parseInt(btn.dataset.id);
-    _menuCode   = parseInt(btn.dataset.code);
-    _menu.classList.remove('hidden');
-    // Show the "Change Group…" option only for sections that use role_group
-    // sub-headers (currently just 2000 Production Staff). Keeps the menu
-    // compact for sections where sub-grouping isn't in use.
-    const cgBtn = document.getElementById('line-menu-change-group-btn');
-    if (cgBtn) cgBtn.style.display = (_menuCode === 2000) ? '' : 'none';
-    // Position with fixed coords (viewport-relative)
+  // Position a menu under its button, right-aligned to it (the artboard's
+  // "+" / "⋯" menus hang off the row's right end), clamped to the viewport.
+  function _placeMenu(menu, btn) {
     requestAnimationFrame(() => {
       const rect = btn.getBoundingClientRect();
-      const mw = _menu.offsetWidth;
-      const mh = _menu.offsetHeight;
-      _menu.style.top  = Math.min(rect.bottom + 4, window.innerHeight - mh - 8) + 'px';
-      _menu.style.left = Math.max(4, Math.min(rect.left, window.innerWidth - mw - 8)) + 'px';
+      const mw = menu.offsetWidth;
+      const mh = menu.offsetHeight;
+      menu.style.top  = Math.min(rect.bottom + 4, window.innerHeight - mh - 8) + 'px';
+      menu.style.left = Math.max(4, Math.min(rect.right - mw, window.innerWidth - mw - 8)) + 'px';
+      const first = menu.querySelector('[role="menuitem"]:not([style*="display: none"]):not([style*="display:none"])');
+      if (first) first.focus();
     });
+  }
+  function _closeMenus(returnFocus) {
+    const wasOpen = !_menu.classList.contains('hidden') || (_addMenu && !_addMenu.classList.contains('hidden'));
+    _menu.classList.add('hidden');
+    if (_addMenu) _addMenu.classList.add('hidden');
+    document.querySelectorAll('.line-act-btn[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
+    if (returnFocus && wasOpen && _menuOpener) { try { _menuOpener.focus(); } catch (e) {} }
+  }
+  window._closeLineMenus = _closeMenus;
+
+  function _target(btn) {
+    _menuLineId = parseInt(btn.dataset.id);
+    _menuCode   = parseInt(btn.dataset.code);
+    _menuOpener = btn;
+  }
+
+  // The row's "+" menu: Line below / Sub-header / Spacer / Duplicate.
+  window.openLineAddMenu = function(btn) {
+    _closeMenus(false);
+    _target(btn);
+    const kind = btn.dataset.kind || (btn.closest('tr') && btn.closest('tr').dataset.tag) || '';
+    _addMenu.querySelectorAll('.line-menu-line-only').forEach(el => {
+      el.style.display = (kind === 'spacer' || kind === 'header') ? 'none' : '';
+    });
+    _addMenu.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+    _placeMenu(_addMenu, btn);
   };
+
+  // The row's "⋯" menu: Flag / Note / Line.
+  window.openLineRowMenu = function(btn) {
+    _closeMenus(false);
+    _target(btn);
+    const kind = btn.dataset.kind || (btn.closest('tr') && btn.closest('tr').dataset.tag) || '';
+    const structural = (kind === 'spacer' || kind === 'header');
+    _menu.querySelectorAll('.line-menu-line-only').forEach(el => { el.style.display = structural ? 'none' : ''; });
+    // Show the "Change group…" option only for sections that use role_group
+    // sub-headers (currently just 2000 Production Staff).
+    const cgBtn = document.getElementById('line-menu-change-group-btn');
+    if (cgBtn) cgBtn.style.display = (_menuCode === 2000 && !structural) ? '' : 'none';
+    const poLbl = document.getElementById('line-menu-po-label');
+    if (poLbl) poLbl.textContent = (btn.dataset.hasPo === '1') ? 'Change PO…' : 'Attach PO';
+    const lvBtn = document.getElementById('line-menu-lever-btn');
+    if (lvBtn) lvBtn.querySelector('.line-menu-sub').textContent =
+      (btn.dataset.hasLever === '1') ? 'Already a lever — open Assumptions to edit' : 'A cost the client can choose';
+    _menu.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+    _placeMenu(_menu, btn);
+  };
+
+  // Esc closes an open menu and returns focus to its button; arrow keys
+  // walk the items.
+  document.addEventListener('keydown', e => {
+    const open = [_menu, _addMenu].find(m => m && !m.classList.contains('hidden'));
+    if (!open) return;
+    if (e.key === 'Escape') { e.preventDefault(); _closeMenus(true); return; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const items = Array.from(open.querySelectorAll('[role="menuitem"]')).filter(el => el.offsetParent !== null);
+      if (!items.length) return;
+      e.preventDefault();
+      const i = items.indexOf(document.activeElement);
+      const next = e.key === 'ArrowDown' ? items[(i + 1) % items.length] : items[(i - 1 + items.length) % items.length];
+      next.focus();
+    }
+  });
 
   // Right-click on any budget line row opens the same context menu as the
   // ⋮ button — just faster. Position the menu at the cursor instead of the
@@ -55,11 +116,10 @@
     const code = parseInt(row.dataset.code || '0');
     if (!id) return;
     e.preventDefault();
-    _menuLineId = id;
-    _menuCode   = code;
-    _menu.classList.remove('hidden');
-    const cgBtn = document.getElementById('line-menu-change-group-btn');
-    if (cgBtn) cgBtn.style.display = (code === 2000) ? '' : 'none';
+    // Same menu as the row's ⋯ button, placed at the cursor.
+    const btn = row.querySelector('.line-row-menu-btn');
+    if (btn) { window.openLineRowMenu(btn); }
+    else { _menuLineId = id; _menuCode = code; _menu.classList.remove('hidden'); }
     requestAnimationFrame(() => {
       const mw = _menu.offsetWidth;
       const mh = _menu.offsetHeight;
@@ -69,7 +129,7 @@
   });
 
   window.openChangeGroupModal = function() {
-    _menu.classList.add('hidden');
+    _closeMenus(false);
     if (!_menuLineId || !_menuCode) return;
     const modal = document.getElementById('change-group-modal');
     const list  = document.getElementById('change-group-list');
@@ -123,13 +183,14 @@
 
   // Close on outside click
   document.addEventListener('click', e => {
-    if (!e.target.closest('#line-row-menu') && !e.target.closest('.line-row-menu-btn')) {
-      _menu.classList.add('hidden');
+    if (!e.target.closest('#line-row-menu') && !e.target.closest('#line-add-menu')
+        && !e.target.closest('.line-row-menu-btn') && !e.target.closest('.line-add-btn')) {
+      _closeMenus(false);
     }
   });
 
   window.lineInsert = async function(position, kind) {
-    _menu.classList.add('hidden');
+    _closeMenus(false);
     if (!_menuLineId) return;
     let initialDescription = '';
     // Header: prompt for the label up front so empty placeholders never
@@ -158,7 +219,7 @@
   };
 
   window.lineDuplicate = async function() {
-    _menu.classList.add('hidden');
+    _closeMenus(false);
     if (!_menuLineId) return;
     // Only labor and location lines have schedules worth asking about.
     // Equipment / expense / admin lines get duplicated silently — there's
@@ -289,13 +350,13 @@
   // Open the per-line Reconcile panel (tiles + merge/unlink/uncode) for the
   // line the context menu is targeting. (User 2026-06-26.)
   window.reconcileMenuLine = function() {
-    _menu.classList.add('hidden');
+    _closeMenus(false);
     if (!_menuLineId) return;
     if (typeof window.openReconcileLine === 'function') window.openReconcileLine(_menuLineId);
   };
 
   window.lineLedgerMenuLine = function() {
-    _menu.classList.add('hidden');
+    _closeMenus(false);
     if (!_menuLineId) return;
     if (typeof window.openLineLedger === 'function') window.openLineLedger(_menuLineId);
   };
@@ -305,13 +366,92 @@
   // attach a note"). editDiscussionNote lives in the budget.html inline
   // block (needs patchLine).
   window.discussionNoteMenuLine = function() {
-    _menu.classList.add('hidden');
+    _closeMenus(false);
     if (!_menuLineId) return;
     if (typeof window.editDiscussionNote === 'function') window.editDiscussionNote(_menuLineId);
   };
 
+  // ⋯ → Flag → Lever: build a lever on this row (title = the row, delta =
+  // −line total, scope = its discussion note) through the existing
+  // levers/save endpoint, then show the Lever chip. A row that already
+  // carries a lever opens Assumptions to edit it. (Cleanup C.)
+  window.leverMenuLine = async function() {
+    _closeMenus(false);
+    if (!_menuLineId) return;
+    const row = document.querySelector(`.line-row[data-id="${_menuLineId}"]`);
+    if (!row) return;
+    if (row.querySelector('.line-chip-lever')) {
+      document.querySelector('.tab-btn[data-tab="assumptions"]')?.click();
+      return;
+    }
+    const desc = row.querySelector('.editable[data-field="description"]');
+    const title = (desc && desc.textContent.trim()) || ('Line ' + _menuLineId);
+    const totalCell = row.querySelector('.line-total-cell, .col-working');
+    let amt = 0;
+    try {
+      const raw = row.dataset.subtotal || (totalCell && totalCell.textContent) || '0';
+      amt = parseFloat(String(raw).replace(/[^0-9.\-]/g, '')) || 0;
+    } catch (e) {}
+    const payload = { title, delta_lines: -Math.abs(amt), fee_applied: true,
+                      scope: row.dataset.discussion || '', consequence: '', line_ids: [_menuLineId] };
+    const r = await fetch(`/projects/${_pid}/budget/${_bid}/levers/save`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+    const j = await r.json().catch(() => ({}));
+    if (!(r.ok && j.ok)) { alert(j.error || 'Could not create the lever'); return; }
+    const host = row.querySelector('.col-desc');
+    const flag = host && host.querySelector('.discussion-flag');
+    if (host) {
+      const chip = document.createElement('span');
+      chip.className = 'line-chip line-chip-lever';
+      chip.setAttribute('role', 'button'); chip.tabIndex = 0;
+      chip.title = 'A lever is built on this line — open Assumptions to edit it';
+      chip.innerHTML = '<svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path></svg>Lever';
+      chip.onclick = () => document.querySelector('.tab-btn[data-tab="assumptions"]')?.click();
+      if (flag && flag.nextSibling) host.insertBefore(chip, flag.nextSibling); else host.appendChild(chip);
+    }
+    const mb = row.querySelector('.line-row-menu-btn'); if (mb) mb.dataset.hasLever = '1';
+    if (typeof _lineSaveToast === 'function') _lineSaveToast('✓ Lever created — adjust the delta or wording in Assumptions.');
+    if (typeof loadLevers === 'function') loadLevers();
+  };
+
+  // ⋯ → Note → Internal note: the line's comment drawer (existing feature).
+  window.noteMenuLine = function() {
+    _closeMenus(false);
+    if (!_menuLineId) return;
+    const row = document.querySelector(`.line-row[data-id="${_menuLineId}"]`);
+    const desc = row && row.querySelector('.editable[data-field="description"]');
+    const label = (desc && desc.textContent.trim()) || 'line';
+    if (typeof window.openComments === 'function') window.openComments(_menuLineId, label.slice(0, 40));
+  };
+
+  // ⋯ → Line → Attach PO: the existing PO picker.
+  window.attachPoMenuLine = function() {
+    _closeMenus(false);
+    if (!_menuLineId) return;
+    if (typeof window.openLinePoPicker === 'function') window.openLinePoPicker(_menuLineId);
+  };
+
+  // ⋯ → Line → Add to sub-budget: the existing multi-select picker.
+  window.subBudgetMenuLine = function() {
+    _closeMenus(false);
+    if (!_menuLineId) return;
+    const row = document.querySelector(`.line-row[data-id="${_menuLineId}"]`);
+    const badge = row && row.querySelector('.line-sb-badge');
+    if (badge && typeof window.openLineSubBudgetPicker === 'function') window.openLineSubBudgetPicker(badge);
+  };
+
+  // ⋯ → Line → Delete line (with confirm; the same flow as before).
+  window.deleteMenuLine = function() {
+    _closeMenus(false);
+    if (!_menuLineId) return;
+    const row = document.querySelector(`.line-row[data-id="${_menuLineId}"]`);
+    const desc = row && row.querySelector('.editable[data-field="description"]');
+    const label = (desc && desc.textContent.trim()) || '';
+    if (typeof window.deleteLineWithConfirm === 'function') window.deleteLineWithConfirm(_menuLineId, label);
+  };
+
   window.openLineMoveModal = function() {
-    _menu.classList.add('hidden');
+    _closeMenus(false);
     if (!_menuLineId || !_menuCode) return;
 
     // Build the Section selector — every COA section that's present on

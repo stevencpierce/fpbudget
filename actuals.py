@@ -9,9 +9,10 @@ This module owns:
   • Linking transactions to budget lines — since Phase 1 (2026-07) a
     transaction codes DIRECTLY to the current Working line; no Actual
     budget is cloned on this path
-  • Estimated → Working initialisation (clone_estimated_to_working) and the
-    legacy Working → Actual helpers kept for projects that still carry an
-    Actual budget from before Phase 1
+  • The ONE "which budget is current" rule (get_current_working_budget /
+    get_current_estimated_budget / get_live_budget): current = the newest
+    of its kind. Estimated → Working creation lives in app.py
+    (_create_budget_from_source, the single copy engine)
   • Auto-match scaffolding (suggest, never silently write)
 
 Ingestion (pulling QBO bank txns into the Transaction table) lives
@@ -1308,315 +1309,148 @@ def scan_duplicate_receipts(project_id):
     return out
 
 
-# ── Legacy Working → Actual helpers ──────────────────────────────────
-# Kept for projects that still carry an Actual budget from before the Phase 1
-# money-path migration (2026-07). Coding no longer clones an Actual, and the
-# /actuals/init route that used to call clone_working_to_actual was removed in
-# Cleanup B (2026-11-02); nothing in the app creates an Actual budget now.
+# ── Which budget is "current" ─────────────────────────────────────────────
+# "Current" means the NEWEST of its kind (Cleanup C, 2026-11-02): the live
+# Working is the newest non-archived Working, the live Estimated the newest
+# non-archived Estimated — and they may carry different version numbers
+# (Estimated v8 can exist while spend is still tracked on Working v7). These
+# three helpers are the ONE place that rule lives; app.py's rollups, pickers,
+# the budget page header and the mismatch scan all read them.
 
-def get_current_actual_budget(project_id):
-    """Return the project's current Actual budget, or None."""
-    return (Budget.query
-            .filter_by(project_id=project_id, is_actual=True,
-                       version_status='current')
-            .first())
+def _current_of_kind(project_id, mode):
+    """Newest non-archived, non-Actual budget of `mode` ('working' |
+    'estimated'): a version_status='current' row wins, then the highest
+    version_number, then the newest id. None when the project has none."""
+    # NULL-safe: legacy rows can carry is_actual / version_status NULL
+    # (a bare `is_actual == False` drops NULL rows — bit us 2026-05-19).
+    q = (Budget.query
+         .filter(Budget.project_id == project_id,
+                 db.func.coalesce(Budget.is_actual, False) == False,      # noqa: E712
+                 db.func.coalesce(Budget.version_status, 'current') != 'archived'))
+    if mode == 'working':
+        q = q.filter(Budget.budget_mode == 'working')
+    else:
+        q = q.filter(db.or_(Budget.budget_mode != 'working',
+                            Budget.budget_mode.is_(None)))
+    return (q.order_by(
+                db.case((Budget.version_status == 'current', 0), else_=1),
+                Budget.version_number.desc().nullslast(),
+                Budget.id.desc())
+             .first())
 
 
 def get_current_working_budget(project_id):
-    """Return the project's current Working budget, or None.
-
-    AUDIT FIX (2026-07, CRITICAL-2): the old filter was `parent_budget_id IS
-    NOT NULL` with no budget_mode check — but a v2+ ESTIMATED also carries
-    parent_budget_id (pointing at its predecessor, app.py budget_new), so this
-    could return an Estimated as the "Working" and actuals would clone/code
-    against the wrong budget. budget_mode is the reliable discriminator
-    ('working' from create_working_from_estimated / this module's clone)."""
-    return (Budget.query
-            .filter_by(project_id=project_id, is_actual=False,
-                       version_status='current')
-            .filter(Budget.budget_mode.in_(('working', 'actual')))
-            .order_by(Budget.version_number.desc().nullslast(),
-                      Budget.id.desc())
-            .first())
+    """The project's live Working budget (spend is tracked here), or None."""
+    return _current_of_kind(project_id, 'working')
 
 
 def get_current_estimated_budget(project_id):
-    """Return the project's current Estimated budget, or None.
-
-    AUDIT FIX (2026-07, CRITICAL-3): the old filter required
-    parent_budget_id IS NULL, but budget_new stamps parent_budget_id on every
-    v2+ Estimated — so any project past v1 returned None here and the
-    auto-actualization path seeded from nothing/stale v1. Resolve by
-    budget_mode like the rest of app.py does."""
-    return (Budget.query
-            .filter_by(project_id=project_id, is_actual=False,
-                       version_status='current')
-            .filter(~Budget.budget_mode.in_(('working', 'actual')))
-            .order_by(Budget.version_number.desc().nullslast(),
-                      Budget.id.desc())
-            .first())
+    """The project's live Estimated budget, or None."""
+    return _current_of_kind(project_id, 'estimated')
 
 
-def clone_estimated_to_working(estimated_budget):
-    """Initialize a Working budget from an Estimated. Used when the user
-    starts actualizing without first having created a Working budget —
-    the system silently spins one up so the chain Estimated → Working →
-    Actual is preserved.
+def get_live_budget(project_id):
+    """The canonical budget rollups read from: the current Working, else the
+    current Estimated (pre-Working projects code straight to Estimated
+    lines). None only when the project has no budget at all."""
+    return get_current_working_budget(project_id) or get_current_estimated_budget(project_id)
 
-    Same shape as clone_working_to_actual but produces a Working budget
-    (is_actual=False, parent_budget_id=<estimated_id>). Lines get
-    source_line_id pointing back at their Estimated peer.
 
-    Returns the new Budget object (uncommitted; caller commits).
-    """
-    if not estimated_budget:
-        raise ValueError("clone_estimated_to_working: estimated_budget is None")
-    if estimated_budget.is_actual:
-        raise ValueError("clone_estimated_to_working: source must be Estimated, not Actual")
-    # AUDIT FIX (2026-07): v2+ Estimated budgets legitimately carry
-    # parent_budget_id (→ their predecessor Estimated), so the old
-    # "parent must be NULL" guard broke auto-actualization on any project
-    # past v1. Discriminate by budget_mode instead.
-    if (estimated_budget.budget_mode or '') in ('working', 'actual'):
-        raise ValueError("clone_estimated_to_working: source is a Working/Actual budget, not an Estimated")
+def pick_current(budgets, mode):
+    """Pure twin of get_current_*: apply the same rule to an already-loaded
+    list of Budget-like objects (version_status, version_number, id,
+    budget_mode, is_actual). Used by budget_view, which has the project's
+    budgets in hand, and by the unit tests."""
+    def _kind(b):
+        return 'working' if getattr(b, 'budget_mode', None) == 'working' else 'estimated'
+    cands = [b for b in budgets
+             if not getattr(b, 'is_actual', False)
+             and getattr(b, 'version_status', None) != 'archived'
+             and _kind(b) == mode]
+    if not cands:
+        return None
+    return sorted(cands, key=lambda b: (
+        0 if getattr(b, 'version_status', None) == 'current' else 1,
+        -(getattr(b, 'version_number', None) or 0),
+        -(getattr(b, 'id', None) or 0)))[0]
 
-    # Reuse a current Working if one already exists.
-    existing = get_current_working_budget(estimated_budget.project_id)
-    if existing:
-        return existing
 
-    skip_cols = {'id', 'created_at', 'updated_at', 'version_status',
-                 'parent_budget_id', 'is_actual'}
-    new_budget = Budget()
-    for col in Budget.__table__.columns:
-        if col.name in skip_cols:
+def working_exists_for_version(budgets, version_number):
+    """The header rule: a Working budget exists for THIS version number
+    (not merely any Working at all). Drives the Viewing toggle, the
+    "Start Working vN" button and the yellow state-B strip."""
+    vn = version_number or 1
+    return any(getattr(b, 'budget_mode', None) == 'working'
+               and not getattr(b, 'is_actual', False)
+               and getattr(b, 'version_status', None) != 'archived'
+               and (getattr(b, 'version_number', None) or 1) == vn
+               for b in budgets)
+
+
+# The ONE variance-basis key set (budget page control, Top Sheet, Export
+# dialog, PDF). Every basis reads "+ = under": vs_estimated = Est − Actual,
+# vs_working = Working − Actual, est_to_working = Est − Working. The old
+# page keys (e_vs_w / w_vs_a / e_vs_a) and export keys (est_v_work /
+# work_v_act / est_v_act) are accepted as aliases so bookmarks keep working.
+VARIANCE_BASES = ('vs_estimated', 'vs_working', 'est_to_working')
+VARIANCE_BASIS_ALIASES = {'est_v_work': 'est_to_working', 'work_v_act': 'vs_working',
+                          'est_v_act': 'vs_estimated',
+                          'e_vs_w': 'est_to_working', 'w_vs_a': 'vs_working',
+                          'e_vs_a': 'vs_estimated'}
+VARIANCE_LABELS = {'vs_estimated': 'Var vs Estimated', 'vs_working': 'Var vs Working',
+                   'est_to_working': 'Est → Working'}
+
+
+def normalize_variance_basis(key, default='vs_working'):
+    """Map any spelling (current or legacy) to the one key set; unknown or
+    empty → `default`."""
+    k = VARIANCE_BASIS_ALIASES.get(key or '', key or '')
+    return k if k in VARIANCE_BASES else default
+
+
+def variance_value(basis, estimated, working, actual):
+    """The number a variance cell shows for `basis` (+ = under)."""
+    basis = normalize_variance_basis(basis)
+    e, w, a = float(estimated or 0), float(working or 0), float(actual or 0)
+    if basis == 'est_to_working':
+        return e - w
+    if basis == 'vs_working':
+        return w - a
+    return e - a
+
+
+def line_overages(planned_by_line, actual_by_line, min_dollars=50.0, min_pct=0.10):
+    """Pure rule for the "line over plan" scan: a line is flagged when its
+    coded spend exceeds the plan by at least `min_dollars` AND `min_pct`.
+    Lines with no positive plan are skipped. Returns
+    [(line_id, planned, actual, over)] in line-id order."""
+    out = []
+    for lid in sorted(planned_by_line):
+        planned = float(planned_by_line[lid] or 0)
+        if planned <= 0:
             continue
-        setattr(new_budget, col.name, getattr(estimated_budget, col.name))
-    new_budget.is_actual        = False
-    new_budget.version_status   = 'current'
-    new_budget.parent_budget_id = estimated_budget.id
-    # THE PHANTOM-WORKING BUG (found live 2026-09-01): the column copy above
-    # carried budget_mode='estimated' onto the clone — so every picker and
-    # get_current_working_budget (which discriminates by budget_mode) failed
-    # to see it as a Working. The reuse guard then never matched, each coding
-    # action cloned AGAIN (from the previous clone, whose name already ended
-    # in '— Working'), and projects accumulated 'X — Working — Working'
-    # budgets all marked current. Stamp the mode explicitly and never stack
-    # the name suffix.
-    new_budget.budget_mode = 'working'
-    import re as _re_ct
-    base_name = _re_ct.sub(r'(\s*—\s*Working)+\s*$', '',
-                           (estimated_budget.name or 'Budget').strip()).strip() or 'Budget'
-    new_budget.name = f"{base_name} — Working"
-    new_budget.created_at = datetime.utcnow()
-    new_budget.updated_at = datetime.utcnow()
-    new_budget.working_initialized_at = datetime.utcnow()
-    db.session.add(new_budget)
-    db.session.flush()
-
-    line_map = {}
-    src_lines = sorted(estimated_budget.lines, key=lambda l: (l.sort_order or 0, l.id))
-    # AUDIT FIX (2026-07, MEDIUM-9): skip working_total/manual_actual so this
-    # auto-clone starts with the same clean Working baseline as the UI path
-    # (_copy_budget_lines) — the two engines previously diverged.
-    line_skip = {'id', 'budget_id', 'parent_line_id', 'source_line_id',
-                 'orphan_from_working', 'crew_assignments', 'schedule_days',
-                 'assigned_crew', 'working_total', 'manual_actual'}
-    for src in src_lines:
-        new_line = BudgetLine()
-        for col in BudgetLine.__table__.columns:
-            if col.name in line_skip:
-                continue
-            setattr(new_line, col.name, getattr(src, col.name))
-        new_line.budget_id      = new_budget.id
-        new_line.source_line_id = src.id
-        new_line.orphan_from_working = False
-        if src.parent_line_id and src.parent_line_id in line_map:
-            new_line.parent_line_id = line_map[src.parent_line_id].id
-        else:
-            new_line.parent_line_id = None
-        db.session.add(new_line)
-        db.session.flush()
-        line_map[src.id] = new_line
-    for src in src_lines:
-        if src.parent_line_id and src.parent_line_id in line_map:
-            new_child = line_map[src.id]
-            if not new_child.parent_line_id:
-                new_child.parent_line_id = line_map[src.parent_line_id].id
-
-    # OWNER DECISION 2026-09-01: while no Working existed, transactions coded
-    # straight to Estimated lines (auto-init on first coding was removed —
-    # pre-SOW the Estimated is the live document). Now that the Working exists,
-    # carry those codings onto the matching Working lines so the post-Phase-1
-    # invariant (coded txns point at Working ids) is restored and per-line
-    # actuals follow the user into the Working view.
-    try:
-        _moved = 0
-        for _src_id, _nl in line_map.items():
-            _moved += (Transaction.query
-                       .filter_by(budget_line_id=_src_id)
-                       .update({'budget_line_id': _nl.id},
-                               synchronize_session=False))
-        if _moved:
-            log.info(
-                f"[actuals] carried {_moved} coded transaction(s) from "
-                f"Estimated #{estimated_budget.id} lines onto new Working "
-                f"#{new_budget.id}")
-    except Exception:
-        log.exception("[actuals] est→working txn carry on working-clone failed")
-
-    # Carry sub-budget membership onto the cloned lines (2026-09-09). The
-    # explicit create-working path has done this via _create_budget_from_source
-    # since 2026-08; this auto-clone path never did, which left sub-budget
-    # cards empty once the clone became the canonical Working ("my sub
-    # budgets are missing"). Fail-open: membership is bookkeeping.
-    try:
-        from models import SubBudgetLine as _SBL_cw
-        _carried = 0
-        for _sbl in _SBL_cw.query.filter(
-                _SBL_cw.budget_line_id.in_(list(line_map.keys()))).all():
-            _new_ln = line_map.get(_sbl.budget_line_id)
-            if _new_ln is None:
-                continue
-            _dupe = _SBL_cw.query.filter_by(
-                sub_budget_id=_sbl.sub_budget_id,
-                budget_line_id=_new_ln.id).first()
-            if _dupe:
-                continue
-            db.session.add(_SBL_cw(sub_budget_id=_sbl.sub_budget_id,
-                                   budget_line_id=_new_ln.id,
-                                   sort_order=_sbl.sort_order,
-                                   note=_sbl.note))
-            _carried += 1
-        if _carried:
-            log.info(f"[actuals] carried {_carried} sub-budget membership(s) "
-                     f"onto Working #{new_budget.id}")
-    except Exception:
-        log.exception("[actuals] sub-budget membership carry on working-clone failed")
-
-    # AUDIT FIX (2026-07, CRITICAL-1): this clone previously copied LINES ONLY —
-    # no ScheduleDay/ProductionDay/TravelDetail and no CrewAssignments. The next
-    # sync_schedule_driven_lines on the new Working found zero schedule rows and
-    # silently zeroed every meal/per-diem/hotel/flight figure, and all people
-    # assignments vanished. Copy crew here and reuse the UI path's schedule
-    # copier (late import — app imports this module at load).
-    id_map = {old_id: nl.id for old_id, nl in line_map.items()}
-    try:
-        src_line_ids = list(id_map.keys())
-        if src_line_ids:
-            for ca in CrewAssignment.query.filter(
-                    CrewAssignment.budget_line_id.in_(src_line_ids)).all():
-                db.session.add(CrewAssignment(
-                    budget_line_id=id_map[ca.budget_line_id],
-                    instance=ca.instance or 1,
-                    crew_member_id=ca.crew_member_id,
-                    name_override=ca.name_override,
-                    rate_override=ca.rate_override,
-                    fringe_override=ca.fringe_override,
-                    agent_override=ca.agent_override,
-                    omit_flags=ca.omit_flags,
-                    role_number=ca.role_number,
-                ))
-    except Exception:
-        log.exception("[actuals] crew-assignment copy on working-clone failed")
-    try:
-        from app import _copy_schedule_days
-        _copy_schedule_days(estimated_budget.id, new_budget.id, id_map,
-                            dest_mode='working')
-    except Exception:
-        log.exception("[actuals] schedule copy on working-clone failed")
-
-    log.info(
-        f"[actuals] Initialized Working budget #{new_budget.id} from "
-        f"Estimated #{estimated_budget.id} ({len(line_map)} lines, crew + "
-        f"schedule copied) for project #{estimated_budget.project_id}"
-    )
-    return new_budget
-
-
-def clone_working_to_actual(working_budget):
-    """Create a new Actual budget by deep-copying a Working budget.
-
-    Every BudgetLine on the Working budget gets a peer on the Actual
-    budget with `source_line_id` pointing back at the Working line.
-    The new Actual is marked `is_actual=True, version_status='current'`
-    and linked back to the Working it was cloned from via
-    `parent_budget_id`.
-
-    Returns the new Budget object (not yet committed; caller commits).
-    """
-    if not working_budget:
-        raise ValueError("clone_working_to_actual: working_budget is None")
-    if working_budget.is_actual:
-        raise ValueError("clone_working_to_actual: source is already an Actual")
-
-    # Reuse a current Actual if one already exists — never clone twice.
-    existing = get_current_actual_budget(working_budget.project_id)
-    if existing:
-        return existing
-
-    # Copy every persisted column from the Working budget so the Actual
-    # carries the same project metadata, fee settings, dates, etc.
-    skip_cols = {'id', 'created_at', 'updated_at', 'version_status',
-                 'parent_budget_id', 'is_actual'}
-    new_budget = Budget()
-    for col in Budget.__table__.columns:
-        if col.name in skip_cols:
+        actual = float(actual_by_line.get(lid, 0.0) or 0)
+        over = actual - planned
+        if over < min_dollars or over < planned * min_pct:
             continue
-        setattr(new_budget, col.name, getattr(working_budget, col.name))
-    new_budget.is_actual        = True
-    new_budget.version_status   = 'current'
-    new_budget.parent_budget_id = working_budget.id
-    # Visible distinction in the budget list dropdown.
-    base_name = (working_budget.name or 'Budget').strip()
-    new_budget.name = f"{base_name} — Actual"
-    new_budget.created_at = datetime.utcnow()
-    new_budget.updated_at = datetime.utcnow()
-    db.session.add(new_budget)
-    db.session.flush()  # assign new_budget.id before we wire lines
+        out.append((lid, planned, actual, over))
+    return out
 
-    # Clone lines. We build a map old_id → new_line so child lines
-    # (parent_line_id back-pointers within the same budget) translate.
-    line_map = {}
-    src_lines = sorted(working_budget.lines, key=lambda l: (l.sort_order or 0, l.id))
-    line_skip = {'id', 'budget_id', 'parent_line_id', 'source_line_id',
-                 'orphan_from_working', 'crew_assignments', 'schedule_days',
-                 'assigned_crew'}
-    for src in src_lines:
-        new_line = BudgetLine()
-        for col in BudgetLine.__table__.columns:
-            if col.name in line_skip:
-                continue
-            setattr(new_line, col.name, getattr(src, col.name))
-        new_line.budget_id            = new_budget.id
-        new_line.source_line_id       = src.id
-        new_line.orphan_from_working  = False
-        # parent_line_id translation: if the source had a parent
-        # (kit fee, child line, etc.), and that parent is already in
-        # our map, point at the new parent. If parent is processed
-        # later, we'll fix it in a second pass.
-        if src.parent_line_id and src.parent_line_id in line_map:
-            new_line.parent_line_id = line_map[src.parent_line_id].id
-        else:
-            new_line.parent_line_id = None
-        db.session.add(new_line)
-        db.session.flush()
-        line_map[src.id] = new_line
 
-    # Second pass: resolve any parent_line_id refs that pointed at a
-    # source line we hadn't yet cloned when we first saw the child.
-    for src in src_lines:
-        if src.parent_line_id and src.parent_line_id in line_map:
-            new_child = line_map[src.id]
-            if not new_child.parent_line_id:
-                new_child.parent_line_id = line_map[src.parent_line_id].id
-
-    log.info(
-        f"[actuals] Cloned Working budget #{working_budget.id} → Actual "
-        f"#{new_budget.id} ({len(line_map)} lines) for project "
-        f"#{working_budget.project_id}"
-    )
-    return new_budget
+def version_strip_state(estimated, working, viewed=None):
+    """Which of the three header states to render (TabStrip artboard):
+      'paired'  — Estimated vN and Working vN both exist (A)
+      'ahead'   — the newest Estimated has no Working of its own; spend is
+                  still tracked on an older Working (B)
+      'none'    — no Working yet (C)
+    `estimated` / `working` are the live budgets (or None)."""
+    if working is None:
+        return 'none'
+    ev = (getattr(estimated, 'version_number', None) or 1) if estimated else None
+    wv = getattr(working, 'version_number', None) or 1
+    if ev is not None and ev > wv:
+        return 'ahead'
+    return 'paired'
 
 
 def ensure_section_in_working_budget(project_id, account_code, account_name):
@@ -1772,30 +1606,6 @@ def ensure_section_in_working_budget(project_id, account_code, account_name):
             'working_was_just_created': working_was_just_created}
 
 
-def working_to_actual_line(working_line_id, actual_budget_id=None):
-    """Given a BudgetLine id from the Working budget, return the
-    equivalent line from the project's current Actual budget.
-    Returns None if no Actual exists yet, or no matching line is found
-    (rare — only happens if the Actual was synced and the source line
-    was deleted in Working post-clone)."""
-    src = BudgetLine.query.get(working_line_id)
-    if not src:
-        return None
-    if actual_budget_id is None:
-        # Look up the project's current Actual via the Working line's
-        # budget → project_id chain.
-        working = Budget.query.get(src.budget_id)
-        if not working:
-            return None
-        actual = get_current_actual_budget(working.project_id)
-        if not actual:
-            return None
-        actual_budget_id = actual.id
-    return (BudgetLine.query
-            .filter_by(budget_id=actual_budget_id, source_line_id=working_line_id)
-            .first())
-
-
 # ── Transaction linking (codes straight to the current Working line) ──
 
 def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
@@ -1911,7 +1721,7 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
         # ("our numbers wouldn't be right if we initialized a working"). The
         # txn codes straight to the picked (Estimated) line; the explicit
         # "Initialize Working vN" button later carries these codings onto the
-        # new Working (clone_estimated_to_working remaps via source_line_id).
+        # new Working (create_working_from_estimated carries them across).
         working_budget = get_current_working_budget(project_id)
         if working_budget and line_budget and not line_budget.is_actual \
                 and line_budget.id != working_budget.id:
@@ -2044,74 +1854,6 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
         'actual_was_just_created':  actual_was_just_made,
         'working_was_just_created': working_was_just_made,
     }
-
-
-def _materialize_missing_actual_line(working_line, actual_budget_id):
-    """Create a peer Actual line for a Working line that wasn't part of
-    the original clone. Used as a safety net for Working-→-Actual
-    structural drift."""
-    new_line = BudgetLine()
-    skip = {'id', 'budget_id', 'parent_line_id', 'source_line_id',
-            'orphan_from_working', 'crew_assignments', 'schedule_days',
-            'assigned_crew'}
-    for col in BudgetLine.__table__.columns:
-        if col.name in skip:
-            continue
-        setattr(new_line, col.name, getattr(working_line, col.name))
-    new_line.budget_id      = actual_budget_id
-    new_line.source_line_id = working_line.id
-    new_line.parent_line_id = None
-    db.session.add(new_line)
-    db.session.flush()
-    log.info(
-        f"[actuals] Materialized missing Actual line for Working "
-        f"#{working_line.id} on Actual budget #{actual_budget_id}"
-    )
-    return new_line
-
-
-def ensure_actual_mirrors(project_id, working_bid=None, actual_bid=None):
-    """ADDITIVE-only guarantee that every current Working line has an Actual
-    peer. Never updates or deletes — safe to call on every Actual-view load so a
-    line added in Working immediately appears in Actual (and an actualized
-    expense can be dragged onto it). The caller may pass the resolved working /
-    actual budget ids (budget_view resolves them via _budget_type, which is the
-    authoritative pick); otherwise we resolve here. Returns count created.
-    (User 2026-06-02.)"""
-    actual = (Budget.query.get(actual_bid) if actual_bid
-              else get_current_actual_budget(project_id))
-    working = (Budget.query.get(working_bid) if working_bid
-               else (Budget.query
-                     .filter_by(project_id=project_id, is_actual=False,
-                                version_status='current', budget_mode='working')
-                     .order_by(Budget.id.desc()).first()
-                     or get_current_working_budget(project_id)))
-    if not actual or not working:
-        return 0
-    have = {l.source_line_id for l in actual.lines if l.source_line_id is not None}
-    added = 0
-    for w in working.lines:
-        if w.id not in have:
-            _materialize_missing_actual_line(w, actual.id)
-            added += 1
-    if added:
-        db.session.flush()
-        # Second pass: connect child lines (kit fees etc.) to their parent's
-        # mirror via the source chain.
-        a_lines = BudgetLine.query.filter_by(budget_id=actual.id).all()
-        a_by_src = {l.source_line_id: l for l in a_lines if l.source_line_id}
-        w_by_id = {w.id: w for w in working.lines}
-        for a in a_lines:
-            if not a.source_line_id:
-                continue
-            w = w_by_id.get(a.source_line_id)
-            np = (a_by_src.get(w.parent_line_id).id
-                  if (w and w.parent_line_id and a_by_src.get(w.parent_line_id)) else None)
-            if a.parent_line_id != np:
-                a.parent_line_id = np
-        db.session.commit()
-        log.info(f"[actuals] ensure_actual_mirrors project={project_id}: +{added} mirror line(s)")
-    return added
 
 
 def unlink_transaction(transaction_id):
@@ -2961,97 +2703,6 @@ def last_match_for_project(project_id):
             .first())
 
 
-# ── Legacy Working → Actual sync (additive only — deletions become orphans) ──
-# Only meaningful for pre-Phase-1 projects that still have an Actual budget.
-
-def sync_working_to_actual(project_id, user_id=None):
-    """After Actual exists, structural changes in Working don't
-    automatically propagate. This pulls them on demand:
-
-      • New lines in Working that have no Actual peer → create peer
-      • Working lines renamed or recoded → update peer's name/code
-        (does NOT touch peer's amount fields — Actual owns its own)
-      • Working lines deleted (no peer source) → flip orphan_from_working
-        on the Actual peer if it has linked transactions; otherwise
-        delete the Actual peer too
-
-    Returns summary dict.
-    """
-    actual = get_current_actual_budget(project_id)
-    if not actual:
-        return {'error': 'no_actual_budget'}
-    working = get_current_working_budget(project_id)
-    if not working:
-        return {'error': 'no_working_budget'}
-
-    summary = {'added': 0, 'updated': 0, 'orphaned': 0, 'deleted': 0}
-
-    # Index the Actual lines by source_line_id for O(1) lookup.
-    actual_by_src = {}
-    for line in actual.lines:
-        if line.source_line_id is not None:
-            actual_by_src[line.source_line_id] = line
-
-    working_ids = set()
-    for w in working.lines:
-        working_ids.add(w.id)
-        peer = actual_by_src.get(w.id)
-        if peer is None:
-            _materialize_missing_actual_line(w, actual.id)
-            summary['added'] += 1
-        else:
-            changed = False
-            if peer.account_code != w.account_code:
-                peer.account_code = w.account_code
-                changed = True
-            if peer.account_name != w.account_name:
-                peer.account_name = w.account_name
-                changed = True
-            if peer.description != w.description:
-                peer.description = w.description
-                changed = True
-            if peer.orphan_from_working:
-                peer.orphan_from_working = False  # back in sync
-                changed = True
-            if changed:
-                summary['updated'] += 1
-
-    # Working lines deleted since the clone — find Actual lines whose
-    # source_line_id no longer exists in Working.
-    for src_id, peer in actual_by_src.items():
-        if src_id in working_ids:
-            continue
-        has_txns = bool(
-            Transaction.query.filter_by(budget_line_id=peer.id).first()
-        )
-        if has_txns:
-            if not peer.orphan_from_working:
-                peer.orphan_from_working = True
-                summary['orphaned'] += 1
-        else:
-            db.session.delete(peer)
-            summary['deleted'] += 1
-
-    db.session.commit()
-    log.info(f"[actuals] Sync W→A project #{project_id}: {summary}")
-    return summary
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Payee reporting (DOCUMENTS_HANDOFF Phase 1, 2026-11-01)
-# ═══════════════════════════════════════════════════════════════════════════
-# What QuickBooks will report per Payee and calendar year, and the ONE W-9
-# rule. FPBudget never files a 1099: it previews what QuickBooks will file so
-# a missing W-9 is caught months before year end. Everything money-shaped
-# below is a float for display; the stored amounts stay db.Numeric.
-#
-# The pure helpers (threshold_for_year, is_card_payment, attribute_payee,
-# aggregate_paid, w9_status_for, flag_1099) take plain objects so
-# tests/unit/test_payee_rules.py can pin them without a database; the DB
-# wrappers (reporting_threshold, paid_by_payee, payee_w9_status) sit on top.
-
-# IRS 1099-NEC floor when a year has no reporting_threshold row: $600
-# through 2025, $2,000 from 2026 (One Big Beautiful Bill Act).
 THRESHOLD_FALLBACK_PRE_2026 = 600.0
 THRESHOLD_FALLBACK_2026_ON  = 2000.0
 

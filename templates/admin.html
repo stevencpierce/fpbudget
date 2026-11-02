@@ -282,6 +282,71 @@
     {% endif %}
   </div>
 
+  {# Production Company Profile — moved here from the budget page's Settings
+     tab (Cleanup C, 2026-11-02): it is company-wide, not per project. Reads
+     and writes the existing /settings/company JSON endpoints. #}
+  <div class="admin-card" id="company-profile">
+    <div class="admin-card-header"><h2>Production Company Profile</h2></div>
+    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
+      Appears on every PDF export and client estimate. One profile for the whole company.
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.6rem .9rem">
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Company name
+        <input type="text" id="cs-company-name" placeholder="Framework Productions"></label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Address
+        <input type="text" id="cs-address-line1" placeholder="Street address"></label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Suite / floor
+        <input type="text" id="cs-address-line2" placeholder="Optional"></label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">City
+        <input type="text" id="cs-city"></label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">State
+        <input type="text" id="cs-state"></label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">ZIP
+        <input type="text" id="cs-zip"></label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Phone
+        <input type="text" id="cs-phone"></label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Email
+        <input type="email" id="cs-email"></label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Website
+        <input type="text" id="cs-website" placeholder="https://..."></label>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:.8rem">
+      <button type="button" class="btn btn-primary btn-sm" id="cs-save-btn">Save profile</button>
+      <span id="cs-saved-msg" style="font-size:.82rem;color:#22c55e;display:none">✓ Saved</span>
+    </div>
+  </div>
+  <script>
+  (function () {
+    const f = id => document.getElementById(id);
+    fetch('/settings/company').then(r => r.json()).then(d => {
+      f('cs-company-name').value  = d.company_name  || '';
+      f('cs-address-line1').value = d.address_line1 || '';
+      f('cs-address-line2').value = d.address_line2 || '';
+      f('cs-city').value  = d.city     || '';
+      f('cs-state').value = d.state    || '';
+      f('cs-zip').value   = d.zip_code || '';
+      f('cs-phone').value = d.phone    || '';
+      f('cs-email').value = d.email    || '';
+      f('cs-website').value = d.website || '';
+    }).catch(() => {});
+    f('cs-save-btn').addEventListener('click', async () => {
+      const v = id => (f(id).value || '');
+      const r = await fetch('/settings/company', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          company_name: v('cs-company-name'), address_line1: v('cs-address-line1'),
+          address_line2: v('cs-address-line2'), city: v('cs-city'), state: v('cs-state'),
+          zip_code: v('cs-zip'), phone: v('cs-phone'), email: v('cs-email'),
+          website: v('cs-website')})});
+      const m = f('cs-saved-msg');
+      m.textContent = r.ok ? '✓ Saved' : 'Save failed';
+      m.style.color = r.ok ? '#22c55e' : '#ef4444';
+      m.style.display = '';
+      setTimeout(() => { m.style.display = 'none'; }, 2500);
+    });
+  })();
+  </script>
+
   {% if current_user.role == 'super_admin' %}
   <div class="admin-card">
     <div class="admin-card-header">

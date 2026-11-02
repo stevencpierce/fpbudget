@@ -416,42 +416,7 @@ function dismissModeSafetyBanner() {
   if (el) el.style.display = 'none';
 }
 
-// ── Company settings: load on page init, save with budget settings ──────────
-(function loadCompanySettings() {
-  fetch('/settings/company')
-    .then(r => r.json())
-    .then(d => {
-      const f = id => document.getElementById(id);
-      if (f('cs-company-name'))  f('cs-company-name').value  = d.company_name  || '';
-      if (f('cs-address-line1')) f('cs-address-line1').value = d.address_line1 || '';
-      if (f('cs-address-line2')) f('cs-address-line2').value = d.address_line2 || '';
-      if (f('cs-city'))          f('cs-city').value          = d.city          || '';
-      if (f('cs-state'))         f('cs-state').value         = d.state         || '';
-      if (f('cs-zip'))           f('cs-zip').value           = d.zip_code      || '';
-      if (f('cs-phone'))         f('cs-phone').value         = d.phone         || '';
-      if (f('cs-email'))         f('cs-email').value         = d.email         || '';
-      if (f('cs-website'))       f('cs-website').value       = d.website       || '';
-    }).catch(() => {});
-})();
-
-async function saveCompanySettings() {
-  const f = id => document.getElementById(id)?.value || '';
-  await fetch('/settings/company', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      company_name:  f('cs-company-name'),
-      address_line1: f('cs-address-line1'),
-      address_line2: f('cs-address-line2'),
-      city:          f('cs-city'),
-      state:         f('cs-state'),
-      zip_code:      f('cs-zip'),
-      phone:         f('cs-phone'),
-      email:         f('cs-email'),
-      website:       f('cs-website'),
-    })
-  });
-}
+// Company profile moved to Admin (Cleanup C, 2026-11-02) — no load/save here.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // QUICK ENTRY — full item library keyed by COA code

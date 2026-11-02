@@ -341,3 +341,89 @@ the budget page and their JS are gone. Route snapshot: 5 removals, 0 additions.
   should read `/actuals/docs.json` like `_buildPacketView`; `gantt.js` calls
   `fetchTotals()` before `init()` sets `_pid/_bid` (404 on
   `/projects/undefined/...` on every schedule load, pre-existing).
+
+## 🧹 Cleanup C — one live Working, the new budget page header (2026-11-02, branch `cleanup/c-version-model`)
+The version model has ONE rule ("current" = newest of its kind) and the budget
+page has the approved header: version strip, one-row tab strip, Overview,
+Budget control bar with ONE variance control, per-line `+` / `⋯` actions,
+regrouped Settings. Route snapshot: 12 removals, 0 additions.
+
+**Model**
+- [x] C1 — `budget_mode` is only `estimated` | `working`: the ~84
+  `in ('working','actual')` checks are `== 'working'` (app.py, budget.html,
+  gantt.html, callsheet.html, actuals.py, routes/actuals.py); models.py:358
+  comment; `_budget_type` (app.py:25251).
+- [x] C2 — Dead Actual paths removed: `clone_estimated_to_working`,
+  `clone_working_to_actual`, `working_to_actual_line`,
+  `_materialize_missing_actual_line`, `ensure_actual_mirrors`,
+  `sync_working_to_actual`, `get_current_actual_budget` (actuals.py); the 11
+  repair routes (`/admin/repair-phantom-workings`, `/projects/<pid>/debug-mirror`,
+  `actual-audit`, `rebuild-actual-mirror`, `sync-actual-from-working`,
+  `repair-clone-links`, `migrate-actuals`, `/projects/migrate-actuals/scan`,
+  `/budget/repair-line-links`, `sync-line-order`, `crew-po-mismatch-report`) and
+  `/projects/<pid>/budget/<bid>/working/init` — all unreferenced from templates / JS.
+  `budget_view` lost its legacy Actual rollups and the `is_actual_view`
+  branches (46 in budget.html); an `is_actual` URL redirects to the live
+  budget (app.py:7958). `link_transaction_to_line`'s translate-an-Actual-pick
+  branch stays (actuals.py:1611). `manual_actual` is out of the line-update
+  field list and `manual_by_section` (app.py:8895); the column stays.
+- [x] C3 — `_run_budget_mismatch_scan` (app.py:12581) scans the LIVE budget
+  through the pure `actuals.line_overages` rule — it looked for a current
+  Actual and had not fired since July.
+- [x] C4 — `actuals.get_current_working_budget` / `get_current_estimated_budget`
+  / `get_live_budget` (actuals.py:1320–1356, NULL-safe: current flag first, then
+  highest version_number, then newest id) replace the ~12 copy-pasted queries
+  (their old `budget_mode IS NULL AND parent_budget_id IS NOT NULL` filter is
+  gone); `pick_current` (1359) is the pure twin budget_view / gantt / callsheet
+  use on an already-loaded list.
+- [x] C5 — "Current" = newest of its kind: Estimated v2 can exist while Working
+  v1 stays live. The header says so (state B) and offers ONE action, the
+  strip's "Start Working vN" (→ `create_working_from_estimated`, app.py:6342);
+  the version dropdown's "+ Initialize Working" row and the Top Sheet banner are
+  gone. The Viewing toggle and the strip share ONE rule,
+  `actuals.working_exists_for_version` (1378) — never `working_exists`.
+- [x] C6 — `_resolve_sister_budget` / `_mirror_line_move` (app.py:10406 /
+  10450) pair by `version_number` only.
+- [x] C7 — ONE variance control (Budget tab bar, budget.html:1388) with ONE
+  key set `vs_estimated` · `vs_working` · `est_to_working`
+  (`actuals.VARIANCE_BASES`, 1395; aliases for the old page + export keys);
+  the Top Sheet and the Export dialog read the same stored choice
+  (localStorage `fpbudget.varianceBasis.<pid>`); the PDF route accepts the
+  aliases (app.py:13755) and every basis reads + = under (budget_pdf.html:353).
+- [x] C8 — "Show N archived" renders archived rows in the budget page's
+  version picker (budget.html:196, is_actual excluded); the call sheet picker
+  uses `_version_groups` (callsheet.html:351, `version_groups` passed from
+  callsheet_view); `project_duplicate` skips `is_actual` budgets (app.py:5303).
+- [x] C9 — `SubBudget.budget_id` is no longer written (app.py:22065,
+  sub_budgets.html no longer posts it; models.py:1647) — "always on the
+  current Working" is the label on the page.
+
+**UI** (templates/budget.html, static/style.css:5941+, static/budget-js/b12.js)
+- [x] C10 — Version strip (810) states A/B/C from `version_strip`
+  (app.py:9559); Viewing toggle; Notes button with count (header + control bar).
+- [x] C11 — One-row tab strip (864) with More ▾ (Travel, POs, Catering,
+  Sub-Budgets, Locations, Call Sheets, Assumptions, Activity, Tools; counts);
+  every `data-tab` key kept.
+- [x] C12 — Overview (903) replaces the Dashboard: three cards, By-department,
+  Needs you (counts from `routes.actuals.actuals_counts`, factored out of
+  `actuals_workspace_json` → `_build_workspace`, and `_docs_inbox_review_count`),
+  Recent activity (5 rows via `_scoped_activity_query`), review queue kept
+  (still fed by `/projects/<pid>/anomalies`). Clean up / Scan moved to
+  Settings → Maintenance (4581).
+- [x] C13 — Budget control bar (1359) per the artboard; grid untouched apart
+  from the per-line actions.
+- [x] C14 — Per-line `+` / `⋯` (1689, menus 9252 / 9260; b12.js:53+) in a
+  sticky trailing `col-rowact` cell (always in reach when the grid scrolls);
+  Discussion / Lever chips; lock-dot + hover card from `comment_latest`;
+  Esc / arrow keys; flag, note, lever, PO, sub-budget, move, delete wired to
+  the existing endpoints. Reconcile / Line ledger stay on the Actual cell's ▸.
+- [x] C15 — Settings regrouped (4285+): Budget Info · Display · Payroll and
+  fees · Project Fringes · Maintenance; note bar → Admin; the Production
+  Company Profile card moved to Admin (admin.html:288, same JSON endpoints).
+- [x] C16 — Tests: `tests/unit/test_version_model.py` (pure) and
+  `tests/unit/test_version_model_app.py` (app-booting, self-skipping).
+- [ ] C17 — Follow-ups seen, not done here: viewing an older Estimated still
+  auto-promotes it to `version_status='current'` (pre-existing), which makes it
+  the live Estimated for `pick_current`; the budget grid still overflows
+  horizontally below ~1500px (pre-existing — the row actions are sticky now so
+  they stay reachable); `gantt.js` 404 on `/projects/undefined/...` (B11).

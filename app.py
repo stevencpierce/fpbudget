@@ -582,15 +582,8 @@ def _actuals_vendor_suggestions(pid):
     else current Estimated), builds candidate lines, and matches uncoded
     transactions. Returns {txn_id: {line_id, code, label}}."""
     try:
-        pick = (Budget.query
-                .filter_by(project_id=pid, version_status='current', is_actual=False)
-                .filter(db.or_(Budget.budget_mode == 'working',
-                               db.and_(Budget.budget_mode == None,
-                                       Budget.parent_budget_id.isnot(None))))
-                .order_by(Budget.id.desc()).first()
-                or Budget.query
-                .filter_by(project_id=pid, version_status='current', is_actual=False)
-                .order_by(Budget.id.desc()).first())
+        from actuals import get_live_budget as _glb
+        pick = _glb(pid)
         if not pick:
             return {}
         lines = BudgetLine.query.filter_by(budget_id=pick.id).all()
@@ -4217,7 +4210,7 @@ def budget_live(pid, bid):
     profile = b.payroll_profile
     pw_start = b.payroll_week_start if b.payroll_week_start is not None else (
         profile.payroll_week_start if profile else 6)
-    sched_mode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if b.budget_mode == 'working' else 'estimated'
 
     # Bulk-load ScheduleDay rows for ALL schedule-driven lines in ONE query
     # instead of a per-line query (was an N+1 that ran on every /live poll —
@@ -4774,7 +4767,7 @@ def _render_project_budget_pdfs(p):
                 pw_start = b.payroll_week_start if b.payroll_week_start is not None else (
                     profile.payroll_week_start if profile else 6)
                 top_sheet = calc_top_sheet(b, b_lines, fringe_cfgs, {}, profile, pw_start)
-                sched_mode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
+                sched_mode = 'working' if b.budget_mode == 'working' else 'estimated'
                 line_results = {}
                 for ln in b_lines:
                     if ln.use_schedule:
@@ -4807,13 +4800,13 @@ def _render_project_budget_pdfs(p):
                     coa_sections=FP_COA_SECTIONS,
                     detail_mode=False, dispersed=dispersed,
                     company_settings=company_settings,
-                    is_working_view=b.budget_mode in ('working', 'actual'),
+                    is_working_view=b.budget_mode == 'working',
                     sections_ordered=secs_ordered,
                     line_results=line_results, fee_m=fee_m, today=_date.today(),
                 )
                 pdf_bytes = WeasyprintHTML(string=html_str, base_url="http://localhost").write_pdf()
                 safe_name = re.sub(r"[^\w\-.]", "_", b.name)
-                mode_lbl  = "Working" if b.budget_mode in ('working','actual') else "Estimated"
+                mode_lbl  = "Working" if b.budget_mode == 'working' else "Estimated"
                 out.append((f"{safe_name}_{mode_lbl}.pdf", pdf_bytes))
             except Exception as e:
                 logging.warning(f"Budget PDF render failed for budget {b.id}: {e}")
@@ -5299,11 +5292,16 @@ def _duplicate_worker(flask_app, job_id, src_pid, new_name, include_data, user_i
                 loc_id_map[lc.id] = new_lc.id
 
             # 5. Clone every Budget (reuses _create_budget_from_source).
+            # Legacy Actual budgets (is_actual) are skipped — they were
+            # retired in Phase 2 and must not be re-minted on a copy
+            # (Cleanup C, 2026-11-02).
             src_budgets = Budget.query.filter_by(project_id=src_p.id).order_by(
                 Budget.created_at.asc()).all()
             dup_line_map = {}
             dup_budget_map = {}
             for sb in src_budgets:
+                if sb.is_actual:
+                    continue
                 new_b = _create_budget_from_source(
                     new_p.id, sb, sb.name, sb.budget_mode or 'estimated',
                     parent_bid=None, version_number=sb.version_number)
@@ -5322,7 +5320,9 @@ def _duplicate_worker(flask_app, job_id, src_pid, new_name, include_data, user_i
                     project_id=new_p.id, name=src_sb.name,
                     description=src_sb.description,
                     total_committed=src_sb.total_committed,
-                    budget_id=dup_budget_map.get(src_sb.budget_id),
+                    # budget_id is not pinned any more: every rollup reads
+                    # the project's current Working (Cleanup C).
+                    budget_id=None,
                     notes=src_sb.notes, archived=src_sb.archived,
                     created_by_user_id=user_id)
                 db.session.add(new_sb)
@@ -5458,17 +5458,10 @@ def _build_wrap_book_data(pid):
     """
     from budget_calc import section_for_code
     project = ProjectSheet.query.get_or_404(pid)
-    # Canonical budget: current Working (same pick as the PO rollup).
-    budget = (Budget.query
-              .filter_by(project_id=pid, version_status='current', is_actual=False)
-              .filter(db.or_(Budget.budget_mode == 'working',
-                             db.and_(Budget.budget_mode == None,
-                                     Budget.parent_budget_id.isnot(None))))
-              .order_by(Budget.id.desc()).first())
-    if not budget:
-        budget = (Budget.query.filter_by(project_id=pid, version_status='current',
-                                         is_actual=False)
-                  .order_by(Budget.id.desc()).first())
+    # Canonical budget: current Working, else current Estimated (one rule:
+    # actuals.get_live_budget — the same pick the PO rollup makes).
+    from actuals import get_live_budget as _glb
+    budget = _glb(pid)
     if not budget:
         budget = Budget.query.filter_by(project_id=pid).order_by(Budget.id.desc()).first()
     lines = (BudgetLine.query.filter_by(budget_id=budget.id)
@@ -6027,7 +6020,7 @@ def project_budget_redirect(pid):
         _within = sorted((b for b in _cands if (b.version_number or 1) == _max_v),
                          key=lambda b: b.id, reverse=True)
         latest = (next((b for b in _within
-                        if b.budget_mode in ('working', 'actual')), None)
+                        if b.budget_mode == 'working'), None)
                   or _within[0])
     if not latest:
         latest = (Budget.query.filter_by(project_id=pid, is_actual=False)
@@ -6230,7 +6223,7 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
         db.session.flush()
         # Stamp working_total on every line so the Estimated column has a frozen
         # snapshot from the moment this working budget was created.
-        if new_mode in ('working', 'actual'):
+        if new_mode == 'working':
             # CRITICAL: run sync_schedule_driven_lines on BOTH budgets before
             # snapshotting. Without this, the auto meal/travel/per-diem lines
             # carry forward stale quantity/days from the source's last sync,
@@ -6390,18 +6383,8 @@ def create_working_from_estimated(pid, bid):
         # ── Resolve the OLD current Working being superseded (if any) ──────────
         # This is the Working whose lines currently hold the coded transactions.
         # None → this is the FIRST Working for the project; skip freeze + remap.
-        old_working = (Budget.query
-                       .filter(Budget.project_id == pid,
-                               Budget.is_actual == False,
-                               Budget.budget_mode == 'working',
-                               Budget.version_status == 'current')
-                       .first()
-                       or Budget.query
-                       .filter(Budget.project_id == pid,
-                               Budget.is_actual == False,
-                               Budget.budget_mode == 'working',
-                               Budget.version_status != 'archived')
-                       .first())
+        from actuals import get_current_working_budget as _gcwb_cw
+        old_working = _gcwb_cw(pid)
 
         # PRE-SNAPSHOT the per-section actuals rollup for the all-or-nothing
         # assert (captured BEFORE any mutation).
@@ -6475,7 +6458,7 @@ def create_working_from_estimated(pid, bid):
 
 
 # Columns to skip when materializing an unmappable old-Working line onto the new
-# Working (mirror of _MIGRATE_LINE_SKIP; identity/link/relationship/frozen cols).
+# Working (identity / link / relationship / frozen columns).
 _P4_LINE_SKIP = {'id', 'budget_id', 'parent_line_id', 'source_line_id',
                  'orphan_from_working', 'crew_assignments', 'schedule_days',
                  'working_total', 'manual_actual', 'actual_snapshot'}
@@ -7035,7 +7018,7 @@ def budget_compare(pid):
         profile = budget.payroll_profile
         pw = (budget.payroll_week_start if budget.payroll_week_start is not None
               else (profile.payroll_week_start if profile else 6))
-        smode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+        smode = 'working' if budget.budget_mode == 'working' else 'estimated'
         rows = {}
         for ln in lines:
             if getattr(ln, 'line_tag', None) in ('header', 'spacer'):
@@ -7389,7 +7372,7 @@ def budget_audit_json(pid, bid):
 
     # Schedule bucket — identical mode-OR-NULL dedupe to budget_view and
     # calc_top_sheet so per-line calc matches exactly what the UI shows.
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     _all_sd = ScheduleDay.query.filter(
         ScheduleDay.budget_id == bid,
         db.or_(ScheduleDay.schedule_mode == sched_mode,
@@ -7405,7 +7388,7 @@ def budget_audit_json(pid, bid):
         elif _ex.schedule_mode is None and _d.schedule_mode == sched_mode:
             _b[_k] = _d
 
-    is_working = budget.budget_mode in ('working', 'actual')
+    is_working = budget.budget_mode == 'working'
 
     out_lines = []
     err_counts = {"arithmetic": 0, "agent": 0, "fringe": 0,
@@ -7696,17 +7679,8 @@ def _fringe_target_budget(pid):
     budget, else its current Estimated (the same pick _line_picker_groups
     makes, so the register and the grid agree). None when the project has
     no budget yet."""
-    bud = (Budget.query
-           .filter_by(project_id=pid, version_status='current', is_actual=False)
-           .filter(db.or_(Budget.budget_mode == 'working',
-                          db.and_(Budget.budget_mode == None,
-                                  Budget.parent_budget_id.isnot(None))))
-           .order_by(Budget.id.desc()).first())
-    if not bud:
-        bud = (Budget.query
-               .filter_by(project_id=pid, version_status='current', is_actual=False)
-               .order_by(Budget.id.desc()).first())
-    return bud
+    from actuals import get_live_budget as _glb
+    return _glb(pid)
 
 
 def _ensure_fringe_rollup_line(pid, section_code, budget=None, commit=True):
@@ -7904,24 +7878,10 @@ def _sync_fringe_lines(pid, budget, top_sheet, lines):
 
 
 def _line_picker_groups(pid):
-    # Prefer the project's current Working budget (has parent_budget_id);
-    # fall back to the current Estimated if no Working exists yet — same
-    # order as the old inline block.
-    pick_budget = (Budget.query
-                   .filter_by(project_id=pid, version_status='current',
-                              is_actual=False)
-                   .filter(db.or_(Budget.budget_mode == 'working',
-                               db.and_(Budget.budget_mode == None,
-                                       Budget.parent_budget_id.isnot(None))))
-                   .order_by(Budget.id.desc())
-                   .first())
-    if not pick_budget:
-        pick_budget = (Budget.query
-                       .filter_by(project_id=pid,
-                                  version_status='current',
-                                  is_actual=False)
-                       .order_by(Budget.id.desc())
-                       .first())
+    # The project's current Working, else its current Estimated — the one
+    # rule in actuals.get_live_budget.
+    from actuals import get_live_budget as _glb
+    pick_budget = _glb(pid)
     # Group its lines by COA section for the optgroup dropdown.
     groups = []
     if pick_budget:
@@ -7949,6 +7909,38 @@ def _line_picker_groups(pid):
     return pick_budget, groups
 
 
+def _docs_inbox_review_count(pid):
+    """How many documents sit in the Docs inbox's "Needs review" view — the
+    same predicate docs_inbox_json's state machine uses (status 'review' or
+    an unresolved possible duplicate; confirmed duplicates and documents
+    whose charge was excluded from the project do not count)."""
+    _excluded_docs = (db.session.query(Transaction.doc_upload_id)
+                      .filter(Transaction.project_id == pid,
+                              Transaction.doc_upload_id.isnot(None),
+                              Transaction.not_project_expense == True))   # noqa: E712
+    return (DocUpload.query
+            .filter(DocUpload.project_id == pid,
+                    DocUpload.status.notin_(('deleted', 'duplicate')),
+                    db.or_(DocUpload.status == 'review',
+                           db.and_(DocUpload.is_duplicate == True,            # noqa: E712
+                                   DocUpload.status != 'duplicate')),
+                    ~DocUpload.id.in_(_excluded_docs))
+            .count())
+
+
+def _activity_sentence(row):
+    """One readable line for an ActivityLog row (Overview → Recent activity)."""
+    verb = {'create': 'added', 'update': 'changed', 'delete': 'deleted',
+            'restore': 'restored', 'sync': 'synced'}.get(row.action or '', row.action or '')
+    kind = (row.entity_type or '').replace('_', ' ')
+    label = (row.entity_label or '').strip()
+    if row.note:
+        return row.note[:160]
+    if label:
+        return f"{kind.capitalize()} {verb}: {label}"[:160]
+    return f"{kind.capitalize()} {verb}"[:160]
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>")
 @login_required
 def budget_view(pid, bid):
@@ -7961,6 +7953,14 @@ def budget_view(pid, bid):
     proj_role = _user_project_role(pid)
     if proj_role == 'docs_only':
         return redirect(url_for("docs_project", pid=pid))
+    # Legacy Actual budgets (is_actual, archived in Phase 2) no longer have a
+    # view of their own (Cleanup C, 2026-11-02): spend lives on the Working.
+    if budget.is_actual:
+        from actuals import get_live_budget as _glb_redirect
+        _live = _glb_redirect(pid)
+        if _live and _live.id != bid:
+            flash("Actual budgets were retired — spend is tracked on the Working budget.", "info")
+            return redirect(url_for("budget_view", pid=pid, bid=_live.id))
     # Auto-sync budget dates from schedule if not yet set
     if not budget.start_date:
         _sync_budget_dates_from_schedule(bid)
@@ -8089,26 +8089,6 @@ def budget_view(pid, bid):
         app.logger.warning(f"[budget_view] unbudgeted self-heal failed: {_heal_e}")
         db.session.rollback()
 
-    # Standing rule (pre-P3): the Actual budget always mirrors Working's line
-    # structure. (Migration P3, User 2026-07) — this is now a NO-OP: P1 stopped
-    # creating Actual budgets and P2 archived every existing one, so there is
-    # nothing to mirror into. Any budget still flagged is_actual is an ARCHIVED
-    # (version_status != 'current') budget kept read-only for audit; mirroring
-    # fresh Working lines into it would be wrong. Guarded on version_status so
-    # the mirror only runs for a (nonexistent) *current* Actual — effectively
-    # never — rather than deleting the call outright, keeping intent auditable.
-    _this_budget = next((b for b in all_budgets if b.id == bid), None)
-    if _this_budget and _this_budget.is_actual and _this_budget.version_status == 'current':
-        try:
-            from actuals import ensure_actual_mirrors
-            _wbid = next((b.id for b in all_budgets
-                          if _budget_type(b.budget_mode) == 'working'
-                          and not b.is_actual and b.version_status == 'current'), None)
-            ensure_actual_mirrors(pid, working_bid=_wbid, actual_bid=bid)
-        except Exception as _eam:
-            app.logger.warning(f"[budget_view] ensure_actual_mirrors failed: {_eam}")
-            db.session.rollback()
-
     lines = BudgetLine.query.filter_by(budget_id=bid).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
 
@@ -8120,7 +8100,7 @@ def budget_view(pid, bid):
 
     # One-time auto-init: stamp working_total on working budgets created before the
     # frozen-snapshot feature existed (working_initialized_at == None).
-    if budget.budget_mode in ('working', 'actual') and budget.working_initialized_at is None and lines:
+    if budget.budget_mode == 'working' and budget.working_initialized_at is None and lines:
         _init_sm = 'working'
         for _ln in lines:
             if _ln.use_schedule:
@@ -8140,7 +8120,7 @@ def budget_view(pid, bid):
     # against zero rows here while sync still saw the NULL rows for
     # auto-line counts → top sheet and budget tab diverged.
     line_results = {}
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     _all_sd = ScheduleDay.query.filter(
         ScheduleDay.budget_id == bid,
         db.or_(ScheduleDay.schedule_mode == sched_mode,
@@ -8487,56 +8467,17 @@ def budget_view(pid, bid):
     # ACTUALS_HANDOFF Phase 0, 2026-10-30): not-project excluded, doc-born rows
     # only once activated, backup rows and itemized parents excluded. The split
     # parent set is resolved once here and shared by the four queries below.
-    from actuals import (counts_as_spend as _counts_as_spend,
-                         signed_amount_value as _signed_amount_value)
+    from actuals import counts_as_spend as _counts_as_spend
     try:
         _split_parents_bv = _split_parent_id_set(pid)
     except Exception:
         _split_parents_bv = set()
+    # Per-line actuals are summed from the transactions coded straight to the
+    # live Working / Estimated lines below (Phase 1 money path). The legacy
+    # "sum the Actual clone, translate via source_line_id" rollup is gone
+    # (Cleanup C): no current Actual budget exists any more.
     actual_by_line_id = {}
-    actual_to_working = {}  # {actual_line_id: source_working_line_id}
     has_actual_budget = False
-    actual_budget_meta = None
-    try:
-        _actual_budget = (Budget.query
-                          .filter_by(project_id=pid, is_actual=True,
-                                     version_status='current')
-                          .first())
-        if _actual_budget:
-            has_actual_budget = True
-            actual_budget_meta = {
-                "id":          _actual_budget.id,
-                "name":        _actual_budget.name,
-                "created_at":  _actual_budget.created_at.isoformat() if _actual_budget.created_at else None,
-            }
-            # Map every Actual line back to its source Working line so the
-            # Actuals dropdown's "selected" check can resolve
-            # transaction.budget_line_id (an Actual id) to the Working id
-            # the dropdown's options are keyed by.
-            for _alid, _wlid in (
-                db.session.query(BudgetLine.id, BudgetLine.source_line_id)
-                .filter(BudgetLine.budget_id == _actual_budget.id,
-                        BudgetLine.source_line_id.isnot(None))
-                .all()
-            ):
-                actual_to_working[_alid] = _wlid
-            # Sum transaction amounts per Actual line. Then translate
-            # via source_line_id → Working line id.
-            from sqlalchemy import func as _func
-            for src_line_id, amt in (
-                db.session.query(BudgetLine.source_line_id,
-                                 _func.sum(_signed_amount()))   # credits subtract (CR-3)
-                .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
-                .filter(BudgetLine.budget_id == _actual_budget.id,
-                        BudgetLine.source_line_id.isnot(None),
-                        _counts_as_spend(_split_parents_bv),
-                        _exclude_estimate_linked_txns_clause())
-                .group_by(BudgetLine.source_line_id)
-                .all()
-            ):
-                actual_by_line_id[src_line_id] = float(amt or 0)
-    except Exception as _ae:
-        logging.warning(f"[actuals/per-line] computation failed: {_ae}")
 
     # Section-only actuals — when a user codes a transaction to a COA
     # section (drag-drop onto the section header) but doesn't pick a
@@ -8617,29 +8558,17 @@ def budget_view(pid, bid):
     # Working lines. That's the source of "Working column shows wrong
     # number in cross-views" — user-reported all day, root cause found
     # in calc-trace 2026-05-08, C-5 of sweep.
-    has_working_budget = any(_budget_type(b.budget_mode) == 'working' and
-                             not b.is_actual and
-                             b.version_status != 'archived' for b in all_budgets)
-    current_working_bid = next(
-        (b.id for b in all_budgets
-         if _budget_type(b.budget_mode) == 'working'
-         and not b.is_actual
-         and b.version_status == 'current'),
-        None
-    ) or next(
-        (b.id for b in all_budgets
-         if _budget_type(b.budget_mode) == 'working'
-         and not b.is_actual
-         and b.version_status != 'archived'),
-        None
-    )
-    current_estimated_bid = next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'estimated' and b.version_status == 'current'),
-        None
-    ) or next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'estimated' and b.version_status != 'archived'),
-        None
-    )
+    # ONE rule for "current" (actuals.pick_current, Cleanup C 2026-11-02):
+    # the newest non-archived budget of its kind. The live Working and the
+    # live Estimated may carry DIFFERENT version numbers.
+    from actuals import (pick_current as _pick_current,
+                         working_exists_for_version as _wefv,
+                         version_strip_state as _vss)
+    _live_working   = _pick_current(all_budgets, 'working')
+    _live_estimated = _pick_current(all_budgets, 'estimated')
+    has_working_budget    = _live_working is not None
+    current_working_bid   = _live_working.id if _live_working else None
+    current_estimated_bid = _live_estimated.id if _live_estimated else None
 
     # ── PHASE 1 money-path migration (2026-07): DIRECT-coded actuals ─────
     # Transactions coded after the migration point straight at a WORKING
@@ -8730,7 +8659,7 @@ def budget_view(pid, bid):
             _wb_profile  = _wb.payroll_profile if _wb else None
             _wb_pw_start = (_wb.payroll_week_start if (_wb and _wb.payroll_week_start is not None)
                             else (_wb_profile.payroll_week_start if _wb_profile else 6))
-            _wb_sm = 'working' if (_wb and _wb.budget_mode in ('working', 'actual')) else 'estimated'
+            _wb_sm = 'working' if (_wb and _wb.budget_mode == 'working') else 'estimated'
             _wb_sched_by_line = {}
             try:
                 _wb_all_sched = ScheduleDay.query.filter_by(
@@ -8963,12 +8892,9 @@ def budget_view(pid, bid):
         else:
             working_company_fee = round(_wfee_base * _wfee_pct, 2)
 
-    # Manual actuals sum per section (from BudgetLine.manual_actual)
+    # BudgetLine.manual_actual is a retired column (Cleanup C): nothing
+    # writes it any more and the Actual column reads coded spend only.
     manual_by_section = {}
-    for ln in lines:
-        if ln.manual_actual is not None:
-            sec_key = _section_for_code(ln.account_code)
-            manual_by_section[sec_key] = manual_by_section.get(sec_key, 0.0) + float(ln.manual_actual)
 
     # Locations for this project (project-specific only)
     project_locations = Location.query.filter_by(
@@ -9223,7 +9149,7 @@ def budget_view(pid, bid):
     est_origin_desc_by_wlid = {}   # viewed line id → Estimated ancestor's title
     est_claim_active = (bool(current_estimated_bid)
                         and current_estimated_bid != budget.id
-                        and budget.budget_mode in ('working', 'actual'))
+                        and budget.budget_mode == 'working')
     if est_claim_active:
         def _is_struct_ln(_l):
             return getattr(_l, 'line_tag', None) in ('header', 'spacer')
@@ -9336,15 +9262,6 @@ def budget_view(pid, bid):
     # for the "Actual" column in EVERY view — Actual lines do not
     # carry an estimated_total of their own; they show the rollup of
     # whatever transactions were dragged in. 2026-05-08 per user.
-    # Resolve peer Actual budget early — actual_line_totals below depends
-    # on it, and peer_estimated/working_bid are computed further down. Only
-    # one Actual exists per project (no version branching).
-    _actual_peer = (Budget.query
-                    .filter_by(project_id=pid, is_actual=True,
-                               version_status='current')
-                    .first())
-    peer_actual_bid = _actual_peer.id if _actual_peer else None
-
     actual_line_totals = {}
     actual_line_totals_by_lid = {}  # by Actual line id (used in Actual view)
     actual_line_totals_by_desc = {}  # {(account_code, lower desc): total}
@@ -9370,33 +9287,6 @@ def budget_view(pid, bid):
                    Transaction.account_code.isnot(None))).first() is not None
     except Exception:
         _has_line_actuals = False
-    if peer_actual_bid:
-        try:
-            _alines = BudgetLine.query.filter_by(budget_id=peer_actual_bid).all()
-            _alid_to_key = {l.id: (l.account_code, l.sort_order) for l in _alines}
-            _alid_to_desc = {l.id: (l.account_code, (l.description or '').strip().lower()) for l in _alines}
-            _txns = (Transaction.query
-                     .filter(Transaction.project_id == pid,
-                             Transaction.budget_line_id.isnot(None),
-                             _counts_as_spend(_split_parents_bv),
-                             _exclude_estimate_linked_txns_clause())
-                     .all())
-            for _tx in _txns:
-                _key = _alid_to_key.get(_tx.budget_line_id)
-                if _key is None:
-                    continue
-                # Same signed rule as _signed_amount(): credits net against
-                # the line (owner 2026-10-30).
-                _amt = _signed_amount_value(_tx.amount, _tx.is_expense)
-                actual_line_totals[_key] = actual_line_totals.get(_key, 0.0) + _amt
-                actual_line_totals_by_lid[_tx.budget_line_id] = (
-                    actual_line_totals_by_lid.get(_tx.budget_line_id, 0.0) + _amt)
-                _dkey = _alid_to_desc.get(_tx.budget_line_id)
-                if _dkey:
-                    actual_line_totals_by_desc[_dkey] = actual_line_totals_by_desc.get(_dkey, 0.0) + _amt
-        except Exception as _ate:
-            logging.warning(f"[budget_view] actual rollup failed: {_ate}")
-
     # ── PHASE 1: merge DIRECT-coded actuals into the Actual-column maps ──────
     # Direct-coded txns point at CURRENT WORKING lines (no Actual peer), so the
     # legacy rollup above (which keys off Actual lines) misses them. Add each
@@ -9483,23 +9373,18 @@ def budget_view(pid, bid):
                                        BudgetLine.source_line_id.isnot(None)).all()):
                 _wid_to_eid[_wid] = _eid
         _eid_to_wid = {e: w for w, e in _wid_to_eid.items()}
-        _aid_to_wid = actual_to_working                       # {actual_id: working_id}
-        _wid_to_aid = {w: a for a, w in actual_to_working.items()}
-        _view_actual = bool(budget.is_actual)
-        _view_est    = (not _view_actual) and _budget_type(budget.budget_mode) == 'estimated'
+        _view_est    = _budget_type(budget.budget_mode) == 'estimated'
         for ln in lines:
-            if _view_actual:
-                wid = ln.source_line_id or _aid_to_wid.get(ln.id)
-                eid = _wid_to_eid.get(wid)
-                aid = ln.id
-            elif _view_est:
+            # The Actual column reads the line the spend is coded to: the
+            # Working line itself, or (pre-Working) the Estimated line.
+            if _view_est:
                 eid = ln.id
                 wid = _eid_to_wid.get(ln.id)
-                aid = _wid_to_aid.get(wid)
+                aid = wid if wid is not None else ln.id
             else:  # working view
                 wid = ln.id
                 eid = ln.source_line_id
-                aid = _wid_to_aid.get(ln.id)
+                aid = ln.id
             if eid is not None and eid in est_total_by_eid:
                 xb_est[ln.id] = est_total_by_eid[eid]
             if wid is not None and wid in _work_total_by_wid:
@@ -9538,7 +9423,7 @@ def budget_view(pid, bid):
         # Only the Estimated↔Working pair participates. The Actual budget has
         # its own mirror machinery (ensure_actual_mirrors) and isn't a "sister"
         # in the version-pair sense, so skip it entirely.
-        if not budget.is_actual:
+        if True:
             _is_working_fam = _budget_type(budget.budget_mode) == 'working'
             if _is_working_fam:
                 _sister_bid = current_estimated_bid   # Working view → show Estimated-only lines
@@ -9655,7 +9540,10 @@ def budget_view(pid, bid):
     except Exception as _shx:
         logging.warning(f"[versions] share status map failed: {_shx}")
 
-    # Mode-switcher peers: same-version Estimated and Working for the budget being viewed
+    # Viewing toggle peers: the Estimated and Working of THIS version. The
+    # Working segment is enabled only when a Working exists for this version
+    # (not merely any Working at all) — the same rule the version strip and
+    # the "Start Working vN" button use (Cleanup C, 2026-11-02).
     _cur_vn = budget.version_number or 1
     _vn_peer = next((g for g in version_groups
                      if g['version_number'] == _cur_vn), {})
@@ -9663,48 +9551,23 @@ def budget_view(pid, bid):
     peer_estimated_bid = peer_estimated_bid.id if peer_estimated_bid else current_estimated_bid
     peer_working_bid   = _vn_peer.get('working', {})
     peer_working_bid   = peer_working_bid.id if peer_working_bid else None
-    # Actual peer (peer_actual_bid) was resolved earlier so the
-    # actual_line_totals rollup could use it. Only one Actual exists
-    # per project (no version branching). Used by the mode-switcher
-    # Actual button (added 2026-05-01 — replaces the By Department
-    # sub-tab as the canonical phase-3 view).
-    is_actual_view  = bool(budget.is_actual)
-
-    # Build per-line and per-section transaction lookup tables for the
-    # Actual view's expandable detail rows. When bid == Actual budget,
-    # the rendered lines ARE Actual BudgetLines and their ids match
-    # transaction.budget_line_id directly (no Working-translation
-    # needed). txns_by_section_only_code holds rows with account_code
-    # but no specific budget_line_id (drag-drop section-only).
-    txns_by_line = {}
-    txns_by_section_only_code = {}
-    if is_actual_view:
-        try:
-            _line_txns = (Transaction.query
-                          .filter(Transaction.project_id == pid,
-                                  Transaction.budget_line_id.isnot(None),
-                                  Transaction.not_project_expense == False,
-                                  Transaction.is_expense == True,
-                                  _exclude_estimate_linked_txns_clause())
-                          .order_by(Transaction.txn_date.desc().nullslast(),
-                                    Transaction.id.desc())
-                          .all())
-            for _tx in _line_txns:
-                txns_by_line.setdefault(_tx.budget_line_id, []).append(_tx)
-            _sec_txns = (Transaction.query
-                         .filter(Transaction.project_id == pid,
-                                 Transaction.budget_line_id.is_(None),
-                                 Transaction.account_code.isnot(None),
-                                 Transaction.not_project_expense == False,
-                                 Transaction.is_expense == True,
-                                 _exclude_estimate_linked_txns_clause())
-                         .order_by(Transaction.txn_date.desc().nullslast(),
-                                   Transaction.id.desc())
-                         .all())
-            for _tx in _sec_txns:
-                txns_by_section_only_code.setdefault(_tx.account_code, []).append(_tx)
-        except Exception as _bge:
-            logging.warning(f"[budget_view/actual] txn grouping failed: {_bge}")
+    working_for_version = _wefv(all_budgets, _cur_vn)
+    if not working_for_version:
+        peer_working_bid = None
+    # Version strip (TabStrip artboard states A / B / C) — built from the
+    # LIVE pair, which is independent of which budget is being viewed.
+    version_strip = {
+        'state': _vss(_live_estimated, _live_working),
+        'estimated_vn': (_live_estimated.version_number or 1) if _live_estimated else None,
+        'working_vn': (_live_working.version_number or 1) if _live_working else None,
+        'estimated_bid': current_estimated_bid,
+        'working_bid': current_working_bid,
+        # The Estimated a new Working would be started from: the newest one.
+        'start_from_bid': current_estimated_bid,
+        'start_vn': (_live_estimated.version_number or 1) if _live_estimated else 1,
+        'viewed_vn': _cur_vn,
+        'viewed_has_working': working_for_version,
+    }
 
     company_settings = CompanySettings.query.get(1) or CompanySettings()
     # Defer veryfi_data — the raw OCR JSON blob can be 50–200 KB per row
@@ -9757,35 +9620,82 @@ def budget_view(pid, bid):
             pass
     _actuals_pick_budget, actuals_pick_groups = _line_picker_groups(pid)
 
-    # Dashboard summary counts — cheap aggregates for the Dashboard tab cards.
+    # ── Overview tab (Cleanup C, 2026-11-02 — replaces the Dashboard) ──────
+    # "Needs you" counts come from the Actuals workspace's OWN row-flag logic
+    # (routes.actuals.actuals_counts) and the Docs inbox's needs-review rule,
+    # so the numbers here always match the screens they link to.
+    overview_counts = {}
     try:
-        from models import AnomalyFlag as _AF
-        dashboard_stats = {
-            'uncoded': Transaction.query.filter(
-                Transaction.project_id == pid,
-                Transaction.not_project_expense == False,   # noqa: E712
-                Transaction.account_code.is_(None)).count(),
-            'unmatched': Transaction.query.filter(
-                Transaction.project_id == pid,
-                Transaction.match_status == 'unmatched').count(),
-            'ai_pending': Transaction.query.filter(
-                Transaction.project_id == pid,
-                Transaction.account_code.is_(None),
-                Transaction.ai_suggested_code.isnot(None)).count(),
-            'docs_review': DocUpload.query.filter(
-                DocUpload.project_id == pid,
-                DocUpload.status.notin_(('deleted', 'error')),
-                db.or_(DocUpload.status == 'review', DocUpload.confidence < 70)).count(),
-            'anomalies': _AF.query.filter_by(project_id=pid, resolved=False).count(),
-            'dup_alerts': _AF.query.filter_by(project_id=pid, resolved=False,
-                                              type='double_coded').count(),
-            'matches_to_review': Transaction.query.filter(
-                Transaction.project_id == pid,
-                Transaction.match_status == 'suggested').count(),
-        }
-    except Exception as _de:
-        logging.warning(f"[dashboard] stats failed: {_de}")
-        dashboard_stats = {}
+        from routes.actuals import actuals_counts as _actuals_counts
+        overview_counts = dict(_actuals_counts(pid) or {})
+    except Exception as _oce:
+        logging.warning(f"[overview] actuals counts failed: {_oce}")
+    try:
+        overview_counts['docs_review'] = _docs_inbox_review_count(pid)
+    except Exception as _odr:
+        logging.warning(f"[overview] docs review count failed: {_odr}")
+        overview_counts['docs_review'] = 0
+    overview_counts['total'] = sum(int(overview_counts.get(k) or 0) for k in
+                                   ('unclaimed', 'receipts', 'docs_review', 'matches_to_review'))
+    # Last five changes on this project, scoped by role like the Activity tab.
+    recent_activity = []
+    try:
+        _ra_rows = (_scoped_activity_query(project_id=pid)
+                    .order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc())
+                    .limit(5).all())
+        _ra_uids = {r.user_id for r in _ra_rows if r.user_id}
+        _ra_names = {}
+        if _ra_uids:
+            for _u in User.query.filter(User.id.in_(list(_ra_uids))).all():
+                _ra_names[_u.id] = (_u.name or _u.email or '').split('@')[0]
+        for _r in _ra_rows:
+            recent_activity.append({
+                'text': _activity_sentence(_r),
+                'who': _ra_names.get(_r.user_id) or 'System',
+                'when': _r.created_at,
+            })
+    except Exception as _rae:
+        logging.warning(f"[overview] recent activity failed: {_rae}")
+    # Counts for the More ▾ menu (cheap: lists already in hand + one count).
+    try:
+        callsheet_count = (db.session.query(func.count(func.distinct(CallSheetData.date)))
+                           .filter(CallSheetData.budget_id == bid).scalar() or 0)
+    except Exception:
+        callsheet_count = 0
+    # Latest internal note per line — the lock-dot hover card (LineActions
+    # artboard). One query over this budget's comments.
+    comment_latest = {}
+    try:
+        from models import BudgetComment as _BC_ov
+        _cl_rows = (db.session.query(_BC_ov.budget_line_id, _BC_ov.body,
+                                     _BC_ov.created_at, _BC_ov.author_id)
+                    .filter(_BC_ov.budget_id == bid, _BC_ov.budget_line_id.isnot(None),
+                            _BC_ov.day_date.is_(None))
+                    .order_by(_BC_ov.created_at.asc()).all())
+        _cl_uids = {r[3] for r in _cl_rows if r[3]}
+        _cl_names = {}
+        if _cl_uids:
+            for _u in User.query.filter(User.id.in_(list(_cl_uids))).all():
+                _cl_names[_u.id] = (_u.name or _u.email or '').split('@')[0]
+        for _lid, _body, _at, _uid in _cl_rows:
+            comment_latest[_lid] = {'body': (_body or '')[:400],
+                                    'who': _cl_names.get(_uid, ''),
+                                    'when': _at}
+    except Exception as _cle:
+        logging.warning(f"[overview] latest comments failed: {_cle}")
+    # Lines claimed by a lever on this budget → the "Lever" chip after the
+    # description (LineActions artboard).
+    lever_line_ids = set()
+    try:
+        for _lv in BudgetLever.query.filter_by(budget_id=bid).all():
+            if _lv.line_ids:
+                try:
+                    lever_line_ids.update(int(x) for x in json.loads(_lv.line_ids))
+                except (TypeError, ValueError):
+                    pass
+    except Exception as _lve:
+        logging.warning(f"[overview] lever line ids failed: {_lve}")
+    dashboard_stats = {}
 
     # ── Client estimate approval: badge + history ───────────────────────────
     # When a client approves (or declines) a sent estimate through the portal,
@@ -9848,15 +9758,18 @@ def budget_view(pid, bid):
         estimate_latest=estimate_latest,
         estimate_share_history=estimate_share_history,
         dashboard_stats=dashboard_stats,
+        overview_counts=overview_counts,
+        recent_activity=recent_activity,
+        callsheet_count=callsheet_count,
+        comment_latest=comment_latest,
+        lever_line_ids=lever_line_ids,
         all_budgets=all_budgets,
         version_groups=version_groups,
         share_status_by_bid=share_status_by_bid,
         peer_estimated_bid=peer_estimated_bid,
         peer_working_bid=peer_working_bid,
-        peer_actual_bid=peer_actual_bid,
-        is_actual_view=is_actual_view,
-        txns_by_line=txns_by_line,
-        txns_by_section_only_code=txns_by_section_only_code,
+        version_strip=version_strip,
+        working_for_version=working_for_version,
         project_custom_units=project_custom_units,
         project_pos=project_pos,
         pos_by_id=pos_by_id,
@@ -9930,9 +9843,7 @@ def budget_view(pid, bid):
         actuals_pick_groups=actuals_pick_groups,
         actual_by_line_id=actual_by_line_id,
         actual_section_only_by_code=actual_section_only_by_code,
-        actual_to_working=actual_to_working,
         has_actual_budget=has_actual_budget,
-        actual_budget_meta=actual_budget_meta,
         actuals_frozen=actuals_frozen,
         fringe_rollup_line_ids=fringe_rollup_line_ids,
         auto_line_ids=auto_line_ids,
@@ -9957,16 +9868,9 @@ def upsert_line(pid, bid):
     # same-version* Working/Actual budget exists. Superseded or other-version
     # workings (e.g. auto-clones from older versions) must not trigger this.
     if _budget_type(budget.budget_mode) == 'estimated' and not data.get('override_estimated'):
-        has_working = Budget.query.filter(
-            Budget.project_id == pid,
-            Budget.version_status == 'current',
-            db.func.coalesce(Budget.version_number, 1) == (budget.version_number or 1),
-        ).filter(
-            db.or_(
-                Budget.budget_mode.in_(('working', 'actual')),
-                db.and_(Budget.budget_mode.is_(None), Budget.parent_budget_id.isnot(None)),
-            )
-        ).first()
+        from actuals import working_exists_for_version as _wefv_line
+        has_working = _wefv_line(Budget.query.filter_by(project_id=pid).all(),
+                                 budget.version_number or 1)
         if has_working:
             return jsonify({
                 "estimated_protected": True,
@@ -10014,7 +9918,7 @@ def upsert_line(pid, bid):
         new_qty = int(float(data["quantity"] or 1))
         old_qty = int(float(ln.quantity or 1))
         if new_qty < old_qty:
-            _sm = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+            _sm = 'working' if budget.budget_mode == 'working' else 'estimated'
             _instances = db.session.query(ScheduleDay.crew_instance).filter_by(
                 budget_line_id=ln.id, schedule_mode=_sm
             ).distinct().all()
@@ -10055,7 +9959,7 @@ def upsert_line(pid, bid):
               "est_ot", "fringe_type", "agent_pct", "note", "use_schedule",
               "parent_line_id", "line_tag", "role_group", "unit_rate",
               "days_unit", "days_per_week",
-              "working_total", "manual_actual",
+              "working_total",
               # Prod Co Fee dispersal override (2026-09-04): dollars for
               # THIS line's dispersed fee share; blank/None → back to auto.
               "fee_disperse_amount",
@@ -10088,7 +9992,7 @@ def upsert_line(pid, bid):
     # See budget_calc.calc_line() docstring for the related fix.
     _ZERO_ON_BLANK = {"quantity", "days", "rate", "estimated_total",
                       "est_ot", "agent_pct", "working_total",
-                      "manual_actual", "unit_rate", "days_per_week"}
+                      "unit_rate", "days_per_week"}
     for f in fields:
         if f in data:
             val = data[f]
@@ -10201,7 +10105,7 @@ def upsert_line(pid, bid):
 
     fringe_cfgs = get_fringe_configs(db.session, pid)
     if ln.use_schedule:
-        _sm = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+        _sm = 'working' if budget.budget_mode == 'working' else 'estimated'
         sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=_sm).all()
         result = calc_line_from_schedule(ln, sched, fringe_cfgs)
     else:
@@ -10500,33 +10404,24 @@ def line_duplicate(pid, bid, lid):
 
 
 def _resolve_sister_budget(edited_budget):
-    """Resolve the version-pair sister of `edited_budget`:
-      - edited is Working-family  → the project's CURRENT Estimated budget
-      - edited is Estimated       → the project's CURRENT Working budget
-    Returns the sister Budget or None. Never returns an archived or is_actual
-    budget, and never the edited budget itself. Mirrors the current-version
-    resolution used in budget_view (prefer version_status='current', fall back
-    to any non-archived of the right type)."""
+    """Resolve the version-pair sister of `edited_budget`: the budget of the
+    OTHER kind that carries the SAME version_number (Estimated vN ↔ Working
+    vN). Cleanup C (2026-11-02): this used to pair with the project's
+    *current* Working / Estimated regardless of version, so a drag on
+    Estimated v8 re-seated the lines of Working v7. Returns None when the
+    version has no pair, or the sister is archived / is_actual / itself."""
     if edited_budget is None or edited_budget.is_actual:
         return None
-    all_b = Budget.query.filter_by(project_id=edited_budget.project_id).all()
-    if _budget_type(edited_budget.budget_mode) == 'working':
-        want = 'estimated'
-    else:
-        want = 'working'
-
-    def _is_type(b):
-        return (_budget_type(b.budget_mode) == want and not b.is_actual)
-
-    sister = next(
-        (b for b in all_b if _is_type(b) and b.version_status == 'current'), None
-    ) or next(
-        (b for b in all_b if _is_type(b) and b.version_status != 'archived'), None
-    )
-    if sister is None or sister.id == edited_budget.id or sister.is_actual \
-            or sister.version_status == 'archived':
+    want = 'estimated' if _budget_type(edited_budget.budget_mode) == 'working' else 'working'
+    vn = edited_budget.version_number or 1
+    cands = [b for b in Budget.query.filter_by(project_id=edited_budget.project_id).all()
+             if _budget_type(b.budget_mode) == want and not b.is_actual
+             and b.version_status != 'archived' and b.id != edited_budget.id
+             and (b.version_number or 1) == vn]
+    if not cands:
         return None
-    return sister
+    cands.sort(key=lambda b: (0 if b.version_status == 'current' else 1, -(b.id or 0)))
+    return cands[0]
 
 
 def _sister_line_for(ln, sister_lines, sister_src_ids, sister_desc_index):
@@ -10559,7 +10454,7 @@ def _mirror_line_move(edited_budget):
 
     Algorithm — run AFTER the edited budget's reorder/section-move has been
     committed, so we read the final on-disk state:
-      1. Resolve the sister budget (skip if none / same / archived / is_actual).
+      1. Resolve the same-version sister budget (skip if none / archived / is_actual).
       2. For each edited line, find its sister via the standard pairing
          (_sister_line_for). Lines with no sister are left untouched.
       3. For each PAIRED sister line: copy the edited line's account_code +
@@ -10806,7 +10701,7 @@ def remove_schedule_instance(pid, bid, lid):
     ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     data = request.get_json(force=True) or {}
     instance = int(data.get("instance", 1))
-    _sm = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    _sm = 'working' if budget.budget_mode == 'working' else 'estimated'
 
     # Remove schedule days for this instance
     ScheduleDay.query.filter_by(
@@ -10833,39 +10728,6 @@ def remove_schedule_instance(pid, bid, lid):
     _touch_budget(bid)
     db.session.commit()
     return jsonify({"ok": True, "removed_instance": instance})
-
-
-@app.route("/projects/<int:pid>/budget/<int:bid>/working/init", methods=["POST"])
-@login_required
-def init_working_budget(pid, bid):
-    """
-    Re-sync working_total on every BudgetLine to match the current estimated total.
-    Used to reset the Working budget's line values back to the Estimated baseline.
-    Idempotent and safe to call at any time.
-
-    Note: Creating a Working budget version (separate Budget object) is done via
-    create_working_from_estimated. This route only refreshes the working_total
-    column on existing lines — it does not create new Budget objects.
-    """
-    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
-    lines  = BudgetLine.query.filter_by(budget_id=bid).all()
-    fringe_cfgs = get_fringe_configs(db.session, pid)
-    profile  = budget.payroll_profile
-    pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
-        profile.payroll_week_start if profile else 6)
-    _sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
-    for ln in lines:
-        if ln.use_schedule:
-            sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=_sched_mode).all()
-            res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
-        else:
-            res = calc_line(ln, fringe_cfgs)
-        ln.working_total = res['est_total']
-
-    if not budget.working_initialized_at:
-        budget.working_initialized_at = datetime.utcnow()
-    db.session.commit()
-    return jsonify({"ok": True, "initialized_at": budget.working_initialized_at.isoformat()})
 
 
 def _auto_tag_source_spec(line_tag):
@@ -12385,7 +12247,7 @@ def travel_apply_doc(pid, bid):
     except Exception:
         return jsonify({"error": "Invalid date"}), 400
 
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     from sqlalchemy import or_ as _or_apply
     sd = ScheduleDay.query.filter(
         ScheduleDay.budget_id == bid, ScheduleDay.budget_line_id == line_id,
@@ -12752,11 +12614,14 @@ def _run_budget_mismatch_scan(pid):
                 flags += 1
     except Exception as e:
         logging.warning(f"[budget-scan] PO pass failed: {e}")
-    # (b) non-labor Actual budget lines over their planned amount.
+    # (b) non-labor lines on the LIVE budget over their planned amount.
+    # Cleanup C (2026-11-02): this used to look for a current Actual budget,
+    # which has not existed since July, so it never fired. Spend is coded to
+    # the current Working (or, pre-Working, the Estimated) — scan that.
     try:
-        actual = (Budget.query.filter_by(project_id=pid, is_actual=True, version_status='current')
-                  .order_by(Budget.id.desc()).first())
-        if actual:
+        from actuals import get_live_budget as _glb_scan, line_overages as _line_overages
+        live = _glb_scan(pid)
+        if live:
             sums = {}
             for t in (Transaction.query
                       .filter(Transaction.project_id == pid,
@@ -12771,28 +12636,25 @@ def _run_budget_mismatch_scan(pid):
                 if amt <= 0:   # expenses only (refunds/credits are negative)
                     continue
                 sums[t.budget_line_id] = sums.get(t.budget_line_id, 0.0) + amt
-            for ln in BudgetLine.query.filter_by(budget_id=actual.id).all():
+            planned_by_line = {}
+            labels = {}
+            for ln in BudgetLine.query.filter_by(budget_id=live.id).all():
                 if getattr(ln, 'is_labor', False):
                     continue
-                planned = float(ln.estimated_total or 0)
-                if planned <= 0:
-                    continue
-                actual_amt = sums.get(ln.id, 0.0)
-                over = actual_amt - planned
-                # Only flag a meaningful overage: ≥ $50 AND ≥ 10% over plan.
-                if over < 50 or over < planned * 0.10:
-                    continue
-                label = ln.description or ln.account_name or f'Line {ln.id}'
+                planned_by_line[ln.id] = float(ln.estimated_total or 0)
+                labels[ln.id] = ln.description or ln.account_name or f'Line {ln.id}'
+            for lid, planned, actual_amt, over in _line_overages(planned_by_line, sums):
+                label = labels.get(lid, f'Line {lid}')
                 f = _flag_anomaly(pid, 'budget_mismatch', severity='medium',
                                   title=f'Over budget · {label}'[:120],
                                   explanation=(f'"{label}" has ${actual_amt:,.2f} actual vs '
                                                f'${planned:,.2f} planned — ${over:,.2f} over. Verify the '
                                                f'coded charges/invoices match the budget line.'),
                                   confidence=None,
-                                  payload={"kind": "line_over_budget", "line_id": ln.id,
+                                  payload={"kind": "line_over_budget", "line_id": lid,
                                            "planned": round(planned, 2), "actual": round(actual_amt, 2),
                                            "over": round(over, 2), "line": label},
-                                  dedup_key=f'line_over_budget:{ln.id}')
+                                  dedup_key=f'line_over_budget:{lid}')
                 if f is not None:
                     flags += 1
     except Exception as e:
@@ -13472,7 +13334,6 @@ def _content_disposition_attachment(filename):
     return f'attachment; filename="{ascii_safe}"; filename*=UTF-8\'\'{utf8_part}'
 
 
-
 @app.route("/projects/<int:pid>/budget/<int:bid>/export.csv")
 @login_required
 def export_csv(pid, bid):
@@ -13678,7 +13539,7 @@ def export_pdf(pid, bid):
     # export totals drop legacy days (same defect as the sub-budget card —
     # user report 2026-07-22: 'when I export sub budgets the totals are not
     # correct').
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     line_results = {}
     for ln in lines:
         if ln.use_schedule:
@@ -13757,7 +13618,7 @@ def export_pdf(pid, bid):
     sections_ordered = [sections_detail[sk] for sk, _ in FP_COA_SECTIONS if sk in sections_detail]
 
     company_settings = CompanySettings.query.get(1) or CompanySettings()
-    is_working_view  = budget.budget_mode in ('working', 'actual')
+    is_working_view  = budget.budget_mode == 'working'
 
     fee_m = (1 + float(budget.company_fee_pct)) if dispersed else 1.0
 
@@ -13871,10 +13732,13 @@ def export_pdf(pid, bid):
     # working view → Est + Work + Var; estimated view → Est only.
     # User can override via the Export Options modal — flags arrive
     # as ?col_est=1&col_work=1&col_act=1&col_var=1&var_basis=...
-    # The variance basis controls what the Variance column subtracts:
-    #   est_v_work  → Working - Estimated  (overrun while planning)
-    #   work_v_act  → Working - Actual     (overrun in production)
-    #   est_v_act   → Estimated - Actual   (overrun vs original plan)
+    # The variance basis controls what the Variance column subtracts —
+    # the ONE key set shared with the budget page (Cleanup C, 2026-11-02):
+    #   est_to_working → Working - Estimated  (what changed while planning)
+    #   vs_working     → Working - Actual     (overrun in production)
+    #   vs_estimated   → Estimated - Actual   (overrun vs original plan)
+    # The old est_v_work / work_v_act / est_v_act spellings are accepted as
+    # aliases so a bookmarked export URL keeps working.
     _any_col_param = any(k in request.args for k in
                          ('col_est', 'col_work', 'col_act', 'col_var'))
     if _any_col_param:
@@ -13888,9 +13752,8 @@ def export_pdf(pid, bid):
         col_work = is_working_view
         col_act  = False
         col_var  = is_working_view
-    var_basis = request.args.get('var_basis') or 'est_v_work'
-    if var_basis not in ('est_v_work', 'work_v_act', 'est_v_act'):
-        var_basis = 'est_v_work'
+    from actuals import normalize_variance_basis as _nvb
+    var_basis = _nvb(request.args.get('var_basis'), default='est_to_working')
 
     # ── Pull the Estimated peer's Top Sheet so the PDF's Estimated
     # column reads from the actual Estimated budget instead of the
@@ -13924,17 +13787,8 @@ def export_pdf(pid, bid):
         # naive `is_actual == False` SQL filter excludes NULL rows
         # entirely. Was the silent reason the previous fix (29d99c8)
         # didn't take for this user. 2026-05-19 v2.
-        _est_peer = (Budget.query
-                     .filter(Budget.project_id == pid,
-                             Budget.budget_mode == 'estimated',
-                             Budget.version_status == 'current')
-                     .order_by(Budget.id.desc()).first())
-        if not _est_peer:
-            _est_peer = (Budget.query
-                         .filter(Budget.project_id == pid,
-                                 Budget.budget_mode == 'estimated',
-                                 Budget.version_status != 'archived')
-                         .order_by(Budget.id.desc()).first())
+        from actuals import get_current_estimated_budget as _gceb_pdf
+        _est_peer = _gceb_pdf(pid)
         if _est_peer and _est_peer.id != budget.id:
             _eb_lines = (BudgetLine.query
                          .filter_by(budget_id=_est_peer.id)
@@ -13991,7 +13845,7 @@ def export_pdf(pid, bid):
                       else (_est_peer if ('_est_peer' in locals() and _est_peer) else budget))
     est_ver  = _ver_str(est_budget_obj)
     work_ver = _ver_str(budget) if is_working_view else None
-    work_ver_label = ('Actual' if budget.budget_mode == 'actual' else 'Working')
+    work_ver_label = 'Working'
 
     # ── Per-person travel/per-diem mirror rows (opt-in PDF export)
     # Reuses compute_travel_mirror_per_line — same helper the in-app
@@ -14076,9 +13930,7 @@ def export_pdf(pid, bid):
 # ════════════════════════════════════════════════════════════════════════
 
 def _estimate_version_label(budget):
-    mode_word = 'Working' if budget.budget_mode in ('working', 'actual') else 'Estimated'
-    if budget.budget_mode == 'actual':
-        mode_word = 'Actual'
+    mode_word = 'Working' if budget.budget_mode == 'working' else 'Estimated'
     lbl = getattr(budget, 'version_label', None)
     if not lbl and getattr(budget, 'version_number', None):
         lbl = 'v%d' % budget.version_number
@@ -14101,7 +13953,7 @@ def _build_estimate_snapshot(project, budget, detail_mode):
     profile = budget.payroll_profile
     pw_start = (budget.payroll_week_start if budget.payroll_week_start is not None
                 else (profile.payroll_week_start if profile else 6))
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
 
     # Use the SAME Top Sheet calc the on-screen budget + PDF use, so the totals
     # the client sees match exactly. Summing raw line totals (the old approach)
@@ -16347,7 +16199,7 @@ def budget_levers_json(pid, bid):
                    .all())
         if flagged:
             fringe_cfgs = get_fringe_configs(db.session, pid)
-            _sm = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+            _sm = 'working' if budget.budget_mode == 'working' else 'estimated'
             for ln in flagged:
                 if ln.id in claimed or not (ln.discussion_note or '').strip():
                     continue
@@ -16511,7 +16363,7 @@ def admin_meal_status():
     budgets = (Budget.query.filter_by(project_id=proj.id, version_status='current')
                .order_by(Budget.id).all())
     for b in budgets:
-        smode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
+        smode = 'working' if b.budget_mode == 'working' else 'estimated'
         binfo = {"id": b.id, "name": b.name, "mode": b.budget_mode,
                  "sched_mode_used": smode, "dates": [], "meal_lines": [],
                  "pd_rows_other_mode": []}
@@ -16820,7 +16672,7 @@ def gantt_view(pid, bid):
         labor_lines.extend(_cluster_by_subgroup(_by_section[code]))
 
     # Determine which schedule to show based on budget mode
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     days = ScheduleDay.query.filter_by(
         budget_id=bid, schedule_mode=sched_mode
     ).order_by(ScheduleDay.date).all()
@@ -17043,16 +16895,12 @@ def gantt_view(pid, bid):
             if parent:
                 parent_names[b.id] = parent.name
 
-    current_working_bid = next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'working' and b.version_status == 'current'), None
-    ) or next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'working' and b.version_status != 'archived'), None
-    )
-    current_estimated_bid = next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'estimated' and b.version_status == 'current'), None
-    ) or next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'estimated' and b.version_status != 'archived'), None
-    )
+    # One rule for "current" (actuals.pick_current): newest of its kind.
+    from actuals import pick_current as _pick_current
+    _lw = _pick_current(all_budgets, 'working')
+    _le = _pick_current(all_budgets, 'estimated')
+    current_working_bid   = _lw.id if _lw else None
+    current_estimated_bid = _le.id if _le else None
 
     # Per-day comment counts (owner 2026-07-22) keyed "lineid:iso-date" —
     # stamps a 💬 marker on commented cells. Fail-open.
@@ -17306,7 +17154,7 @@ def schedule_waypoint_preview(pid, bid, wid):
     except Exception:
         return jsonify({"error": "This waypoint's snapshot is unreadable."}), 400
 
-    _mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    _mode = 'working' if budget.budget_mode == 'working' else 'estimated'
 
     def _dedupe(rows, keyf, modef):
         out = {}
@@ -17425,7 +17273,7 @@ def schedule_waypoint_restore(pid, bid, wid):
     try:
         n = _restore_schedule_state(
             bid, days, pdays,
-            default_mode=('working' if _wb.budget_mode in ('working', 'actual')
+            default_mode=('working' if _wb.budget_mode == 'working'
                           else 'estimated'))
         db.session.commit()
         sync_schedule_driven_lines(bid, db.session)
@@ -17526,7 +17374,7 @@ def set_gantt_day(pid, bid):
     if _yr_err:
         return jsonify({"error": _yr_err}), 400
 
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     _maybe_schedule_waypoint(pid, bid)
 
     existing = ScheduleDay.query.filter_by(
@@ -17683,7 +17531,7 @@ def set_gantt_days_batch(pid, bid):
     if not isinstance(days, list) or not days:
         return jsonify({"error": "days array required"}), 400
 
-    sched_mode        = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode        = 'working' if budget.budget_mode == 'working' else 'estimated'
     _maybe_schedule_waypoint(pid, bid)
     affected_line_ids = set()
     applied           = 0
@@ -17820,7 +17668,7 @@ def clear_gantt_day(pid, bid):
     line_id  = data.get("line_id")
     date_str = data.get("date")
     crew_instance = int(data.get("crew_instance") or 1)
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     _maybe_schedule_waypoint(pid, bid)
     if line_id and date_str:
         try:
@@ -17991,7 +17839,7 @@ def set_gantt_meal(pid, bid):
     date_str  = data.get("date")
     field     = data.get("field")   # courtesy_breakfast | first_meal | second_meal
     value     = bool(data.get("value", False))
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
 
     if not date_str or field not in ("courtesy_breakfast", "first_meal", "second_meal",
                                       "is_production_day", "craft_services"):
@@ -18071,7 +17919,7 @@ def expand_gantt(pid, bid):
 def gantt_live(pid, bid):
     """Return compact schedule state for real-time collaborative patching."""
     b = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
-    sched_mode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if b.budget_mode == 'working' else 'estimated'
 
     days = ScheduleDay.query.filter_by(budget_id=bid, schedule_mode=sched_mode).all()
     assignments = (CrewAssignment.query
@@ -18204,7 +18052,7 @@ def travel_grid(pid, bid):
     """
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     show_all = request.args.get("show_all") == "1"
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
 
     # Pull schedule rows with the same dedup pattern used everywhere else.
     from sqlalchemy import or_ as _or_t
@@ -18496,7 +18344,7 @@ def travel_toggle_flag(pid, bid):
     except Exception:
         return jsonify({"error": "Invalid date"}), 400
 
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
 
     sd = ScheduleDay.query.filter_by(
         budget_id=bid, budget_line_id=line_id,
@@ -18881,7 +18729,7 @@ def travel_add_day(pid, bid):
         date_obj = _dt_a.strptime(date_s, "%Y-%m-%d").date()
     except Exception:
         return jsonify({"error": "Invalid date"}), 400
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     # Search for an existing row at this cell — accept either the current
     # schedule_mode OR a legacy NULL row (pre-mode-column data). Without
     # the NULL match we'd create a duplicate when an old budget already
@@ -18975,7 +18823,7 @@ def catering_grid(pid, bid):
     breakdown). Caller can use this to enter caterer bills against
     the expected meal cost."""
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
 
     from sqlalchemy import or_ as _or_c
     raw_sd = ScheduleDay.query.filter(
@@ -19232,7 +19080,7 @@ def catering_meal_toggle(pid, bid):
         date_obj = _dt_m.strptime(date_s, "%Y-%m-%d").date()
     except Exception:
         return jsonify({"error": "Invalid date"}), 400
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     pd = ProductionDay.query.filter_by(
         budget_id=bid, date=date_obj, schedule_mode=sched_mode).first()
     if not pd:
@@ -19383,7 +19231,7 @@ def catering_export(pid, bid):
     selected_set = set(selected_dates)
 
     # Reuse the same dedup pull as the catering grid endpoint.
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     from sqlalchemy import or_ as _or_e
     raw_sd = ScheduleDay.query.filter(
         ScheduleDay.budget_id == bid,
@@ -19632,7 +19480,7 @@ def travel_export(pid, bid):
     Print-to-PDF from the browser, same as the catering exports."""
     budget  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     project = ProjectSheet.query.get_or_404(pid)
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     recipient  = (request.args.get('recipient') or 'coordinator').strip()
 
     def _arg_date(name):
@@ -19806,7 +19654,7 @@ def line_schedule_detail(pid, bid, lid):
     _ac, _aname, label, _default_rate, _sort = SCHEDULE_LINE_DEFS[tag]
     rate = float(line.rate or line.unit_rate or _default_rate)
 
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     from sqlalchemy import or_ as _or_sd
     _raw_sd = ScheduleDay.query.filter(
         ScheduleDay.budget_id == bid,
@@ -20476,7 +20324,7 @@ def line_calc_detail(pid, bid, lid):
     if not line.is_labor:
         return jsonify({"error": "Not a labor line"}), 400
 
-    _sm = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    _sm = 'working' if budget.budget_mode == 'working' else 'estimated'
     sched_days  = ScheduleDay.query.filter_by(budget_id=bid, budget_line_id=lid, schedule_mode=_sm).all()
     profile     = budget.payroll_profile
     pw_start    = budget.payroll_week_start if budget.payroll_week_start is not None else (
@@ -20739,7 +20587,7 @@ def _po_live_line_totals(budget, po_lines, pid):
     pw      = (budget.payroll_week_start
                if budget.payroll_week_start is not None
                else (profile.payroll_week_start if profile else 6))
-    smode   = ('working' if (budget.budget_mode in ('working', 'actual'))
+    smode   = ('working' if (budget.budget_mode == 'working')
                else 'estimated')
     from budget_calc import is_computed_line as _is_computed
     live = {}
@@ -20850,22 +20698,8 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
         # 2026-05-06 — fixes "PO shows 4 lines $65k when only 1 line is
         # assigned with $15k cap".
         _pid_for_rollup = project_id or po.project_id
-        _canonical = (Budget.query
-                      .filter_by(project_id=_pid_for_rollup,
-                                 version_status='current',
-                                 is_actual=False)
-                      .filter(db.or_(Budget.budget_mode == 'working',
-                               db.and_(Budget.budget_mode == None,
-                                       Budget.parent_budget_id.isnot(None))))
-                      .order_by(Budget.id.desc())
-                      .first())
-        if not _canonical:
-            _canonical = (Budget.query
-                          .filter_by(project_id=_pid_for_rollup,
-                                     version_status='current',
-                                     is_actual=False)
-                          .order_by(Budget.id.desc())
-                          .first())
+        from actuals import get_live_budget as _glb
+        _canonical = _glb(_pid_for_rollup)
         if _canonical:
             _po_lines = (BudgetLine.query
                          .filter(BudgetLine.po_id == po.id,
@@ -21079,22 +20913,8 @@ def po_list_page(pid):
     lines_by_section = []
     try:
         from budget_calc import FP_COA_SECTIONS, FP_COA_NAMES
-        _canonical_w = (Budget.query
-                        .filter_by(project_id=pid,
-                                   version_status='current',
-                                   is_actual=False)
-                        .filter(db.or_(Budget.budget_mode == 'working',
-                               db.and_(Budget.budget_mode == None,
-                                       Budget.parent_budget_id.isnot(None))))
-                        .order_by(Budget.id.desc())
-                        .first())
-        if not _canonical_w:
-            _canonical_w = (Budget.query
-                            .filter_by(project_id=pid,
-                                       version_status='current',
-                                       is_actual=False)
-                            .order_by(Budget.id.desc())
-                            .first())
+        from actuals import get_live_budget as _glb
+        _canonical_w = _glb(pid)
         if _canonical_w:
             # Single query: every PO-assigned line on the canonical
             # Working budget, with PO joined in for the badge.
@@ -22027,18 +21847,8 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
     # Resolve the canonical Working budget for this project — same
     # picker _po_to_dict uses so totals reconcile.
     pid = project_id or sb.project_id
-    canonical = (Budget.query
-                 .filter_by(project_id=pid, version_status='current',
-                            is_actual=False)
-                 .filter(db.or_(Budget.budget_mode == 'working',
-                               db.and_(Budget.budget_mode == None,
-                                       Budget.parent_budget_id.isnot(None))))
-                 .order_by(Budget.id.desc()).first())
-    if not canonical:
-        canonical = (Budget.query
-                     .filter_by(project_id=pid, version_status='current',
-                                is_actual=False)
-                     .order_by(Budget.id.desc()).first())
+    from actuals import get_live_budget as _glb
+    canonical = _glb(pid)
 
     # Pull every line assigned to this sub-budget, RESOLVED onto the
     # canonical budget's lines (direct / clone-chain / desc match, de-duped
@@ -22063,7 +21873,7 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
             _profile  = canonical.payroll_profile
             _pw_start = canonical.payroll_week_start if canonical.payroll_week_start is not None else (
                 _profile.payroll_week_start if _profile else 6)
-            _sched_mode = 'working' if canonical.budget_mode in ('working', 'actual') else 'estimated'
+            _sched_mode = 'working' if canonical.budget_mode == 'working' else 'estimated'
             for sbl, ln in raw_rows:
                 # Use calc_line_from_schedule() for use_schedule lines so
                 # the displayed total matches the gantt-driven computation.
@@ -22252,14 +22062,9 @@ def sub_budget_save(pid):
                 return jsonify({"error": "total_committed must be a number"}), 400
     if 'archived' in data:
         sb.archived = bool(data.get('archived'))
-    if 'budget_id' in data:
-        bid = data.get('budget_id')
-        if bid in (None, '', 0):
-            sb.budget_id = None
-        else:
-            try: sb.budget_id = int(bid)
-            except (TypeError, ValueError):
-                return jsonify({"error": "budget_id must be an integer"}), 400
+    # SubBudget.budget_id is no longer written (Cleanup C, 2026-11-02): every
+    # rollup resolves onto the project's current Working, so a pinned version
+    # was documentation only. The column stays; a 'budget_id' key is ignored.
     db.session.commit()
     return jsonify({"ok": True,
                     "sub_budget": _sub_budget_to_dict(sb, with_rollup=True, project_id=pid)})
@@ -22570,7 +22375,7 @@ def assign_crew(pid, bid, lid):
     fringe_cfgs = get_fringe_configs(db.session, pid)
     budget = Budget.query.get(bid)
     if ln.use_schedule:
-        sched_mode = budget.budget_mode if budget.budget_mode in ('working', 'actual') else 'estimated'
+        sched_mode = budget.budget_mode if budget.budget_mode == 'working' else 'estimated'
         sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
         profile = budget.payroll_profile
         pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
@@ -23173,7 +22978,7 @@ def _archive_callsheet_to_dropbox(project, selected_date, version_label, pdf_byt
 def callsheet_distribution(pid, bid, date_str):
     """Get send history + recipient list for this call sheet day."""
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     try:
         selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
@@ -23442,7 +23247,7 @@ def callsheet_prepare_send(pid, bid, date_str):
     import secrets as _secrets_mod
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     project = ProjectSheet.query.get_or_404(pid)
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     try:
         selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
@@ -23545,7 +23350,7 @@ def callsheet_send_pdf(pid, bid, send_id):
     if not pdf_bytes:
         # Legacy send (pre-archive) — reconstruct from the current sheet state.
         sched_mode = send.schedule_mode or (
-            'working' if budget.budget_mode in ('working', 'actual') else 'estimated')
+            'working' if budget.budget_mode == 'working' else 'estimated')
         pdf_bytes, fname = _build_callsheet_pdf_bytes(
             pid, bid, project, budget, send.date, sched_mode, send)
     if not pdf_bytes:
@@ -23569,7 +23374,7 @@ def callsheet_current_pdf(pid, bid, date_str):
     logging a send. (User 2026-07-09.)"""
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     project = ProjectSheet.query.get_or_404(pid)
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     try:
         selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
@@ -23852,7 +23657,7 @@ def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
     cs_locations = []
     sched_mode_p = 'estimated'
     if send and budget:
-        sched_mode_p = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+        sched_mode_p = 'working' if budget.budget_mode == 'working' else 'estimated'
         cs_rec = CallSheetData.query.filter_by(
             budget_id=send.budget_id, date=send.date, schedule_mode=sched_mode_p).first()
         if cs_rec and cs_rec.data_json:
@@ -24027,7 +23832,7 @@ def callsheet_preview_as(pid, bid, date_str):
         selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
         return "Invalid date", 400
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
 
     as_val = (request.args.get('as') or '').strip()
     # Optional audience override (?type=talent|client|union|rep|partner|crew) —
@@ -24441,7 +24246,7 @@ def callsheet_save(pid, bid, date_str):
         selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
         return jsonify({"error": "invalid date"}), 400
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
     # Audit C2 hardening (2026-07-20): (a) an empty/invalid body must never
     # wipe a live sheet; (b) merge over the stored blob so keys this client
     # build doesn't emit survive; (c) optimistic concurrency — a stale tab
@@ -24535,7 +24340,7 @@ def callsheet_contacts_api(pid, bid):
         except ValueError:
             _d = None
         if _d is not None:
-            sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+            sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
             _days = ScheduleDay.query.filter(
                 ScheduleDay.budget_id == bid,
                 ScheduleDay.schedule_mode == sched_mode,
@@ -25201,16 +25006,12 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         except Exception:
             next_day_people = []
 
-    current_working_bid = next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'working' and b.version_status == 'current'), None
-    ) or next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'working' and b.version_status != 'archived'), None
-    )
-    current_estimated_bid = next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'estimated' and b.version_status == 'current'), None
-    ) or next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'estimated' and b.version_status != 'archived'), None
-    )
+    # One rule for "current" (actuals.pick_current): newest of its kind.
+    from actuals import pick_current as _pick_current
+    _lw = _pick_current(all_budgets, 'working')
+    _le = _pick_current(all_budgets, 'estimated')
+    current_working_bid   = _lw.id if _lw else None
+    current_estimated_bid = _le.id if _le else None
 
     # ── Confirmation status map for crew list ────────────────────────────────
     # confirm_status: most-recent send for this date; name_lower → {status,…}.
@@ -25261,6 +25062,7 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         project=project,
         budget=budget,
         all_budgets=all_budgets,
+        version_groups=_version_groups(all_budgets),
         parent_names=parent_names,
         selected_date=selected_date,
         all_scheduled_dates=all_scheduled_dates,
@@ -25357,7 +25159,7 @@ def callsheet_view(pid, bid, date_str=None):
     project = ProjectSheet.query.get_or_404(pid)
     budget  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
 
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if budget.budget_mode == 'working' else 'estimated'
 
     # All scheduled (non-off) dates for this budget/mode
     date_rows = db.session.query(ScheduleDay.date).filter(
@@ -25447,8 +25249,10 @@ def _sync_budget_dates_from_schedule(bid):
 
 
 def _budget_type(budget_mode):
-    """Return 'working' for working/actual modes, else 'estimated'."""
-    return 'working' if budget_mode in ('working', 'actual') else 'estimated'
+    """Return 'working' for a Working budget, else 'estimated'. budget_mode is
+    only ever 'estimated' | 'working' (Cleanup C, 2026-11-02 — the 'actual'
+    value was never written; the legacy Actual budgets are flagged is_actual)."""
+    return 'working' if budget_mode == 'working' else 'estimated'
 
 
 def _supersede_current(project_id, budget_type, exclude_id=None):
@@ -25668,7 +25472,7 @@ def _copy_budget_extras(source_bid, dest_bid, dest_mode=None):
 
     # CallSheetData — per-day overrides. Map schedule_mode to 'working'
     # when cloning into a Working/Actual budget so the gantt finds them.
-    dest_cs_mode = 'working' if dest_mode in ('working', 'actual') else None
+    dest_cs_mode = 'working' if dest_mode == 'working' else None
     for cs in CallSheetData.query.filter_by(budget_id=source_bid).all():
         db.session.add(CallSheetData(
             budget_id=dest_bid,
@@ -25703,7 +25507,7 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
     2026-05-06 — fixes "schedule duplicate is recalculating meals/etc".
     """
     from models import TravelDetail
-    dest_sched_mode = 'working' if dest_mode in ('working', 'actual') else None
+    dest_sched_mode = 'working' if dest_mode == 'working' else None
 
     # Cross-family clone (owner 2026-07-22: "create a new estimated from the
     # previous working version"): a WORKING source cloned into an ESTIMATED
@@ -25713,8 +25517,8 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
     # deduped, tagged row wins) and restamp them.
     _src_budget = Budget.query.get(source_bid)
     _restamp = None
-    if (_src_budget and _src_budget.budget_mode in ('working', 'actual')
-            and dest_mode not in ('working', 'actual')):
+    if (_src_budget and _src_budget.budget_mode == 'working'
+            and dest_mode != 'working'):
         _restamp = 'estimated'
 
     # Build sched_id_map = {old_schedule_day_id: new_schedule_day_id} so
@@ -25791,7 +25595,7 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
     # legacy NULL when both exist for a date (same rule as the ScheduleDay
     # copy above), instead of whatever the query returned first.
     _src_pd_mode = ('working' if (_src_budget and _src_budget.budget_mode
-                                  in ('working', 'actual')) else 'estimated')
+                                  == 'working') else 'estimated')
     _pd_pick = {}
     for pd in ProductionDay.query.filter_by(budget_id=source_bid).all():
         ex = _pd_pick.get(pd.date)
@@ -25824,7 +25628,6 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
             # from Estimated even though everything LOOKED copied.
             is_production_day=getattr(pd, 'is_production_day', False),
         ))
-
 
 
 def _infer_line_subgroup(ln):
@@ -26791,7 +26594,7 @@ def admin_budget_diff():
     # ── Schedule day count + ProductionDay flag tally ─────────────────
     def _sd_summary(bid):
         from sqlalchemy import or_ as _or_d
-        sched_mode = ('working' if (Budget.query.get(bid).budget_mode in ('working', 'actual'))
+        sched_mode = ('working' if (Budget.query.get(bid).budget_mode == 'working')
                       else 'estimated')
         rows = (db.session.query(ScheduleDay)
                 .filter(ScheduleDay.budget_id == bid,
@@ -32887,17 +32690,8 @@ def admin_sub_budget_status():
                              f"{' / ACTUAL' if _b.is_actual else ''}]")
             else:
                 homes.append(f"{len(_lns)} line(s) on MISSING budget #{_bid2}")
-        canonical = (Budget.query
-                     .filter_by(project_id=sb.project_id,
-                                version_status='current', is_actual=False)
-                     .filter(db.or_(Budget.budget_mode == 'working',
-                                    db.and_(Budget.budget_mode == None,
-                                            Budget.parent_budget_id.isnot(None))))
-                     .order_by(Budget.id.desc()).first()) or (
-                     Budget.query
-                     .filter_by(project_id=sb.project_id,
-                                version_status='current', is_actual=False)
-                     .order_by(Budget.id.desc()).first())
+        from actuals import get_live_budget as _glb
+        canonical = _glb(sb.project_id)
         try:
             n_resolved = len(_resolve_sub_budget_lines(sb.id, canonical))
         except Exception as _re:
@@ -35840,7 +35634,7 @@ def _person_schedule_weeks(pid, cmid):
         b = get_current_working_budget(pid) or get_current_estimated_budget(pid)
         if not b:
             return {}
-        sched_mode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
+        sched_mode = 'working' if b.budget_mode == 'working' else 'estimated'
 
         # Which (budget_line_id, instance) pairs belong to this person, via their
         # CrewAssignment rows on lines in THIS budget.
@@ -37346,91 +37140,6 @@ def admin_sentry_test():
     raise RuntimeError("Sentry verification test — this error is intentional.")
 
 
-@app.route("/admin/repair-phantom-workings", methods=["GET", "POST"])
-@login_required
-def admin_repair_phantom_workings():
-    """One-time data repair for the phantom-Working bug (found 2026-09-01):
-    actuals.clone_estimated_to_working copied budget_mode='estimated' onto
-    its auto-created Working clones and stacked ' — Working' onto their
-    names on each re-fire. This finds every affected budget (mode not
-    working/actual, name ending in one or more '— Working'), and:
-      • stamps budget_mode='working'
-      • collapses the stacked suffix to a single ' — Working'
-      • per (project, version): keeps only the NEWEST as 'current' Working;
-        older phantoms become 'superseded' with ' (old N)' name suffixes
-    GET = dry run (shows what WOULD change). POST = apply.
-    Nothing is deleted — coded transactions on these budgets stay put."""
-    if getattr(current_user, 'role', None) != 'super_admin':
-        abort(403)
-    import re as _re_ph
-    from collections import defaultdict as _dd_ph
-    _suffix = _re_ph.compile(r'(\s*—\s*Working)+\s*$')
-    phantoms = [b for b in Budget.query.filter(Budget.is_actual == False).all()  # noqa: E712
-                if (b.budget_mode or 'estimated') not in ('working', 'actual')
-                and _suffix.search(b.name or '')]
-    by_ver = _dd_ph(list)
-    for b in phantoms:
-        by_ver[(b.project_id, b.version_number or 1)].append(b)
-    plan = []
-    for (pid_k, vn), bs in sorted(by_ver.items()):
-        bs.sort(key=lambda x: x.id, reverse=True)   # newest first
-        # Is there already a REAL current Working for this version?
-        real_w = Budget.query.filter(
-            Budget.project_id == pid_k, Budget.is_actual == False,  # noqa: E712
-            Budget.version_number == vn,
-            Budget.budget_mode.in_(('working', 'actual')),
-            Budget.version_status == 'current').first()
-        for i, b in enumerate(bs):
-            base = _suffix.sub('', b.name or 'Budget').strip() or 'Budget'
-            keep_current = (i == 0 and real_w is None)
-            new_name = f"{base} — Working" if keep_current else f"{base} — Working (old {i})"
-            plan.append({"id": b.id, "project_id": pid_k, "version": vn,
-                         "old_name": b.name, "new_name": new_name,
-                         "old_mode": b.budget_mode, "old_status": b.version_status,
-                         "new_status": 'current' if keep_current else 'superseded'})
-    if request.method == "GET":
-        import html as _html_ph
-        rows = ''.join(
-            f"<tr><td>{c['id']}</td><td>{c['project_id']}</td><td>v{c['version']}</td>"
-            f"<td>{_html_ph.escape(c['old_name'] or '')}</td>"
-            f"<td>{_html_ph.escape(c['new_name'])}</td>"
-            f"<td>{c['old_mode']} → working</td>"
-            f"<td>{c['old_status']} → {c['new_status']}</td></tr>"
-            for c in plan)
-        return (f"<!doctype html><html><head><title>Phantom-Working repair</title>"
-                f"<style>body{{font-family:system-ui,sans-serif;max-width:1100px;"
-                f"margin:40px auto;padding:0 20px}}table{{border-collapse:collapse;"
-                f"font-size:13px}}td,th{{border:1px solid #ccc;padding:4px 8px}}</style>"
-                f"</head><body><h1>Phantom-Working repair — dry run</h1>"
-                f"<p>{len(plan)} budget(s) would be repaired. Nothing is deleted; "
-                f"coded transactions stay put.</p>"
-                f"<table><tr><th>ID</th><th>Proj</th><th>Ver</th><th>Current name</th>"
-                f"<th>New name</th><th>Mode</th><th>Status</th></tr>{rows}</table>"
-                + ("<form method='POST' style='margin-top:18px'>"
-                   f"<input type='hidden' name='csrf_token' value='{session.get('_csrf', '')}'>"
-                   "<button type='submit' style='padding:10px 22px;font-size:15px'>"
-                   "Apply repair</button></form>" if plan else
-                   "<p><b>Nothing to repair — all clean.</b></p>")
-                + "</body></html>")
-    by_id = {b.id: b for b in phantoms}
-    for ch in plan:
-        b = by_id[ch["id"]]
-        b.budget_mode = 'working'
-        b.name = ch["new_name"]
-        b.version_status = ch["new_status"]
-        b.updated_at = datetime.utcnow()
-    db.session.commit()
-    try:
-        _log_activity(action='update', entity_type='budget',
-                      entity_id=None, entity_label='Phantom-Working repair',
-                      project_id=None, before=None,
-                      after={'repaired': len(plan)},
-                      note=f'Repaired {len(plan)} phantom Working budget(s)')
-    except Exception:
-        pass
-    return jsonify({"ok": True, "repaired": len(plan), "plan": plan})
-
-
 @app.route("/admin/errors")
 @login_required
 def admin_recent_errors():
@@ -37811,388 +37520,6 @@ def _refile_doc(upload, dry=False):
         return {"changed": False, "error": str(e), "from": cur, "to": intended, "id": upload.id}
 
 
-@app.route("/projects/<int:pid>/debug-mirror", methods=["GET"])
-@login_required
-def debug_mirror(pid):
-    # Destructive/one-time repair tool — super-admin only before outside
-    # users arrive (tools audit 2026-07-20).
-    if getattr(current_user, 'role', None) != 'super_admin':
-        abort(403)
-    """Diagnostic: what does the auto-mirror resolve + do? Returns the resolved
-    working/actual budget ids, how many Working lines lack a mirror, and the
-    result (or error) of calling ensure_actual_mirrors. (User 2026-06-02.)"""
-    if current_user.role not in ('super_admin', 'admin'):
-        return jsonify({"error": "Forbidden"}), 403
-    all_b = Budget.query.filter_by(project_id=pid).all()
-    wbid = next((b.id for b in all_b if _budget_type(b.budget_mode) == 'working'
-                 and not b.is_actual and b.version_status == 'current'), None)
-    abid = next((b.id for b in all_b if b.is_actual and b.version_status == 'current'), None)
-    w = Budget.query.get(wbid) if wbid else None
-    a = Budget.query.get(abid) if abid else None
-    have = {l.source_line_id for l in a.lines if l.source_line_id} if a else set()
-    missing = [l.id for l in (w.lines if w else []) if l.id not in have]
-    result = {"wbid": wbid, "abid": abid,
-              "working_line_count": (len(w.lines) if w else 0),
-              "actual_source_links": len(have),
-              "missing_count": len(missing), "missing_ids": missing[:10],
-              "wbudget_mode": (w.budget_mode if w else None),
-              "abudget_mode": (a.budget_mode if a else None)}
-    from actuals import ensure_actual_mirrors
-    try:
-        result["added"] = ensure_actual_mirrors(pid, working_bid=wbid, actual_bid=abid)
-        result["error"] = None
-    except Exception as e:
-        db.session.rollback()
-        import traceback as _tb
-        result["added"] = None
-        result["error"] = type(e).__name__ + ': ' + str(e)[:200]
-        result["tb"] = _tb.format_exc()[-400:]
-    return jsonify(result)
-
-
-@app.route("/projects/<int:pid>/actual-audit", methods=["GET"])
-@login_required
-def actual_audit(pid):
-    """READ-ONLY diagnostic for the Actual-mirrors-Working invariant. Reports,
-    without writing anything:
-      • line counts for estimated / working / actual budgets
-      • actual_orphans  : Actual lines whose source_line_id is NULL or does not
-                          point at a line in the current Working budget — with a
-                          count of every dependent row (txns, crew, schedule,
-                          sub-budget, docs, locations) so we know what is at
-                          stake before touching them, plus a best-guess merge
-                          target (a Working line with the same account+desc).
-      • working_missing : Working lines with no Actual mirror (these SHOULD be
-                          created so Actual reflects Working).
-      • dup_src         : Working line ids that >1 Actual line points at
-                          (true duplicate mirrors) — the live-bug shape.
-      • actual_dup_desc : (account_code, lower desc) groups inside the Actual
-                          budget with more than one line.
-    Admin only. (User 2026-06-01.)"""
-    if current_user.role not in ('super_admin', 'admin'):
-        return jsonify({"error": "Forbidden — admin only"}), 403
-    ProjectSheet.query.get_or_404(pid)
-    all_b = Budget.query.filter_by(project_id=pid).all()
-    def _pick(kind):
-        return (next((b for b in all_b if _budget_type(b.budget_mode) == kind
-                      and not b.is_actual and b.version_status == 'current'), None)
-                or next((b for b in all_b if _budget_type(b.budget_mode) == kind
-                         and not b.is_actual and b.version_status != 'archived'), None))
-    est = _pick('estimated')
-    wrk = _pick('working')
-    act = (next((b for b in all_b if b.is_actual and b.version_status == 'current'), None)
-           or next((b for b in all_b if b.is_actual and b.version_status != 'archived'), None))
-    if not (wrk and act):
-        return jsonify({"error": "could not resolve working + actual budgets"}), 400
-
-    wlines = BudgetLine.query.filter_by(budget_id=wrk.id).all()
-    alines = BudgetLine.query.filter_by(budget_id=act.id).all()
-    w_by_id = {l.id: l for l in wlines}
-    # Working line lookup by (account, normalized desc) for orphan merge hints.
-    w_by_key = {}
-    for w in wlines:
-        w_by_key.setdefault((w.account_code, (w.description or '').strip().lower()), []).append(w.id)
-
-    a_ids = [l.id for l in alines]
-    def _counts(model, col='budget_line_id'):
-        if not a_ids:
-            return {}
-        from sqlalchemy import func as _f
-        rows = (db.session.query(getattr(model, col), _f.count(model.id))
-                .filter(getattr(model, col).in_(a_ids))
-                .group_by(getattr(model, col)).all())
-        return {k: int(v) for k, v in rows if k is not None}
-    c_txn  = _counts(Transaction)
-    c_txns = _counts(Transaction, 'suggested_budget_line_id')
-    c_crew = _counts(CrewAssignment)
-    c_sch  = _counts(ScheduleDay)
-    c_sub  = _counts(SubBudgetLine)
-    c_loc  = _counts(Location)
-    def _deps(lid):
-        # DocUpload links to a line indirectly (via Transaction.doc_upload_id),
-        # so it is captured by the txn count — it has no budget_line_id of its own.
-        return {"txn": c_txn.get(lid, 0), "txn_sugg": c_txns.get(lid, 0),
-                "crew": c_crew.get(lid, 0), "sched": c_sch.get(lid, 0),
-                "sub": c_sub.get(lid, 0), "loc": c_loc.get(lid, 0)}
-
-    # actual lines grouped by the working line they mirror
-    src_map = {}
-    orphans = []
-    for a in alines:
-        if a.source_line_id and a.source_line_id in w_by_id:
-            src_map.setdefault(a.source_line_id, []).append(a.id)
-        else:
-            hint = w_by_key.get((a.account_code, (a.description or '').strip().lower()), [])
-            d = _deps(a.id)
-            orphans.append({"id": a.id, "code": a.account_code,
-                            "desc": (a.description or '')[:40],
-                            "src": a.source_line_id, "parent": a.parent_line_id,
-                            "tag": a.line_tag, "deps": d,
-                            "dep_total": sum(d.values()),
-                            "merge_hint_working_ids": hint})
-    dup_src = [{"working_id": wid, "working_desc": (w_by_id[wid].description or '')[:40],
-                "actual_ids": ids, "deps_each": {str(i): _deps(i) for i in ids}}
-               for wid, ids in src_map.items() if len(ids) > 1]
-    working_missing = [{"id": w.id, "code": w.account_code, "desc": (w.description or '')[:40],
-                        "tag": w.line_tag, "parent": w.parent_line_id}
-                       for w in wlines if w.id not in src_map]
-
-    # duplicate (account, desc) groups inside actual
-    a_by_key = {}
-    for a in alines:
-        a_by_key.setdefault((a.account_code, (a.description or '').strip().lower()), []).append(a)
-    actual_dup_desc = []
-    for (code, desc), grp in a_by_key.items():
-        if len(grp) > 1 and desc:
-            actual_dup_desc.append({"code": code, "desc": desc[:40],
-                                    "lines": [{"id": g.id, "src": g.source_line_id,
-                                               "parent": g.parent_line_id, "tag": g.line_tag,
-                                               "deps": _deps(g.id)} for g in grp]})
-
-    return jsonify({
-        "budgets": {"estimated": {"id": est.id if est else None,
-                                  "lines": (len(BudgetLine.query.filter_by(budget_id=est.id).all()) if est else 0)},
-                    "working": {"id": wrk.id, "lines": len(wlines)},
-                    "actual":  {"id": act.id, "lines": len(alines)}},
-        "summary": {"actual_orphans": len(orphans),
-                    "working_missing_mirror": len(working_missing),
-                    "dup_src_groups": len(dup_src),
-                    "actual_dup_desc_groups": len(actual_dup_desc)},
-        "actual_orphans": sorted(orphans, key=lambda o: -o["dep_total"]),
-        "working_missing": working_missing,
-        "dup_src": dup_src,
-        "actual_dup_desc": actual_dup_desc,
-    })
-
-
-@app.route("/projects/<int:pid>/rebuild-actual-mirror", methods=["POST"])
-@login_required
-def rebuild_actual_mirror(pid):
-    # Destructive/one-time repair tool — super-admin only before outside
-    # users arrive (tools audit 2026-07-20).
-    if getattr(current_user, 'role', None) != 'super_admin':
-        abort(403)
-    """Make the Actual budget structurally MIRROR the Working budget by fixing
-    the duplicate-clone corruption surfaced by /actual-audit. Three operations,
-    each independently gated; dry-run by default (apply only with ?apply=1):
-
-      DEDUP (always planned): for every Working line that >1 Actual line points
-        at (source_line_id), keep the Actual line carrying the most dependent
-        rows (transactions/crew/schedule/sub-budget/location — tiebreak: lowest
-        id) and DELETE the empty twin(s). Before deleting a twin we:
-          • migrate any dependent rows it does carry onto the keeper
-            (txn.budget_line_id + .suggested_budget_line_id, crew, schedule,
-            sub-budget, location), and
-          • re-parent any Actual line whose parent_line_id pointed at the twin
-            to the keeper,
-        so nothing is orphaned and no transaction is lost.
-
-      CREATE (?create=1, default on apply): clone every Working line that has NO
-        Actual mirror into the Actual budget (so new Working lines — e.g. a kit
-        fee — appear in Actual), parent remapped through the source chain.
-
-      ORPHANS: Actual lines whose source_line_id is null/invalid. Those with
-        ZERO dependents are deleted (?drop_orphans=1). Those carrying data are
-        NEVER touched here — they're reported under orphans_kept for manual
-        review (could be a real expense whose Working line was deleted).
-
-    Does NOT change planned/computed fields on surviving lines (fringe/rate/
-    sort) — that's the separate /sync-actual-from-working?fields=1 path.
-    Admin only. (User 2026-06-01.)"""
-    if current_user.role not in ('super_admin', 'admin'):
-        return jsonify({"error": "Forbidden — admin only"}), 403
-    apply = (request.args.get('apply') == '1')
-    do_create = (request.args.get('create') == '1') or apply  # default-on when applying
-    drop_orphans = (request.args.get('drop_orphans') == '1')
-    ProjectSheet.query.get_or_404(pid)
-    all_b = Budget.query.filter_by(project_id=pid).all()
-    def _pick(kind):
-        return (next((b for b in all_b if _budget_type(b.budget_mode) == kind
-                      and not b.is_actual and b.version_status == 'current'), None)
-                or next((b for b in all_b if _budget_type(b.budget_mode) == kind
-                         and not b.is_actual and b.version_status != 'archived'), None))
-    wrk = _pick('working')
-    act = (next((b for b in all_b if b.is_actual and b.version_status == 'current'), None)
-           or next((b for b in all_b if b.is_actual and b.version_status != 'archived'), None))
-    if not (wrk and act):
-        return jsonify({"error": "could not resolve working + actual budgets"}), 400
-
-    wlines = BudgetLine.query.filter_by(budget_id=wrk.id).all()
-    alines = BudgetLine.query.filter_by(budget_id=act.id).all()
-    w_by_id = {l.id: l for l in wlines}
-    a_by_id = {l.id: l for l in alines}
-    a_ids = list(a_by_id.keys())
-
-    from sqlalchemy import func as _f
-    def _counts(model, col='budget_line_id'):
-        if not a_ids:
-            return {}
-        rows = (db.session.query(getattr(model, col), _f.count(model.id))
-                .filter(getattr(model, col).in_(a_ids))
-                .group_by(getattr(model, col)).all())
-        return {k: int(v) for k, v in rows if k is not None}
-    c_txn  = _counts(Transaction)
-    c_txns = _counts(Transaction, 'suggested_budget_line_id')
-    c_crew = _counts(CrewAssignment)
-    c_sch  = _counts(ScheduleDay)
-    c_sub  = _counts(SubBudgetLine)
-    c_loc  = _counts(Location)
-    def _dep_total(lid):
-        return (c_txn.get(lid, 0) + c_txns.get(lid, 0) + c_crew.get(lid, 0)
-                + c_sch.get(lid, 0) + c_sub.get(lid, 0) + c_loc.get(lid, 0))
-
-    # children-by-parent within the actual budget (for safe reparenting)
-    children_of = {}
-    for l in alines:
-        if l.parent_line_id:
-            children_of.setdefault(l.parent_line_id, []).append(l.id)
-
-    # group actual lines by the working line they mirror
-    src_map = {}
-    orphan_lines = []
-    for a in alines:
-        if a.source_line_id and a.source_line_id in w_by_id:
-            src_map.setdefault(a.source_line_id, []).append(a)
-        else:
-            orphan_lines.append(a)
-
-    report = {"dry": (not apply), "applied": apply,
-              "budgets": {"working": wrk.id, "actual": act.id},
-              "counts_before": {"working": len(wlines), "actual": len(alines)},
-              "dedup": {"groups": 0, "delete": [], "migrations": [], "reparents": []},
-              "create": {"count": 0, "lines": []},
-              "orphans_dropped": [], "orphans_kept": [],
-              "errors": []}
-
-    delete_ids = set()
-    keeper_for = {}   # twin_id -> keeper_id
-
-    # ── 1) DEDUP ──────────────────────────────────────────────────────
-    for wid, grp in src_map.items():
-        if len(grp) <= 1:
-            continue
-        report["dedup"]["groups"] += 1
-        grp_sorted = sorted(grp, key=lambda l: (-_dep_total(l.id), l.id))
-        keeper = grp_sorted[0]
-        for twin in grp_sorted[1:]:
-            delete_ids.add(twin.id)
-            keeper_for[twin.id] = keeper.id
-            mig = {"twin": twin.id, "keeper": keeper.id, "desc": (twin.description or '')[:30],
-                   "moved": {"txn": c_txn.get(twin.id, 0), "txn_sugg": c_txns.get(twin.id, 0),
-                             "crew": c_crew.get(twin.id, 0), "sched": c_sch.get(twin.id, 0),
-                             "sub": c_sub.get(twin.id, 0), "loc": c_loc.get(twin.id, 0)}}
-            if any(mig["moved"].values()):
-                report["dedup"]["migrations"].append(mig)
-            else:
-                report["dedup"]["delete"].append({"twin": twin.id, "keeper": keeper.id,
-                                                  "desc": (twin.description or '')[:30]})
-
-    # reparent plan: any actual line whose parent is a doomed twin → keeper
-    for twin_id in list(delete_ids):
-        for child_id in children_of.get(twin_id, []):
-            if child_id in delete_ids:
-                continue
-            report["dedup"]["reparents"].append({"child": child_id, "from": twin_id,
-                                                  "to": keeper_for[twin_id]})
-
-    # ── 2) CREATE missing mirrors ─────────────────────────────────────
-    missing = [w for w in wlines if w.id not in src_map]
-    report["create"]["count"] = len(missing)
-    report["create"]["lines"] = [{"working_id": w.id, "desc": (w.description or '')[:32],
-                                   "tag": w.line_tag} for w in missing]
-
-    # ── 3) ORPHANS ────────────────────────────────────────────────────
-    for o in orphan_lines:
-        if _dep_total(o.id) == 0:
-            report["orphans_dropped"].append({"id": o.id, "desc": (o.description or '')[:32],
-                                               "src": o.source_line_id, "tag": o.line_tag})
-        else:
-            report["orphans_kept"].append({"id": o.id, "desc": (o.description or '')[:32],
-                                           "src": o.source_line_id, "tag": o.line_tag,
-                                           "deps": {"txn": c_txn.get(o.id, 0),
-                                                    "txn_sugg": c_txns.get(o.id, 0),
-                                                    "crew": c_crew.get(o.id, 0),
-                                                    "sched": c_sch.get(o.id, 0),
-                                                    "sub": c_sub.get(o.id, 0),
-                                                    "loc": c_loc.get(o.id, 0)}})
-
-    report["projected_actual_lines"] = (len(alines) - len(delete_ids)
-                                        + (len(missing) if do_create else 0)
-                                        - (len(report["orphans_dropped"]) if drop_orphans else 0))
-
-    # ── APPLY ─────────────────────────────────────────────────────────
-    if apply:
-        try:
-            # a) migrate dependents off each twin onto its keeper, then reparent
-            for twin_id in delete_ids:
-                keep = keeper_for[twin_id]
-                Transaction.query.filter_by(budget_line_id=twin_id).update(
-                    {"budget_line_id": keep}, synchronize_session=False)
-                Transaction.query.filter_by(suggested_budget_line_id=twin_id).update(
-                    {"suggested_budget_line_id": keep}, synchronize_session=False)
-                ScheduleDay.query.filter_by(budget_line_id=twin_id).update(
-                    {"budget_line_id": keep}, synchronize_session=False)
-                SubBudgetLine.query.filter_by(budget_line_id=twin_id).update(
-                    {"budget_line_id": keep}, synchronize_session=False)
-                Location.query.filter_by(budget_line_id=twin_id).update(
-                    {"budget_line_id": keep}, synchronize_session=False)
-                # crew: avoid (budget_line_id, instance) unique clash — bump
-                # instance numbers past whatever the keeper already uses.
-                ca_twin = CrewAssignment.query.filter_by(budget_line_id=twin_id).all()
-                if ca_twin:
-                    maxi = db.session.query(_f.max(CrewAssignment.instance)).filter_by(
-                        budget_line_id=keep).scalar() or 0
-                    for i, ca in enumerate(ca_twin, start=1):
-                        ca.budget_line_id = keep
-                        ca.instance = maxi + i
-                # reparent children of the twin onto the keeper
-                BudgetLine.query.filter_by(parent_line_id=twin_id).update(
-                    {"parent_line_id": keep}, synchronize_session=False)
-            db.session.flush()
-            # b) delete the twins
-            if delete_ids:
-                BudgetLine.query.filter(BudgetLine.id.in_(delete_ids)).delete(
-                    synchronize_session=False)
-            db.session.flush()
-            # c) create missing mirrors
-            if do_create and missing:
-                _skip = {'id', 'budget_id', 'source_line_id', 'parent_line_id'}
-                _cols = [c for c in BudgetLine.__table__.columns.keys() if c not in _skip]
-                act_by_src = {l.source_line_id: l for l in
-                              BudgetLine.query.filter_by(budget_id=act.id).all()
-                              if l.source_line_id}
-                for w in missing:
-                    nl = BudgetLine(budget_id=act.id, source_line_id=w.id)
-                    for c in _cols:
-                        setattr(nl, c, getattr(w, c))
-                    db.session.add(nl)
-                    db.session.flush()
-                    act_by_src[w.id] = nl
-                # remap parents through the source chain for ALL actual lines
-                for a in BudgetLine.query.filter_by(budget_id=act.id).all():
-                    if not a.source_line_id:
-                        continue
-                    w = w_by_id.get(a.source_line_id)
-                    np = (act_by_src.get(w.parent_line_id).id
-                          if (w and w.parent_line_id and act_by_src.get(w.parent_line_id))
-                          else None)
-                    if a.parent_line_id != np:
-                        a.parent_line_id = np
-            # d) drop zero-dep orphans
-            if drop_orphans and report["orphans_dropped"]:
-                oid = [o["id"] for o in report["orphans_dropped"]]
-                BudgetLine.query.filter(BudgetLine.id.in_(oid)).delete(
-                    synchronize_session=False)
-            db.session.commit()
-            report["counts_after"] = {"actual": len(BudgetLine.query.filter_by(budget_id=act.id).all())}
-        except Exception as e:
-            db.session.rollback()
-            report["errors"].append(str(e))
-            return jsonify(report), 500
-
-    return jsonify(report)
-
-
 # ── Bank-CSV actuals import (e.g. Chase monthly export) ───────────────────────
 _BANK_CSV_SYNONYMS = {
     # role -> ordered candidate header names (lowercased, exact-first then contains)
@@ -38347,1008 +37674,6 @@ def _parse_bank_csv(content, charge_sign='auto'):
              "polarity_source": polarity_source,
              "spend_sign_counts": {"positive": pos, "negative": neg}}
     return rows, stats
-
-
-@app.route("/projects/<int:pid>/sync-actual-from-working", methods=["POST"])
-@login_required
-def sync_actual_from_working(pid):
-    """Make the Actual budget MIRROR the Working budget structurally: for every
-    Actual line linked to a Working line (source_line_id), copy the structural
-    + planned fields from its Working counterpart — is_labor, use_schedule,
-    sort_order, qty/days/rate/rate_type/fringe_type/agent_pct, line_tag — and
-    remap parent_line_id through the source chain. Fixes corrupted Actual lines
-    (kit fees flagged is_labor, sharing the parent's sort_order, null parent,
-    wrong planned value). Does NOT touch transactions (actual spend is keyed by
-    Actual line id, which is unchanged). Dry-run by default (?dry=1). Admin
-    only. Prereq: run /repair-clone-links first so source_line_id is correct.
-    (User 2026-06-01.)"""
-    if current_user.role not in ('super_admin', 'admin'):
-        return jsonify({"error": "Forbidden — admin only"}), 403
-    dry = (request.args.get('dry') == '1') or bool((request.get_json(silent=True) or {}).get('dry'))
-    ProjectSheet.query.get_or_404(pid)
-    all_b = Budget.query.filter_by(project_id=pid).all()
-    wrk = (next((b for b in all_b if _budget_type(b.budget_mode) == 'working'
-                 and not b.is_actual and b.version_status == 'current'), None)
-           or next((b for b in all_b if _budget_type(b.budget_mode) == 'working'
-                    and not b.is_actual and b.version_status != 'archived'), None))
-    act = (next((b for b in all_b if b.is_actual and b.version_status == 'current'), None)
-           or next((b for b in all_b if b.is_actual and b.version_status != 'archived'), None))
-    if not (wrk and act):
-        return jsonify({"error": "could not resolve working + actual budgets"}), 400
-
-    _wlines = {l.id: l for l in BudgetLine.query.filter_by(budget_id=wrk.id).all()}
-    _alines = BudgetLine.query.filter_by(budget_id=act.id).all()
-    # Actual line keyed by the Working line it mirrors (for parent remap).
-    _act_by_src = {l.source_line_id: l for l in _alines if l.source_line_id}
-
-    def _sv(v):
-        try:
-            from decimal import Decimal as _D
-            if isinstance(v, _D):
-                return float(v)
-        except Exception:
-            pass
-        return v
-    # Opt-in writes: create-missing (the main fix — make Actual mirror Working
-    # by adding lines Working has but Actual lacks) and field-edits (fringe/
-    # rate/etc. on existing lines, which change computed values — held behind
-    # its own flag). Dry-run still reports both.
-    _do_create = (request.args.get('create') == '1')
-    _do_fields = (request.args.get('fields') == '1')
-    FIELDS = ['is_labor', 'use_schedule', 'sort_order', 'qty', 'days', 'rate',
-              'rate_type', 'fringe_type', 'agent_pct', 'line_tag']
-    report = {"dry": dry, "applied": {"create": _do_create and not dry, "fields": _do_fields and not dry},
-              "working": wrk.id, "actual": act.id,
-              "changed": [], "unlinked": 0, "untouched": 0}
-
-    # ── 1) Field-edits on existing matched lines ──────────────────────
-    for a in _alines:
-        w = _wlines.get(a.source_line_id) if a.source_line_id else None
-        if not w:
-            report["unlinked"] += 1
-            continue
-        diffs = {}
-        for f in FIELDS:
-            wv, av = getattr(w, f, None), getattr(a, f, None)
-            if wv != av:
-                diffs[f] = [_sv(av), _sv(wv)]
-                if _do_fields and not dry:
-                    setattr(a, f, wv)
-        new_parent = None
-        if w.parent_line_id:
-            ap = _act_by_src.get(w.parent_line_id)
-            new_parent = ap.id if ap else None
-        if a.parent_line_id != new_parent:
-            diffs['parent_line_id'] = [a.parent_line_id, new_parent]
-            if _do_fields and not dry:
-                a.parent_line_id = new_parent
-        if diffs:
-            report["changed"].append({"id": a.id, "desc": (a.description or '')[:32], "diffs": diffs})
-        else:
-            report["untouched"] += 1
-
-    # ── 2) Create missing Actual lines for Working lines with no mirror ──
-    _skip = {'id', 'budget_id', 'source_line_id', 'parent_line_id'}
-    _cols = [c for c in BudgetLine.__table__.columns.keys() if c not in _skip]
-    missing = [w for w in _wlines.values() if w.id not in _act_by_src]
-    report["missing_count"] = len(missing)
-    report["created"] = [{"working_id": w.id, "desc": (w.description or '')[:32]} for w in missing]
-    if _do_create and not dry and missing:
-        for w in missing:
-            nl = BudgetLine(budget_id=act.id, source_line_id=w.id)
-            for c in _cols:
-                setattr(nl, c, getattr(w, c))
-            db.session.add(nl)
-            db.session.flush()
-            _act_by_src[w.id] = nl
-        # second pass: remap every Actual line's parent to its Working parent's mirror
-        for w in _wlines.values():
-            a = _act_by_src.get(w.id)
-            if not a:
-                continue
-            np = (_act_by_src.get(w.parent_line_id).id
-                  if w.parent_line_id and _act_by_src.get(w.parent_line_id) else None)
-            if a.parent_line_id != np:
-                a.parent_line_id = np
-
-    if (_do_create or _do_fields) and not dry:
-        db.session.commit()
-    report["changed_count"] = len(report["changed"])
-    return jsonify(report)
-
-
-@app.route("/projects/<int:pid>/repair-clone-links", methods=["POST"])
-@login_required
-def repair_clone_links(pid):
-    # Destructive/one-time repair tool — super-admin only before outside
-    # users arrive (tools audit 2026-07-20).
-    if getattr(current_user, 'role', None) != 'super_admin':
-        abort(403)
-    """Repair the cross-budget clone chain so Working→Estimated and
-    Actual→Working source_line_id links point at the TRUE counterpart, matched
-    by (account_code, normalized description) with a positional tiebreak for
-    same-named lines. Fixes the corruption behind kit fees showing a parent's
-    numbers + crew bleeding onto kit rows. Dry-run first (?dry=1) returns the
-    proposed relinks without writing. Admin only. (User 2026-06-01.)"""
-    if current_user.role not in ('super_admin', 'admin'):
-        return jsonify({"error": "Forbidden — admin only"}), 403
-    dry = (request.args.get('dry') == '1') or bool((request.get_json(silent=True) or {}).get('dry'))
-    ProjectSheet.query.get_or_404(pid)
-    all_b = Budget.query.filter_by(project_id=pid).all()
-    def _pick(kind):
-        # Always exclude the Actual budget — it can carry budget_mode
-        # 'estimated'/'working', so it would otherwise hijack this pick. The
-        # Actual is resolved separately via is_actual below.
-        return (next((b for b in all_b if _budget_type(b.budget_mode) == kind
-                      and not b.is_actual and b.version_status == 'current'), None)
-                or next((b for b in all_b if _budget_type(b.budget_mode) == kind
-                         and not b.is_actual and b.version_status != 'archived'), None))
-    est = _pick('estimated')
-    wrk = _pick('working')
-    act = next((b for b in all_b if b.is_actual and b.version_status == 'current'), None) \
-        or next((b for b in all_b if b.is_actual and b.version_status != 'archived'), None)
-
-    def _norm(l):
-        return (l.account_code, (l.description or '').strip().lower())
-
-    def _relink(child_b, parent_b, tag):
-        out = {"tag": tag, "relinked": [], "no_match": [], "already_ok": 0}
-        if not (child_b and parent_b):
-            return out
-        p_lines = sorted(BudgetLine.query.filter_by(budget_id=parent_b.id).all(),
-                         key=lambda x: (x.account_code or 0, x.sort_order or 0))
-        p_idx = {}
-        for pl in p_lines:
-            p_idx.setdefault(_norm(pl), []).append(pl)
-        used = {}
-        for cl in sorted(BudgetLine.query.filter_by(budget_id=child_b.id).all(),
-                         key=lambda x: (x.account_code or 0, x.sort_order or 0)):
-            k = _norm(cl)
-            cands = p_idx.get(k, [])
-            if not cands:
-                out["no_match"].append({"id": cl.id, "desc": (cl.description or '')[:34]})
-                continue
-            pos = used.get(k, 0)
-            target = cands[pos] if pos < len(cands) else cands[-1]
-            used[k] = pos + 1
-            if cl.source_line_id == target.id:
-                out["already_ok"] += 1
-            else:
-                out["relinked"].append({"id": cl.id, "desc": (cl.description or '')[:34],
-                                        "old_src": cl.source_line_id, "new_src": target.id})
-                if not dry:
-                    cl.source_line_id = target.id
-        return out
-
-    # The estimated side has a version-pairing ambiguity (two Estimated
-    # budgets); skip writing working→estimated unless explicitly enabled, to
-    # avoid linking to the wrong Estimated. ?w2e=1 to include it. (2026-06-01.)
-    _do_w2e = (request.args.get('w2e') == '1')
-    report = {"dry": dry,
-              "budgets": {"estimated": est.id if est else None,
-                          "working": wrk.id if wrk else None,
-                          "actual": act.id if act else None},
-              "working_to_estimated": (_relink(wrk, est, "working→estimated")
-                                       if _do_w2e else {"skipped": "version-pairing review pending"}),
-              "actual_to_working":    _relink(act, wrk, "actual→working")}
-    if not dry:
-        db.session.commit()
-    return jsonify(report)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# LINE-IDENTITY REPAIR SUITE  (owner report 2026-07: Cliburn 2000-08)
-# ══════════════════════════════════════════════════════════════════════════
-# THE BUG: the rendered line NUMBER ("2000-08") is POSITIONAL — section code +
-# the counter of the row in render order. Estimated and Working orderings drift
-# historically, so the SAME number can label DIFFERENT lines across versions.
-# On top of that, the PO/crew cross-budget write-through (line_assign_po /
-# assign_crew) falls back to (account_code, sort_order) matching when a line has
-# no source_line_id link. Cliburn's Working budget (bid 311) predates the
-# source_line_id backfill, so writes from the Estimated view landed on the
-# WRONG Working line (Brenton's crew+PO stamped onto the Line Producer's line).
-#
-# Three ADMIN routes address this, all dry-by-default, ?pid= scoped:
-#   1. /budget/repair-line-links   — BACKFILL Working→Estimated source_line_id
-#      (unique-match only) so the write-through uses explicit links, killing the
-#      positional fallback's future corruption.
-#   2. /budget/sync-line-order     — one-time order re-sync so the SAME number
-#      labels the SAME line on both sides.
-#   3. /budget/crew-po-mismatch-report — read-only; flags working lines whose
-#      crew/PO looks like it was misdirected by a positional write.
-#
-# Same safety pattern as repair_clone_links / migrate_actuals: admin-only,
-# per-project isolation (one project's failure never aborts another), no
-# account_code mutations except where explicitly noted (order route touches
-# sort_order only).
-
-def _repair_pick_current(all_b, kind):
-    """Resolve a project's CURRENT non-actual budget of `kind`
-    ('estimated'|'working'), preferring version_status='current', falling back
-    to any non-archived. Mirrors repair_clone_links._pick / _resolve_sister_budget."""
-    return (next((b for b in all_b if _budget_type(b.budget_mode) == kind
-                  and not b.is_actual and b.version_status == 'current'), None)
-            or next((b for b in all_b if _budget_type(b.budget_mode) == kind
-                     and not b.is_actual and b.version_status != 'archived'), None))
-
-
-def _repair_norm_key(ln):
-    """The (account_code, normalized-description) pairing key — identical to
-    _sister_line_for's fallback and repair_clone_links._norm."""
-    return (ln.account_code, (ln.description or '').strip().lower())
-
-
-def _repair_dry_flag():
-    """Shared dry-run resolver: mutate ONLY when dry is EXPLICITLY false/0.
-    Everything else (absent, '1', 'true', garbage) stays dry — same convention
-    as migrate_actuals."""
-    body = request.get_json(silent=True) or {}
-    _raw = request.args.get('dry', body.get('dry', True))
-    if isinstance(_raw, str):
-        return _raw.strip().lower() not in ('0', 'false', 'no', 'off')
-    return not (_raw is False or _raw == 0)
-
-
-def _repair_scope_projects():
-    """Projects in scope: a single project if ?pid= (or JSON pid) is given,
-    else every ProjectSheet. Returns a list of project ids."""
-    body = request.get_json(silent=True) or {}
-    raw = request.args.get('pid', body.get('pid'))
-    if raw not in (None, '', 'all'):
-        try:
-            return [int(raw)]
-        except (TypeError, ValueError):
-            return []
-    return [p.id for p in ProjectSheet.query.order_by(ProjectSheet.id).all()]
-
-
-def _repair_position_labels(budget):
-    """Return {line_id: 'SECTION-NN'} for every NON-header/spacer line on
-    `budget`, computed EXACTLY like the budget template's line_counter:
-      • group lines by their rendered section (_section_for_code),
-      • order each section with _order_lines_with_children (the same helper the
-        page uses — clusters children under parents + role_group clustering),
-      • number non-header/non-spacer rows sequentially from 1 within the section.
-    Also returns {line_id: rendered_index} so callers can slice "first N".
-    """
-    lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
-    by_section = {}
-    for ln in lines:
-        by_section.setdefault(_section_for_code(ln.account_code), []).append(ln)
-    labels, order_idx, section_order = {}, {}, {}
-    for sec_code in sorted(by_section):
-        ordered = _order_lines_with_children(by_section[sec_code])
-        counter = 0
-        for pos, ln in enumerate(ordered):
-            order_idx[ln.id] = pos
-            if getattr(ln, 'line_tag', None) in ('header', 'spacer'):
-                continue
-            counter += 1
-            labels[ln.id] = f"{sec_code}-{counter:02d}"
-            section_order.setdefault(sec_code, []).append(ln.id)
-    return labels, order_idx, section_order
-
-
-def _repair_crew_names(line):
-    """Human-readable crew for a line: the assigned_crew name plus any
-    CrewAssignment member names (deduped, order-stable)."""
-    names = []
-    if getattr(line, 'assigned_crew', None) and line.assigned_crew.name:
-        names.append(line.assigned_crew.name)
-    for ca in CrewAssignment.query.filter_by(budget_line_id=line.id).order_by(
-            CrewAssignment.instance).all():
-        nm = (ca.crew_member.name if ca.crew_member else None) or ca.name_override
-        if nm:
-            names.append(nm)
-    seen, out = set(), []
-    for nm in names:
-        if nm not in seen:
-            seen.add(nm)
-            out.append(nm)
-    return out
-
-
-def _repair_po_number(line):
-    """PO number string for a line's po_id, or None."""
-    if not getattr(line, 'po_id', None):
-        return None
-    from models import PurchaseOrder
-    po = PurchaseOrder.query.get(line.po_id)
-    return po.po_number if po else None
-
-
-@app.route("/budget/repair-line-links", methods=["GET", "POST"])
-@login_required
-def repair_line_links():
-    # Destructive/one-time repair tool — super-admin only before outside
-    # users arrive (tools audit 2026-07-20).
-    if getattr(current_user, 'role', None) != 'super_admin':
-        abort(403)
-    """BACKFILL Working→Estimated source_line_id for CURRENT working budgets
-    whose lines lack it. Pairing is by (account_code, normalized description);
-    a link is written ONLY when the match is UNIQUE on BOTH sides — exactly one
-    working line and one estimated line share that key. Ambiguous keys are
-    REPORTED, never guessed (that is the whole point — a bad guess re-corrupts).
-
-    This makes the PO/crew write-through resolve via explicit source_line_id
-    links instead of the positional (account_code, sort_order) fallback, which
-    is what mis-stamped Brenton's crew+PO onto the Line Producer line.
-
-    Admin only. DRY-RUN BY DEFAULT — writes only when ?dry=0 (or {"dry":false}).
-    ?pid= scopes to one project; absent = every project. Per-project isolation:
-    one project's error is recorded and skipped, never aborting the batch.
-    """
-    if current_user.role not in ('super_admin', 'admin'):
-        return jsonify({"error": "Forbidden — admin only"}), 403
-    dry = _repair_dry_flag()
-    out = {"ok": True, "dry": dry, "projects": []}
-    for pid in _repair_scope_projects():
-        rec = {"pid": pid, "linked": 0, "ambiguous": [], "already_linked": 0}
-        try:
-            all_b = Budget.query.filter_by(project_id=pid).all()
-            est = _repair_pick_current(all_b, 'estimated')
-            wrk = _repair_pick_current(all_b, 'working')
-            if not (est and wrk):
-                rec["skipped"] = "missing current estimated or working budget"
-                out["projects"].append(rec)
-                continue
-            est_lines = BudgetLine.query.filter_by(budget_id=est.id).all()
-            wrk_lines = BudgetLine.query.filter_by(budget_id=wrk.id).all()
-            # Group both sides by pairing key.
-            est_by_key, wrk_by_key = {}, {}
-            for el in est_lines:
-                est_by_key.setdefault(_repair_norm_key(el), []).append(el)
-            for wl in wrk_lines:
-                wrk_by_key.setdefault(_repair_norm_key(wl), []).append(wl)
-            for key, wls in wrk_by_key.items():
-                els = est_by_key.get(key, [])
-                # UNIQUE on both sides required. Otherwise: report, never guess.
-                if len(wls) == 1 and len(els) == 1:
-                    wl, el = wls[0], els[0]
-                    if wl.source_line_id == el.id:
-                        rec["already_linked"] += 1
-                        continue
-                    rec["linked"] += 1
-                    if not dry:
-                        wl.source_line_id = el.id
-                elif els:
-                    # Ambiguous key with candidates on both sides — the risky
-                    # case. (A working key with NO estimated match is just an
-                    # unpaired working line, not ambiguity — skip silently.)
-                    rec["ambiguous"].append({
-                        "desc": key[1] or "(unnamed)",
-                        "code": key[0],
-                        "working_ids": [w.id for w in wls],
-                        "estimated_ids": [e.id for e in els],
-                    })
-            if not dry:
-                db.session.commit()
-        except Exception as _e:
-            try:
-                db.session.rollback()
-            except Exception:
-                pass
-            rec["error"] = str(_e)
-        out["projects"].append(rec)
-    return jsonify(out)
-
-
-@app.route("/budget/sync-line-order", methods=["GET", "POST"])
-@login_required
-def sync_line_order():
-    """ONE-TIME order re-sync between the CURRENT Estimated and CURRENT Working
-    of a project so the SAME rendered number labels the SAME line on both sides.
-
-    Param `source` is REQUIRED ('working'|'estimated'): the OTHER budget's PAIRED
-    lines are resequenced to follow the source's order (same algorithm as
-    _mirror_line_move — paired lines get sequential sort_order in the source's
-    order; sister-only orphans keep their existing sort_order). ORDERING ONLY —
-    NO account_code changes (unlike _mirror_line_move, this never moves a line
-    across sections; a drifted number is a sort_order problem, not a section one).
-
-    DRY (default) returns a human-readable BEFORE/AFTER preview: per section, the
-    first ~15 rendered positions on BOTH sides (position label + desc) pre- and
-    post-sync, so the owner can choose direction per project before committing.
-
-    Admin only. Writes only when ?dry=0. ?pid= scopes (required in practice —
-    direction is a per-project judgment; absent = every project, same source).
-    """
-    if current_user.role not in ('super_admin', 'admin'):
-        return jsonify({"error": "Forbidden — admin only"}), 403
-    body = request.get_json(silent=True) or {}
-    source = (request.args.get('source', body.get('source')) or '').strip().lower()
-    if source not in ('working', 'estimated'):
-        return jsonify({"error": "source is required — 'working' or 'estimated'"}), 400
-    dry = _repair_dry_flag()
-    target_kind = 'estimated' if source == 'working' else 'working'
-    PREVIEW_ROWS = 15
-    out = {"ok": True, "dry": dry, "source": source, "target": target_kind,
-           "projects": []}
-
-    for pid in _repair_scope_projects():
-        rec = {"pid": pid, "resequenced": 0, "sections": []}
-        try:
-            all_b = Budget.query.filter_by(project_id=pid).all()
-            src_b = _repair_pick_current(all_b, source)
-            tgt_b = _repair_pick_current(all_b, target_kind)
-            if not (src_b and tgt_b):
-                rec["skipped"] = "missing current estimated or working budget"
-                out["projects"].append(rec)
-                continue
-
-            src_lines = (BudgetLine.query.filter_by(budget_id=src_b.id)
-                         .order_by(BudgetLine.sort_order, BudgetLine.id).all())
-            tgt_lines = BudgetLine.query.filter_by(budget_id=tgt_b.id).all()
-
-            # BEFORE snapshot of position labels (both sides).
-            src_labels_b, _, src_secorder_b = _repair_position_labels(src_b)
-            tgt_labels_b, _, tgt_secorder_b = _repair_position_labels(tgt_b)
-            desc_of = {ln.id: (ln.description or '').strip() or '(unnamed)'
-                       for ln in src_lines + tgt_lines}
-
-            # Pairing indexes over the TARGET (reused from _mirror_line_move).
-            tgt_src_ids = {}
-            for _tl in tgt_lines:
-                if _tl.source_line_id is not None:
-                    tgt_src_ids.setdefault(_tl.source_line_id, _tl)
-            tgt_desc_index = {}
-            for _tl in tgt_lines:
-                tgt_desc_index.setdefault(_repair_norm_key(_tl), _tl)
-
-            # Compute the NEW target sort_order: paired target lines follow the
-            # source's full order sequentially; orphans keep their sort_order.
-            new_sort = {}
-            matched = set()
-            seq = 0
-            for sl in src_lines:
-                tl = _sister_line_for(sl, tgt_lines, tgt_src_ids, tgt_desc_index)
-                if tl is None or tl.id in matched:
-                    continue
-                matched.add(tl.id)
-                new_sort[tl.id] = seq
-                seq += 1
-            # Orphan target lines: keep existing sort_order (shifted past the
-            # paired block so paired rows lead, matching _mirror_line_move's
-            # "leave orphans alone" but without them jumping ahead of paired).
-            for tl in sorted(tgt_lines, key=lambda x: (x.sort_order or 0, x.id)):
-                if tl.id not in new_sort:
-                    new_sort[tl.id] = seq
-                    seq += 1
-
-            changed = sum(1 for tl in tgt_lines
-                          if (tl.sort_order or 0) != new_sort[tl.id])
-            rec["resequenced"] = changed
-
-            if dry:
-                # AFTER preview: apply new_sort IN MEMORY (no commit) and
-                # recompute labels, then roll back so nothing persists.
-                for tl in tgt_lines:
-                    tl.sort_order = new_sort[tl.id]
-                tgt_labels_a, _, tgt_secorder_a = _repair_position_labels(tgt_b)
-                db.session.rollback()
-
-                def _rows(labels, secorder, sec):
-                    return [{"pos": labels[lid], "desc": desc_of.get(lid, '')}
-                            for lid in secorder.get(sec, [])[:PREVIEW_ROWS]]
-
-                all_secs = sorted(set(src_secorder_b) | set(tgt_secorder_b))
-                for sec in all_secs:
-                    rec["sections"].append({
-                        "section": sec,
-                        "source_order": _rows(src_labels_b, src_secorder_b, sec),
-                        "target_before": _rows(tgt_labels_b, tgt_secorder_b, sec),
-                        "target_after": _rows(tgt_labels_a, tgt_secorder_a, sec),
-                    })
-            else:
-                for tl in tgt_lines:
-                    tl.sort_order = new_sort[tl.id]
-                db.session.commit()
-                _touch_budget(tgt_b.id)
-                db.session.commit()
-        except Exception as _e:
-            try:
-                db.session.rollback()
-            except Exception:
-                pass
-            rec["error"] = str(_e)
-        out["projects"].append(rec)
-    return jsonify(out)
-
-
-@app.route("/budget/crew-po-mismatch-report", methods=["GET", "POST"])
-@login_required
-def crew_po_mismatch_report():
-    """READ-ONLY report. For each CURRENT working line, compare its crew/PO
-    against (a) its DESCRIPTION-paired estimated peer and (b) the line the
-    POSITIONAL (account_code, sort_order) fallback WOULD have matched. Flag a
-    working line as a suspect when BOTH hold:
-      (i)  its crew/PO DIFFERS from its desc-paired estimated peer, AND
-      (ii) the positionally-paired estimated line DOES carry that same crew/PO.
-    That is the exact signature of a misdirected positional write — Brenton's
-    crew+PO written from the Technical Producer's Estimated line landing on the
-    Line Producer's Working line because they shared (account_code, sort_order).
-
-    NO MUTATIONS. The owner reviews and fixes by hand (moving crew/PO is a
-    judgment call). Admin only. ?pid= scopes; absent = every project.
-    """
-    if current_user.role not in ('super_admin', 'admin'):
-        return jsonify({"error": "Forbidden — admin only"}), 403
-    out = {"ok": True, "projects": []}
-    for pid in _repair_scope_projects():
-        rec = {"pid": pid, "suspects": []}
-        try:
-            all_b = Budget.query.filter_by(project_id=pid).all()
-            est = _repair_pick_current(all_b, 'estimated')
-            wrk = _repair_pick_current(all_b, 'working')
-            if not (est and wrk):
-                rec["skipped"] = "missing current estimated or working budget"
-                out["projects"].append(rec)
-                continue
-            est_lines = BudgetLine.query.filter_by(budget_id=est.id).all()
-            wrk_lines = BudgetLine.query.filter_by(budget_id=wrk.id).all()
-            wrk_labels, _, _ = _repair_position_labels(wrk)
-
-            # DESCRIPTION pairing: (account_code, normalized desc) → est line.
-            est_desc_index = {}
-            for el in est_lines:
-                est_desc_index.setdefault(_repair_norm_key(el), el)
-            # source_line_id links (either direction) take precedence — mirror
-            # _sister_line_for so we compare against the TRUE peer.
-            est_src_ids = {}
-            for el in est_lines:
-                if el.source_line_id is not None:
-                    est_src_ids.setdefault(el.source_line_id, el)
-            # POSITIONAL pairing: (account_code, sort_order) → est line — the
-            # exact key line_assign_po / assign_crew fall back to.
-            est_pos_index = {}
-            for el in est_lines:
-                est_pos_index.setdefault((el.account_code, el.sort_order), el)
-
-            for wl in wrk_lines:
-                desc_peer = _sister_line_for(wl, est_lines, est_src_ids, est_desc_index)
-                pos_peer = est_pos_index.get((wl.account_code, wl.sort_order))
-                if pos_peer is None or (desc_peer is not None
-                                        and pos_peer.id == desc_peer.id):
-                    continue  # no positional drift → nothing to flag
-                wl_crew = set(_repair_crew_names(wl))
-                wl_po = _repair_po_number(wl)
-                peer_crew = set(_repair_crew_names(desc_peer)) if desc_peer else set()
-                peer_po = _repair_po_number(desc_peer) if desc_peer else None
-                pos_crew = set(_repair_crew_names(pos_peer))
-                pos_po = _repair_po_number(pos_peer)
-
-                # (i) differs from desc-paired peer AND (ii) matches the
-                # positional peer — for crew OR po independently.
-                crew_sig = bool(wl_crew) and wl_crew != peer_crew and wl_crew == pos_crew
-                po_sig = bool(wl_po) and wl_po != peer_po and wl_po == pos_po
-                if crew_sig or po_sig:
-                    rec["suspects"].append({
-                        "working_line_id": wl.id,
-                        "desc": (wl.description or '').strip() or '(unnamed)',
-                        "code": wl.account_code,
-                        "position_label": wrk_labels.get(wl.id),
-                        "crew_names": sorted(wl_crew),
-                        "po_number": wl_po,
-                        "likely_intended_line_id":
-                            (desc_peer.id if desc_peer else None),
-                        "likely_intended_desc":
-                            ((desc_peer.description or '').strip() or '(unnamed)'
-                             if desc_peer else None),
-                    })
-        except Exception as _e:
-            rec["error"] = str(_e)
-        out["projects"].append(rec)
-    return jsonify(out)
-
-
-# ── PHASE 2: actuals-on-Working migration ──────────────────────────────────
-# Phase 1 (commit 2cc78c0) made NEW transaction coding point directly at
-# Working-budget lines. This one-time migration remaps ALL remaining LEGACY
-# references (txns/sub-budget/location/suggested/crew/schedule) that still
-# point at "Actual"-clone lines back to their Working peers, materializes any
-# orphan Actual line that carries spend into the Working budget so no coding is
-# ever lost, then archives the Actual budgets. Safety-first: dry-run by default,
-# per-section totals asserted IDENTICAL pre/post, all-or-nothing transaction.
-
-# Field list copied when materializing an orphan Actual line onto Working.
-# Mirrors clone_estimated_to_working's line_skip set: everything EXCEPT the
-# structural/id columns is carried over (account_code, account_name,
-# description, is_labor, sort_order, rate, days, estimated_total, etc.).
-_MIGRATE_LINE_SKIP = {'id', 'budget_id', 'parent_line_id', 'source_line_id',
-                      'orphan_from_working', 'crew_assignments', 'schedule_days',
-                      'assigned_crew', 'working_total', 'manual_actual'}
-
-
-def _migrate_actuals_pick_working(all_b, pid):
-    """Resolve the project's CURRENT Working budget (never an Actual)."""
-    return (next((b for b in all_b
-                  if _budget_type(b.budget_mode) == 'working'
-                  and not b.is_actual and b.version_status == 'current'), None)
-            or next((b for b in all_b
-                     if _budget_type(b.budget_mode) == 'working'
-                     and not b.is_actual and b.version_status != 'archived'), None))
-
-
-@app.route("/projects/<int:pid>/migrate-actuals", methods=["POST", "GET"])
-@login_required
-def migrate_actuals(pid):
-    # Destructive/one-time repair tool — super-admin only before outside
-    # users arrive (tools audit 2026-07-20).
-    if getattr(current_user, 'role', None) != 'super_admin':
-        abort(403)
-    """PHASE 2 one-time migration: remap every legacy reference off the Actual
-    clone lines onto Working lines, then archive the Actual budgets.
-
-    Gated to super_admin / admin only. DRY-RUN BY DEFAULT — mutations happen
-    ONLY when `dry` is explicitly false/0 (?dry=0 on GET, or {"dry": false} in
-    the POST body). Any other value (missing, "1", true, garbage) → dry.
-
-    On a live run the whole thing is a single all-or-nothing transaction: we
-    remap, recompute the per-section actuals rollup, and ASSERT it is identical
-    (per code, 2dp) to the pre-migration snapshot. If ANY code differs we
-    rollback and return {ok:false, aborted:true} — nothing is committed unless
-    the totals match exactly. Archiving (never deleting — audit trail) and the
-    ActivityLog entry happen only after the assert passes.
-    """
-    if current_user.role not in ('super_admin', 'admin'):
-        return jsonify({"error": "Forbidden — admin only"}), 403
-
-    # DRY DEFAULT: mutate ONLY when dry is EXPLICITLY false/0. Everything else
-    # (absent, "1", "true", anything) stays dry.
-    body = request.get_json(silent=True) or {}
-    _raw = request.args.get('dry', body.get('dry', True))
-    if isinstance(_raw, str):
-        dry = _raw.strip().lower() not in ('0', 'false', 'no', 'off')
-    else:
-        dry = not (_raw is False or _raw == 0)
-
-    ProjectSheet.query.get_or_404(pid)
-    all_b = Budget.query.filter_by(project_id=pid).all()
-
-    working = _migrate_actuals_pick_working(all_b, pid)
-    actual_budgets = [b for b in all_b if b.is_actual]
-    if not working:
-        return jsonify({"ok": False, "dry": dry, "project": pid,
-                        "error": "no current Working budget to migrate onto"}), 400
-
-    # ── 1. PRE-SNAPSHOT ────────────────────────────────────────────────────
-    before = _actuals_by_section_code(pid)
-    before_total = round(sum(before.values()), 2)
-
-    actual_line_ids = [l.id for b in actual_budgets
-                       for l in BudgetLine.query.filter_by(budget_id=b.id).all()]
-    actual_line_ids_set = set(actual_line_ids)
-
-    def _count_on_actual(model, col='budget_line_id'):
-        if not actual_line_ids:
-            return 0
-        return (db.session.query(model)
-                .filter(getattr(model, col).in_(actual_line_ids)).count())
-
-    pre_counts = {
-        "txns_on_actual_lines":      (Transaction.query
-                                      .filter(Transaction.project_id == pid,
-                                              Transaction.budget_line_id.in_(actual_line_ids)).count()
-                                      if actual_line_ids else 0),
-        "suggested_on_actual_lines": (Transaction.query
-                                      .filter(Transaction.project_id == pid,
-                                              Transaction.suggested_budget_line_id.in_(actual_line_ids)).count()
-                                      if actual_line_ids else 0),
-        "subbudget_on_actual_lines": _count_on_actual(SubBudgetLine),
-        "location_on_actual_lines":  _count_on_actual(Location),
-        "crew_on_actual_lines":      _count_on_actual(CrewAssignment),
-        "schedule_line_on_actual":   _count_on_actual(ScheduleDay),
-        "schedule_budget_on_actual": (ScheduleDay.query
-                                      .filter(ScheduleDay.budget_id.in_([b.id for b in actual_budgets])).count()
-                                      if actual_budgets else 0),
-    }
-
-    # ── 2. BUILD actual_line → working_line MAP ────────────────────────────
-    # Index working lines for the materialize/validate steps.
-    working_line_ids = {l.id for l in BudgetLine.query.filter_by(budget_id=working.id).all()}
-    # Non-actual budget ids in THIS project (for source_line_id validation).
-    non_actual_bids = {b.id for b in all_b if not b.is_actual}
-
-    counts = {
-        "txns_remapped": 0, "txns_kept_unmappable": 0, "suggested_remapped": 0,
-        "suggested_nulled": 0, "subbudget": 0, "locations": 0,
-        "crew_mirrors_deleted": 0, "crew_values_promoted": 0,
-        "schedule_rows_deleted": 0, "schedule_budget_rows_deleted": 0,
-        "orphan_lines_materialized": 0, "actual_budgets_archived": 0,
-    }
-    unmappable = []   # actual line ids we could not map (reported, never NULLed)
-
-    def _has_deps(alid):
-        """Does this actual line have ANY dependent ref that must be preserved?"""
-        return bool(
-            Transaction.query.filter(Transaction.budget_line_id == alid).first() or
-            Transaction.query.filter(Transaction.suggested_budget_line_id == alid).first() or
-            SubBudgetLine.query.filter(SubBudgetLine.budget_line_id == alid).first() or
-            Location.query.filter(Location.budget_line_id == alid).first()
-        )
-
-    line_map = {}          # actual_line_id -> working_line_id
-    for b in actual_budgets:
-        for aline in BudgetLine.query.filter_by(budget_id=b.id).all():
-            target = None
-            # (a) source_line_id → a real line on a NON-actual budget of this project.
-            if aline.source_line_id:
-                peer = BudgetLine.query.get(aline.source_line_id)
-                if peer and peer.budget_id in non_actual_bids:
-                    target = peer
-            if target is not None:
-                line_map[aline.id] = target.id
-                continue
-            # (b) orphan / dangling. Materialize onto CURRENT Working ONLY if it
-            #     has dependents; otherwise skip (nothing references it).
-            if not _has_deps(aline.id):
-                continue
-            if dry:
-                # Represent a would-be materialized line with a sentinel so the
-                # remap counters below still count the dependent refs.
-                line_map[aline.id] = ('NEW', aline.id)
-                counts["orphan_lines_materialized"] += 1
-            else:
-                new_line = BudgetLine()
-                for col in BudgetLine.__table__.columns:
-                    if col.name in _MIGRATE_LINE_SKIP:
-                        continue
-                    setattr(new_line, col.name, getattr(aline, col.name))
-                new_line.budget_id           = working.id
-                new_line.source_line_id      = None
-                new_line.parent_line_id      = None
-                new_line.orphan_from_working = True
-                db.session.add(new_line)
-                db.session.flush()
-                line_map[aline.id] = new_line.id
-                counts["orphan_lines_materialized"] += 1
-
-    def _resolve(mapped):
-        """Translate a line_map value (int id or ('NEW', src) sentinel) to a
-        real working line id, or None in dry mode for a not-yet-created line."""
-        if isinstance(mapped, tuple):
-            return None   # dry-run sentinel: line would be created live
-        return mapped
-
-    # ── 3. REMAP ───────────────────────────────────────────────────────────
-    # 3a. Transaction.budget_line_id (canonical coding).
-    #
-    # ACCOUNT-CODE PINNING (fix after the first Cliburn live run ABORTED —
-    # 9 section codes drifted both ways, grand total unchanged): the original
-    # version mirrored account_code from the mapped Working line, but
-    # (a) a txn whose account_code was deliberately set DIFFERENT from its
-    #     line's code got overwritten → its spend jumped sections, and
-    # (b) a NULL-code txn whose Actual line's code had DRIFTED from its
-    #     Working peer's code shifted sections via the rollup's coalesce.
-    # THE MIGRATION MUST NOT MOVE A SINGLE FIGURE. So: pin each txn's
-    # EFFECTIVE HISTORICAL code — leave account_code untouched when set;
-    # when NULL, stamp it with the OLD (actual) line's code before moving the
-    # line link. Totals are then identical by construction, and the pinned
-    # code preserves exactly what the user saw pre-migration. (2026-07.)
-    aline_by_id = {l.id: l for l in (
-        BudgetLine.query.filter(BudgetLine.id.in_(actual_line_ids)).all()
-        if actual_line_ids else [])}
-    for aline_id in list(line_map.keys()):
-        mapped = line_map[aline_id]
-        target_id = _resolve(mapped)
-        old_line = aline_by_id.get(aline_id)
-        txns = (Transaction.query
-                .filter(Transaction.project_id == pid,
-                        Transaction.budget_line_id == aline_id).all())
-        for txn in txns:
-            counts["txns_remapped"] += 1
-            if not dry and target_id is not None:
-                if txn.account_code is None and old_line is not None:
-                    # Pin the effective section the rollup used pre-migration.
-                    txn.account_code      = old_line.account_code
-                    txn.account_code_name = old_line.account_name
-                txn.budget_line_id = target_id
-                txn.updated_at     = datetime.utcnow()
-
-    # Any txn still pointing at an actual line with NO mapping = unmappable.
-    # By construction (orphans with deps get materialized) this should be 0.
-    # Never NULL it — keep it where it is and REPORT.
-    for aline_id in actual_line_ids:
-        if aline_id in line_map:
-            continue
-        stragglers = (Transaction.query
-                      .filter(Transaction.project_id == pid,
-                              Transaction.budget_line_id == aline_id).count())
-        if stragglers:
-            counts["txns_kept_unmappable"] += stragglers
-            unmappable.append({"actual_line_id": aline_id, "txns": stragglers})
-
-    # 3b. Transaction.suggested_budget_line_id → mapped working id (advisory:
-    #     NULL if the actual line has no mapping — a suggestion is disposable).
-    for aline_id in actual_line_ids:
-        mapped = line_map.get(aline_id)
-        target_id = _resolve(mapped) if mapped is not None else None
-        sugg = (Transaction.query
-                .filter(Transaction.project_id == pid,
-                        Transaction.suggested_budget_line_id == aline_id).all())
-        for txn in sugg:
-            if mapped is not None:
-                counts["suggested_remapped"] += 1
-                if not dry and target_id is not None:
-                    txn.suggested_budget_line_id = target_id
-            else:
-                counts["suggested_nulled"] += 1
-                if not dry:
-                    txn.suggested_budget_line_id = None
-
-    # 3c. SubBudgetLine.budget_line_id / Location.budget_line_id → mapped id.
-    #     Skip rows whose actual line had no mapping (no target to move to).
-    for aline_id in actual_line_ids:
-        mapped = line_map.get(aline_id)
-        if mapped is None:
-            continue
-        target_id = _resolve(mapped)
-        for sbl in SubBudgetLine.query.filter_by(budget_line_id=aline_id).all():
-            counts["subbudget"] += 1
-            if not dry and target_id is not None:
-                sbl.budget_line_id = target_id
-        for loc in Location.query.filter_by(budget_line_id=aline_id).all():
-            counts["locations"] += 1
-            if not dry and target_id is not None:
-                loc.budget_line_id = target_id
-
-    # 3d. CrewAssignment rows ON actual lines are WRITE-THROUGH MIRRORS: the
-    #     canonical rows live on the Working peer (see assign_crew, app.py ~18538
-    #     — Working is the canonical owner; Actual clones are mirrored copies).
-    #     DELETE the mirrors, but first PROMOTE any override value the mirror
-    #     carries that its Working peer's matching assignment lacks, so a
-    #     rate_override / fringe_override / name_override / agent_override typed
-    #     on the Actual view is never lost.
-    _PROMOTE_FIELDS = ('rate_override', 'fringe_override', 'name_override',
-                       'agent_override', 'omit_flags', 'role_number')
-    for aline_id in actual_line_ids:
-        mapped = line_map.get(aline_id)
-        target_id = _resolve(mapped) if mapped is not None else None
-        for ca in CrewAssignment.query.filter_by(budget_line_id=aline_id).all():
-            counts["crew_mirrors_deleted"] += 1
-            if target_id is not None:
-                peer = (CrewAssignment.query
-                        .filter_by(budget_line_id=target_id, instance=ca.instance).first())
-                if peer is not None:
-                    for f in _PROMOTE_FIELDS:
-                        mv = getattr(ca, f)
-                        if mv not in (None, '') and getattr(peer, f) in (None, ''):
-                            counts["crew_values_promoted"] += 1
-                            if not dry:
-                                setattr(peer, f, mv)
-            if not dry:
-                db.session.delete(ca)
-
-    # 3e. ScheduleDay rows attached to an Actual BUDGET (budget_id on an Actual)
-    #     were never user-visible (the UI keys schedule off working/estimated
-    #     modes). Verify count, then delete. Also drop any line-level schedule
-    #     rows pointing at actual lines (defensive — normally none).
-    _actual_bids = [b.id for b in actual_budgets]
-    if _actual_bids:
-        from models import TravelDetail as _TD_mig
-        # Budget-level schedule rows.
-        _bsd_ids = [r[0] for r in db.session.query(ScheduleDay.id)
-                    .filter(ScheduleDay.budget_id.in_(_actual_bids)).all()]
-        counts["schedule_budget_rows_deleted"] = len(_bsd_ids)
-        # Line-level schedule rows on actual lines.
-        _lsd_ids = ([r[0] for r in db.session.query(ScheduleDay.id)
-                     .filter(ScheduleDay.budget_line_id.in_(actual_line_ids)).all()]
-                    if actual_line_ids else [])
-        counts["schedule_rows_deleted"] = len(_lsd_ids)
-        if not dry:
-            _all_sd = list(set(_bsd_ids) | set(_lsd_ids))
-            if _all_sd:
-                _TD_mig.query.filter(_TD_mig.schedule_day_id.in_(_all_sd))\
-                    .delete(synchronize_session=False)
-                ScheduleDay.query.filter(ScheduleDay.id.in_(_all_sd))\
-                    .delete(synchronize_session=False)
-
-    # ── 4. POST-ASSERT: per-section totals IDENTICAL (2dp) ─────────────────
-    diffs = []
-    codes_compared = 0
-    if dry:
-        # Nothing mutated — the rollup is unchanged by definition, but we still
-        # report the snapshot so the operator sees what will be preserved.
-        after = dict(before)
-    else:
-        db.session.flush()
-        after = _actuals_by_section_code(pid)
-    all_codes = set(before) | set(after)
-    for code in all_codes:
-        codes_compared += 1
-        bv = round(before.get(code, 0.0), 2)
-        av = round(after.get(code, 0.0), 2)
-        if bv != av:
-            diffs.append({"code": code, "before": bv, "after": av})
-    identical = not diffs
-    after_total = round(sum(after.values()), 2)
-
-    if not dry and not identical:
-        # ABORT — all-or-nothing. Nothing is committed.
-        db.session.rollback()
-        return jsonify({
-            "ok": False, "dry": False, "aborted": True, "project": pid,
-            "error": "per-section actuals totals changed — migration rolled back",
-            "counts": counts,
-            "totals_check": {"codes_compared": codes_compared,
-                             "identical": False, "diffs": diffs},
-            "before_total": before_total, "after_total": after_total,
-        }), 500
-
-    # ── 5. ARCHIVE (live only, after assert passes) ────────────────────────
-    if not dry:
-        for b in actual_budgets:
-            if b.version_status != 'archived':
-                b.version_status = 'archived'
-                b.updated_at = datetime.utcnow()
-                counts["actual_budgets_archived"] += 1
-        db.session.commit()
-        try:
-            _log_activity(
-                action='update', entity_type='budget_migration',
-                entity_id=working.id,
-                entity_label=f"Phase 2 actuals→Working migration (project {pid})",
-                budget_id=working.id, project_id=pid,
-                note=(f"Remapped {counts['txns_remapped']} txns, "
-                      f"{counts['subbudget']} sub-budget, {counts['locations']} location refs; "
-                      f"materialized {counts['orphan_lines_materialized']} orphan lines; "
-                      f"deleted {counts['crew_mirrors_deleted']} crew mirrors "
-                      f"({counts['crew_values_promoted']} values promoted), "
-                      f"{counts['schedule_rows_deleted'] + counts['schedule_budget_rows_deleted']} schedule rows; "
-                      f"archived {counts['actual_budgets_archived']} Actual budgets."),
-                after={'counts': counts})
-        except Exception:
-            pass
-    else:
-        counts["actual_budgets_archived"] = len(
-            [b for b in actual_budgets if b.version_status != 'archived'])
-
-    return jsonify({
-        "ok": True, "dry": dry, "project": pid,
-        "pre_counts": pre_counts,
-        "counts": counts,
-        "totals_check": {"codes_compared": codes_compared,
-                         "identical": identical, "diffs": diffs},
-        "unmappable": unmappable,
-        "before_total": before_total, "after_total": after_total,
-    })
-
-
-@app.route("/projects/migrate-actuals/scan", methods=["GET"])
-@login_required
-def migrate_actuals_scan():
-    """Blast-radius scan (read-only, admin): every project that still has any
-    Actual budget, with its Actual-budget count and how many transactions are
-    still coded to Actual-clone lines. Lets us see scope before running
-    /projects/<pid>/migrate-actuals anywhere."""
-    if current_user.role not in ('super_admin', 'admin'):
-        return jsonify({"error": "Forbidden — admin only"}), 403
-
-    rows = []
-    actual_budgets = Budget.query.filter_by(is_actual=True).all()
-    by_project = {}
-    for b in actual_budgets:
-        by_project.setdefault(b.project_id, []).append(b)
-
-    for pid, bs in by_project.items():
-        proj = ProjectSheet.query.get(pid)
-        line_ids = [l.id for b in bs
-                    for l in BudgetLine.query.filter_by(budget_id=b.id).all()]
-        txns = (Transaction.query
-                .filter(Transaction.project_id == pid,
-                        Transaction.budget_line_id.in_(line_ids)).count()
-                if line_ids else 0)
-        rows.append({
-            "pid": pid,
-            "name": proj.name if proj else None,
-            "actual_budgets": len(bs),
-            "actual_budgets_current": len([b for b in bs
-                                           if b.version_status == 'current']),
-            "txns_on_actual_lines": txns,
-        })
-    rows.sort(key=lambda r: (-r["txns_on_actual_lines"], r["pid"]))
-    return jsonify({"ok": True, "projects": rows,
-                    "total_projects": len(rows)})
 
 
 @app.route("/docs/<int:pid>/reconcile-filing", methods=["POST"])
@@ -40101,7 +38426,7 @@ def debug_line(bid):
                 if budget.payroll_week_start is not None
                 else (profile.payroll_week_start if profile else 6))
     sched_mode = ('working'
-                  if budget.budget_mode in ('working', 'actual')
+                  if budget.budget_mode == 'working'
                   else 'estimated')
     out = {
         "budget": {
@@ -40206,7 +38531,7 @@ def debug_budget_calc_trace(bid):
                 if budget.payroll_week_start is not None
                 else (profile.payroll_week_start if profile else 6))
     sched_mode = ('working'
-                  if budget.budget_mode in ('working', 'actual')
+                  if budget.budget_mode == 'working'
                   else 'estimated')
     # Pre-bucket all schedule rows in one query so per-line filters are
     # dict lookups, not N+1 queries. Same dedup pattern budget_view uses.
@@ -40514,8 +38839,6 @@ def _unhandled_exception(e):
 @app.route("/projects")
 def projects_redirect():
     return redirect(url_for("dashboard"))
-
-
 
 
 # ── M1 split (2026-07-20): route modules extracted from this monolith.
