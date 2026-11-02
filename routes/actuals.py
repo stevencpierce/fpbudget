@@ -4030,6 +4030,16 @@ def actuals_workspace_json(pid):
     for t in txns:
         t.has_splits = bool(splits_by_txn.get(t.id))
     grouped = group_pool_rows(txns)
+    # A charge whose attached receipt/invoice already has its own coded row
+    # (source='doc_upload' on a line) should be told so: that line is the
+    # strongest suggestion there is, and accepting it absorbs the receipt row
+    # (link_transaction_to_line → confirm_match). Keyed by doc id. (Nov 2 2026)
+    _sister_line_by_doc = {}
+    for _s in Transaction.query.filter(Transaction.project_id == pid,
+                                       Transaction.source == 'doc_upload',
+                                       Transaction.doc_upload_id.isnot(None),
+                                       Transaction.budget_line_id.isnot(None)).all():
+        _sister_line_by_doc.setdefault(_s.doc_upload_id, _s.budget_line_id)
 
     transactions, not_project, claimed_elsewhere = [], [], []
     matched_doc_ids = set()
@@ -4074,6 +4084,14 @@ def actuals_workspace_json(pid):
                               "label": f"{t.ai_suggested_code} · {t.ai_suggested_code_name or _WS_COA.get(t.ai_suggested_code, '')}",
                               "confidence": float(t.ai_code_confidence or 0),
                               "reason": getattr(t, 'ai_code_reason', None)}
+        # The attached receipt's own row is already coded → its line wins
+        # over any AI guess; accepting it folds that row into this charge.
+        if (t.doc_upload_id and t.source != 'doc_upload' and not t.budget_line_id
+                and _sister_line_by_doc.get(t.doc_upload_id)):
+            _sl = _sister_line_by_doc[t.doc_upload_id]
+            suggested_line = {"id": _sl, "label": _line_label_any(_sl),
+                              "confidence": 1.0,
+                              "reason": "Its receipt is already on this line — accept to fold them together"}
         assigned_line = None
         if t.budget_line_id:
             assigned_line = {"id": t.budget_line_id, "label": _line_label_any(t.budget_line_id)}

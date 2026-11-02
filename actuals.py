@@ -1858,6 +1858,32 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
 
     db.session.commit()
 
+    # ── Absorb the attached receipt's own row (Nov 2 2026) ────────────────
+    # A bank charge that already carries a receipt (doc_upload_id set, e.g.
+    # an invoice attached before the charge was coded, or the invoice's
+    # auto-match confirmed without a line) still had the receipt's own
+    # source='doc_upload' placeholder row sitting on a line. Coding the
+    # charge then DOUBLE-COUNTED the line (invoice row + bank row — Steven's
+    # Ryan Mauskopf $4,500 ACH on Producer / 1st AD). confirm_match is the
+    # one merge path (carries evidence, backup links, payee; deletes the
+    # placeholder); run it whenever a sister row exists. Fail-open.
+    try:
+        if txn.doc_upload_id and txn.source != 'doc_upload':
+            _sister = (Transaction.query
+                       .filter(Transaction.doc_upload_id == txn.doc_upload_id,
+                               Transaction.source == 'doc_upload',
+                               Transaction.id != txn.id).first())
+            if _sister is not None:
+                confirm_match(txn.id)
+                db.session.commit()
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        log.warning("[actuals/link] receipt-row absorb failed for txn %s "
+                    "(coding kept)", getattr(txn, 'id', None), exc_info=True)
+
     return {
         'transaction_id':           txn.id,
         'budget_line_id':           working_line.id,
