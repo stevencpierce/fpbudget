@@ -281,7 +281,7 @@
       const host = document.getElementById('dash-action-center');
       if (!host) return;
       if (!items.length) {
-        host.innerHTML = '<div style="border:1px dashed var(--border);border-radius:8px;padding:14px;text-align:center;color:var(--text-muted);font-size:.8rem">✓ Nothing needs review. Use “Clean up data” or “Scan for duplicates” to check again.</div>';
+        host.innerHTML = '<div style="border:1px dashed var(--border);border-radius:8px;padding:14px;text-align:center;color:var(--text-muted);font-size:.8rem">✓ Nothing needs review. Settings → Maintenance has “Run clean up” and “Scan now” to check again.</div>';
         return;
       }
       const sev = { high: '#e08080', medium: '#e0c060', low: '#9ec0ff' };

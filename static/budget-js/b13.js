@@ -73,8 +73,10 @@
         document.getElementById('export-col-act').checked  = _isActView || _hasActual;
         document.getElementById('export-col-var').checked  = _isWorkView || _isActView;
       }
+      // The export reads the page's ONE variance choice (Cleanup C).
+      const _activeVar = document.querySelector('.var-btn.active');
       document.getElementById('export-var-basis').value =
-        _isActView ? 'work_v_act' : 'est_v_work';
+        (_activeVar && _activeVar.dataset.basis) || 'vs_working';
       _updateVarBasisVisibility();
     }
     document.getElementById('export-options-overlay').classList.remove('hidden');

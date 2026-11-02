@@ -1387,6 +1387,38 @@ def working_exists_for_version(budgets, version_number):
                for b in budgets)
 
 
+# The ONE variance-basis key set (budget page control, Top Sheet, Export
+# dialog, PDF). Every basis reads "+ = under": vs_estimated = Est − Actual,
+# vs_working = Working − Actual, est_to_working = Est − Working. The old
+# page keys (e_vs_w / w_vs_a / e_vs_a) and export keys (est_v_work /
+# work_v_act / est_v_act) are accepted as aliases so bookmarks keep working.
+VARIANCE_BASES = ('vs_estimated', 'vs_working', 'est_to_working')
+VARIANCE_BASIS_ALIASES = {'est_v_work': 'est_to_working', 'work_v_act': 'vs_working',
+                          'est_v_act': 'vs_estimated',
+                          'e_vs_w': 'est_to_working', 'w_vs_a': 'vs_working',
+                          'e_vs_a': 'vs_estimated'}
+VARIANCE_LABELS = {'vs_estimated': 'Var vs Estimated', 'vs_working': 'Var vs Working',
+                   'est_to_working': 'Est → Working'}
+
+
+def normalize_variance_basis(key, default='vs_working'):
+    """Map any spelling (current or legacy) to the one key set; unknown or
+    empty → `default`."""
+    k = VARIANCE_BASIS_ALIASES.get(key or '', key or '')
+    return k if k in VARIANCE_BASES else default
+
+
+def variance_value(basis, estimated, working, actual):
+    """The number a variance cell shows for `basis` (+ = under)."""
+    basis = normalize_variance_basis(basis)
+    e, w, a = float(estimated or 0), float(working or 0), float(actual or 0)
+    if basis == 'est_to_working':
+        return e - w
+    if basis == 'vs_working':
+        return w - a
+    return e - a
+
+
 def line_overages(planned_by_line, actual_by_line, min_dollars=50.0, min_pct=0.10):
     """Pure rule for the "line over plan" scan: a line is flagged when its
     coded spend exceeds the plan by at least `min_dollars` AND `min_pct`.

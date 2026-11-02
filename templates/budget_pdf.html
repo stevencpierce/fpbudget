@@ -350,11 +350,12 @@
 {% set _col_var  = col_var  | default(is_working_view) %}
 {% set _value_col_count = (1 if _col_est else 0) + (1 if _col_work else 0) + (1 if _col_act else 0) %}
 {% set _show_var = _col_var and _value_col_count >= 2 %}
-{% set _var_basis = var_basis | default('est_v_work') %}
+{% set _var_basis = var_basis | default('est_to_working') %}
+{# Every basis reads "+ = under" like the budget page (Cleanup C). #}
 {% set _var_label = ({
-     'est_v_work': 'Variance (Work − Est)',
-     'work_v_act': 'Variance (Work − Act)',
-     'est_v_act':  'Variance (Est − Act)',
+     'est_to_working': 'Variance (Est → Working)',
+     'vs_working':     'Variance (vs Working)',
+     'vs_estimated':   'Variance (vs Estimated)',
    })[_var_basis] %}
 
 {# Per-row variance helper closure isn't a thing in Jinja — compute
@@ -404,9 +405,9 @@
     {% endif %}
     {% set _row_work = (row.pdf_rounded_estimated if (dispersed and row.pdf_rounded_estimated is defined) else row.estimated) %}
     {% set _row_act  = row.actual | default(0) %}
-    {% if   _var_basis == 'est_v_work' %}{% set _row_var = _row_work - _row_est %}
-    {% elif _var_basis == 'work_v_act' %}{% set _row_var = _row_work - _row_act %}
-    {% elif _var_basis == 'est_v_act'  %}{% set _row_var = _row_est  - _row_act %}
+    {% if   _var_basis == 'est_to_working' %}{% set _row_var = _row_est  - _row_work %}
+    {% elif _var_basis == 'vs_working'     %}{% set _row_var = _row_work - _row_act %}
+    {% elif _var_basis == 'vs_estimated'   %}{% set _row_var = _row_est  - _row_act %}
     {% else %}{% set _row_var = 0 %}{% endif %}
     <tr>
       <td class="code">{{ row.code }}</td>
@@ -415,7 +416,7 @@
       {% if _col_work %}<td class="num">{{ currency(_row_work) }}</td>{% endif %}
       {% if _col_act  %}<td class="num">{{ currency(_row_act) }}</td>{% endif %}
       {% if _show_var %}
-      <td class="num {% if _row_var > 0.005 %}var-over{% elif _row_var < -0.005 %}var-under{% endif %}">
+      <td class="num {% if _row_var < -0.005 %}var-over{% elif _row_var > 0.005 %}var-under{% endif %}">
         {{ currency(_row_var) }}
       </td>
       {% endif %}
@@ -527,9 +528,9 @@
                           else (est_top_sheet.grand_total_estimated if est_top_sheet else top_sheet.grand_total_estimated)) %}
     {% set _grand_work = top_sheet.pdf_rounded_grand_total_estimated if (dispersed and top_sheet.pdf_rounded_grand_total_estimated is defined) else top_sheet.grand_total_estimated %}
     {% set _grand_act  = top_sheet.grand_total_actual | default(0) %}
-    {% if   _var_basis == 'est_v_work' %}{% set _grand_var = _grand_work - _grand_est %}
-    {% elif _var_basis == 'work_v_act' %}{% set _grand_var = _grand_work - _grand_act %}
-    {% elif _var_basis == 'est_v_act'  %}{% set _grand_var = _grand_est  - _grand_act %}
+    {% if   _var_basis == 'est_to_working' %}{% set _grand_var = _grand_est  - _grand_work %}
+    {% elif _var_basis == 'vs_working'     %}{% set _grand_var = _grand_work - _grand_act %}
+    {% elif _var_basis == 'vs_estimated'   %}{% set _grand_var = _grand_est  - _grand_act %}
     {% else %}{% set _grand_var = 0 %}{% endif %}
     <tr class="grand-total-row">
       <td class="code"></td>
@@ -538,7 +539,7 @@
       {% if _col_work %}<td class="num">{{ currency(_grand_work) }}</td>{% endif %}
       {% if _col_act  %}<td class="num">{{ currency(_grand_act) }}</td>{% endif %}
       {% if _show_var %}
-      <td class="num {% if _grand_var > 0.005 %}var-over{% elif _grand_var < -0.005 %}var-under{% endif %}">
+      <td class="num {% if _grand_var < -0.005 %}var-over{% elif _grand_var > 0.005 %}var-under{% endif %}">
         {{ currency(_grand_var) }}
       </td>
       {% endif %}
@@ -834,11 +835,11 @@
       {% set _work_disp = (pdf_line_totals.get(ln.id, res.est_total * fee_m) if (dispersed and pdf_line_totals) else (res.est_total * fee_m)) %}
       {% if _col_work %}<td class="num">{{ currency(_work_disp) }}</td>{% endif %}
       {% if _show_var %}
-        {# Detail-line variance uses Work − Est (est_v_work). Per-line
-           Actual isn't computed in this template; the other basis
+        {# Detail-line variance is Est − Working (est_to_working, + = under).
+           Per-line Actual isn't computed in this template; the other basis
            options only apply to the Top Sheet rollups. #}
-        {% set _var = _work_disp - _est_disp %}
-        <td class="num {% if _var > 0.005 %}var-over{% elif _var < -0.005 %}var-under{% endif %}">{{ currency(_var) }}</td>
+        {% set _var = _est_disp - _work_disp %}
+        <td class="num {% if _var < -0.005 %}var-over{% elif _var > 0.005 %}var-under{% endif %}">{{ currency(_var) }}</td>
       {% endif %}
       {% else %}
       <td class="num">{{ currency(line_total) }}</td>

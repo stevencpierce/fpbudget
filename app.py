@@ -9683,8 +9683,18 @@ def budget_view(pid, bid):
                                     'when': _at}
     except Exception as _cle:
         logging.warning(f"[overview] latest comments failed: {_cle}")
-    # The `?tab=` the page opens on; 'overview' is the default (was the
-    # Dashboard, data-tab="topsheet" — that key still works for old links).
+    # Lines claimed by a lever on this budget → the "Lever" chip after the
+    # description (LineActions artboard).
+    lever_line_ids = set()
+    try:
+        for _lv in BudgetLever.query.filter_by(budget_id=bid).all():
+            if _lv.line_ids:
+                try:
+                    lever_line_ids.update(int(x) for x in json.loads(_lv.line_ids))
+                except (TypeError, ValueError):
+                    pass
+    except Exception as _lve:
+        logging.warning(f"[overview] lever line ids failed: {_lve}")
     dashboard_stats = {}
 
     # ── Client estimate approval: badge + history ───────────────────────────
@@ -9752,6 +9762,7 @@ def budget_view(pid, bid):
         recent_activity=recent_activity,
         callsheet_count=callsheet_count,
         comment_latest=comment_latest,
+        lever_line_ids=lever_line_ids,
         all_budgets=all_budgets,
         version_groups=version_groups,
         share_status_by_bid=share_status_by_bid,
@@ -13721,10 +13732,13 @@ def export_pdf(pid, bid):
     # working view → Est + Work + Var; estimated view → Est only.
     # User can override via the Export Options modal — flags arrive
     # as ?col_est=1&col_work=1&col_act=1&col_var=1&var_basis=...
-    # The variance basis controls what the Variance column subtracts:
-    #   est_v_work  → Working - Estimated  (overrun while planning)
-    #   work_v_act  → Working - Actual     (overrun in production)
-    #   est_v_act   → Estimated - Actual   (overrun vs original plan)
+    # The variance basis controls what the Variance column subtracts —
+    # the ONE key set shared with the budget page (Cleanup C, 2026-11-02):
+    #   est_to_working → Working - Estimated  (what changed while planning)
+    #   vs_working     → Working - Actual     (overrun in production)
+    #   vs_estimated   → Estimated - Actual   (overrun vs original plan)
+    # The old est_v_work / work_v_act / est_v_act spellings are accepted as
+    # aliases so a bookmarked export URL keeps working.
     _any_col_param = any(k in request.args for k in
                          ('col_est', 'col_work', 'col_act', 'col_var'))
     if _any_col_param:
@@ -13738,9 +13752,8 @@ def export_pdf(pid, bid):
         col_work = is_working_view
         col_act  = False
         col_var  = is_working_view
-    var_basis = request.args.get('var_basis') or 'est_v_work'
-    if var_basis not in ('est_v_work', 'work_v_act', 'est_v_act'):
-        var_basis = 'est_v_work'
+    from actuals import normalize_variance_basis as _nvb
+    var_basis = _nvb(request.args.get('var_basis'), default='est_to_working')
 
     # ── Pull the Estimated peer's Top Sheet so the PDF's Estimated
     # column reads from the actual Estimated budget instead of the
