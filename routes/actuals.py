@@ -3828,12 +3828,22 @@ def actuals_import_bank_csv(pid):
     }
     if apply and importable:
         try:
+            from actuals import payee_for_vendor_string as _pfv
+            _payee_cache = {}
             for r in importable:
+                # Attribution (Documents Phase 3): a vendor string linked to
+                # a Payee (VendorAlias.payee_id, or an exact name match)
+                # attributes the row on arrival — source 'alias'.
+                _vk = (r["vendor"] or '').strip().lower()
+                if _vk not in _payee_cache:
+                    _payee_cache[_vk] = _pfv(pid, r["vendor"])
+                _pid_ = _payee_cache[_vk]
                 db.session.add(Transaction(
                     project_id=pid, amount=r["amount"], is_expense=r["is_expense"],
                     vendor=r["vendor"], txn_date=r["txn_date"], note=r["note"],
                     card_last4=r["card_last4"], source='csv_import',
                     match_status='unmatched',
+                    payee_id=_pid_, payee_source=('alias' if _pid_ else None),
                     created_via_user_id=getattr(current_user, 'id', None)))
             db.session.commit()
             report["created"] = len(importable)
@@ -4384,6 +4394,24 @@ def actuals_manual_expense(pid):
             return jsonify({"error": "budget_line_id is not on this project's "
                                      "current Working budget."}), 400
     _now = datetime.utcnow()
+    # Attribution (Documents Phase 3): an explicit payee_id in the body is
+    # a person's pick ('manual'); else the vendor string's linked Payee
+    # ('alias'); else nobody — a line picked below may name them.
+    _body = request.get_json(silent=True) or {}
+    _payee_id, _payee_src = None, None
+    if _body.get("payee_id") not in (None, '', 0, '0'):
+        from models import CrewMember as _CM
+        try:
+            _payee_id = int(_body.get("payee_id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "payee_id must be an integer."}), 400
+        if _CM.query.get(_payee_id) is None:
+            return jsonify({"error": "payee_id: no such payee."}), 400
+        _payee_src = 'manual'
+    else:
+        from actuals import payee_for_vendor_string as _pfv
+        _payee_id = _pfv(pid, clean["vendor"])
+        _payee_src = 'alias' if _payee_id else None
     txn = Transaction(
         project_id=pid, source='manual_entry',
         vendor=clean["vendor"], amount=clean["amount"], is_expense=clean["is_expense"],
@@ -4391,6 +4419,7 @@ def actuals_manual_expense(pid):
         payment_method=clean["payment_method"],
         paid_by_crew_member_id=clean["paid_by_crew_member_id"],
         no_charge_reason=clean["reason"],
+        payee_id=_payee_id, payee_source=_payee_src,
         activated_at=_now, match_status='unmatched',
         created_via_user_id=current_user.id, created_at=_now, updated_at=_now)
     db.session.add(txn)

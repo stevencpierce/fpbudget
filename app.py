@@ -5465,8 +5465,11 @@ def _build_wrap_book_data(pid):
         from actuals import (paid_by_payee as _pbp, w9_status_for as _w9_for,
                              w9_fallback_dates as _w9_fb, reporting_threshold_rows as _thr_rows,
                              threshold_for_year as _thr_for, SHARED_LINE as _SHARED)
-        _doc_cm = {d.id: d.crew_member_id for d in docs.values() if d.crew_member_id}
+        _doc_cm = {d.id: (getattr(d, 'owner_payee_id', None) or d.crew_member_id)
+                   for d in docs.values() if (getattr(d, 'owner_payee_id', None) or d.crew_member_id)}
         _proj_payees = {_doc_cm[t.doc_upload_id] for t in exp_rows if _doc_cm.get(t.doc_upload_id)}
+        # Phase 3: explicit attribution on the rows themselves.
+        _proj_payees |= {t.payee_id for t in exp_rows if getattr(t, 'payee_id', None)}
         for _ln in lines:
             if _ln.assigned_crew_id:
                 _proj_payees.add(_ln.assigned_crew_id)
@@ -5491,12 +5494,20 @@ def _build_wrap_book_data(pid):
                     _w9 = _w9_for(_cm, non_card=_b["non_card"], threshold=_th,
                                   fallback_date=_fb.get(_cm.id))
                     if _b["non_card"] >= _th and _w9["status"] != 'on_file':
+                        _qid = getattr(_cm, 'qbo_vendor_id', None)
+                        _q1099 = getattr(_cm, 'qbo_vendor_1099', None)
                         tax_check.append({"name": _cm.name, "year": _yr,
                                           "paid": round(_b["non_card"], 2),
                                           "threshold": _th,
                                           "payee_id": _cm.id,
-                                          "qbo_linked": bool(getattr(_cm, 'qbo_vendor_id', None)),
-                                          "qbo_vendor_1099": getattr(_cm, 'qbo_vendor_1099', None)})
+                                          "w9_status": _w9["status"],
+                                          "qbo_linked": bool(_qid),
+                                          "qbo_vendor_1099": _q1099,
+                                          # Beside the W-9: what QuickBooks knows
+                                          "qbo_label": ("Not in QuickBooks" if not _qid
+                                                        else ("Linked · 1099 on" if _q1099 is True
+                                                              else "Linked · 1099 off")),
+                                          "qbo_state": ("warn" if not _qid or _q1099 is not True else "ok")})
     except Exception:
         logging.warning("[wrap] 1099 check failed", exc_info=True)
 
@@ -29723,6 +29734,37 @@ def _web_worker_essential_columns():
                 "                  DESC NULLS LAST, id DESC) sub "
                 " WHERE sub.owner_payee_id = cm.id AND cm.w9_received_on IS NULL "
                 "   AND sub.d IS NOT NULL",
+                # ── Payment attribution + QuickBooks vendor mirror
+                # (DOCUMENTS_HANDOFF Phase 3, 2026-11-02, alembic 0024 —
+                # mirrored here per CLAUDE.md). The backfill of
+                # transaction.payee_id is the boot task _backfill_txn_payee
+                # below (marker + advisory lock), not DDL.
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS payee_id INTEGER REFERENCES crew_member(id)",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS payee_source VARCHAR(16)",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS qbo_entity_ref VARCHAR(40)",
+                "CREATE INDEX IF NOT EXISTS ix_transaction_payee_id ON transaction (payee_id)",
+                "CREATE INDEX IF NOT EXISTS ix_transaction_qbo_entity_ref ON transaction (qbo_entity_ref)",
+                "ALTER TABLE vendor_alias ADD COLUMN IF NOT EXISTS payee_id INTEGER REFERENCES crew_member(id)",
+                "ALTER TABLE qbo_connection ADD COLUMN IF NOT EXISTS vendor_cdc_since TIMESTAMP",
+                """CREATE TABLE IF NOT EXISTS qbo_vendor (
+                     qbo_vendor_id   VARCHAR(40) PRIMARY KEY,
+                     display_name    VARCHAR(200),
+                     company_name    VARCHAR(200),
+                     given_name      VARCHAR(100),
+                     family_name     VARCHAR(100),
+                     email           VARCHAR(200),
+                     phone           VARCHAR(50),
+                     address_line1   VARCHAR(200),
+                     address_line2   VARCHAR(200),
+                     city            VARCHAR(120),
+                     state           VARCHAR(40),
+                     postal_code     VARCHAR(20),
+                     vendor_1099     BOOLEAN,
+                     active          BOOLEAN,
+                     sync_token      VARCHAR(20),
+                     qbo_updated_at  TIMESTAMP,
+                     synced_at       TIMESTAMP
+                   )""",
                 # 2026-05-01 Veryfi expense category (free-text, e.g.
                 # "Meals & Entertainment", "Office Supplies & Software").
                 # Denormalized off veryfi_data so the Docs tab can render
@@ -30812,6 +30854,138 @@ with app.app_context():
     _migrate_fringes_to_admin()
 
 
+# ── Payment attribution backfill (DOCUMENTS_HANDOFF Phase 3, 2026-11-02) ──
+# Transaction.payee_id (alembic 0024 + the essential pass) starts NULL on
+# every existing row. This one-time task sets it where the facts already
+# on the row name ONE payee without ambiguity — its document's owner, the
+# single crew member on its budget line, a VendorAlias linked to a payee,
+# or an exact match of the vendor string to one payee's name — and LOGS a
+# row whose signals disagree (never guesses). Same marker + advisory-lock
+# shape as _migrate_fringes_to_admin. The body is a plain function so the
+# sqlite test client can run it; sqlite-safe (ORM only). Idempotent: a
+# second run finds nothing NULL that it can resolve.
+_TXN_PAYEE_MARKER = 'backfill_txn_payee_2026_11'
+_TXN_PAYEE_LOCK_KEY = 20261102
+
+
+def _backfill_txn_payee_body():
+    """Resolve payee_id on rows where it is NULL. Returns a summary string
+    for the task log (also lists the first conflicts)."""
+    from actuals import (resolve_payee_candidates, payee_name_index,
+                         line_owners_map, canon_vendor as _cv)
+    from models import VendorAlias
+    doc_owner = {did: cid for did, cid in
+                 db.session.query(DocUpload.id,
+                                  func.coalesce(DocUpload.owner_payee_id, DocUpload.crew_member_id))
+                 .filter(db.or_(DocUpload.owner_payee_id.isnot(None),
+                                DocUpload.crew_member_id.isnot(None))).all()}
+    line_owners = line_owners_map()
+    name_index = payee_name_index(CrewMember.query.all())
+    alias_by_key = {}
+    n_alias = 0
+    try:
+        # A learned vendor alias whose clean name IS one payee's name (and
+        # nobody else's) links to that payee now, so CSV / manual charges
+        # from that vendor attribute from here on.
+        for a in VendorAlias.query.all():
+            if a.payee_id is None:
+                hit = name_index.get((a.clean_name or '').strip().lower())
+                if hit:
+                    a.payee_id = hit
+                    n_alias += 1
+            if a.payee_id:
+                alias_by_key[(a.project_id, a.raw_canonical)] = a.payee_id
+    except Exception as _ae:
+        logging.warning(f"[txn-payee backfill] vendor_alias unavailable: {_ae}")
+    n_seen = n_set = n_conflict = 0
+    by_source = {}
+    conflicts = []
+    q = (Transaction.query.filter(Transaction.payee_id.is_(None))
+         .order_by(Transaction.id))
+    for t in q.yield_per(500) if hasattr(q, 'yield_per') else q.all():
+        n_seen += 1
+        r = resolve_payee_candidates(t, doc_owner, line_owners, alias_by_key, name_index)
+        if r.get("conflict"):
+            n_conflict += 1
+            if len(conflicts) < 50:
+                conflicts.append({"txn_id": t.id, "vendor": (t.vendor or '')[:60],
+                                  "candidates": r["candidates"]})
+            continue
+        if r["payee_id"]:
+            t.payee_id = r["payee_id"]
+            t.payee_source = r["source"]
+            n_set += 1
+            by_source[r["source"]] = by_source.get(r["source"], 0) + 1
+    db.session.commit()
+    for c in conflicts:
+        try:
+            _log_activity(action='attribution_conflict', entity_type='transaction',
+                          entity_id=c["txn_id"], entity_label=c["vendor"] or f"Txn #{c['txn_id']}",
+                          after={"candidates": [{"source": s_, "payee_id": p_} for s_, p_ in c["candidates"]]},
+                          note="Payee backfill: the document, budget line and vendor name name "
+                               "different payees — not attributed. Pick the payee by hand.")
+        except Exception:
+            pass
+    summary = (f"rows {n_seen}; attributed {n_set} "
+               f"({', '.join(f'{k} {v}' for k, v in sorted(by_source.items())) or 'none'}); "
+               f"aliases linked {n_alias}; conflicts {n_conflict}"
+               + (f" e.g. {conflicts[:5]}" if conflicts else ""))
+    logging.info(f"[txn-payee backfill] {summary}")
+    return summary
+
+
+def _backfill_txn_payee():
+    """Marker + advisory-lock wrapper around _backfill_txn_payee_body."""
+    try:
+        with app.app_context():
+            is_pg = 'postgresql' in str(db.engine.url).lower()
+            with db.engine.connect() as conn:
+                try:
+                    conn.execute(text(
+                        "CREATE TABLE IF NOT EXISTS system_task_log ("
+                        " task_name VARCHAR(80) PRIMARY KEY,"
+                        " last_run_at TIMESTAMP NOT NULL,"
+                        " last_result TEXT)"))
+                    conn.commit()
+                except Exception:
+                    pass
+                if conn.execute(text("SELECT 1 FROM system_task_log WHERE task_name = :t"),
+                                {'t': _TXN_PAYEE_MARKER}).fetchone():
+                    return
+            with db.engine.connect() as conn:
+                if is_pg and not conn.execute(text("SELECT pg_try_advisory_lock(:k)"),
+                                              {'k': _TXN_PAYEE_LOCK_KEY}).scalar():
+                    logging.info("[txn-payee backfill] another worker holds the lock, skipping")
+                    return
+                try:
+                    if conn.execute(text("SELECT 1 FROM system_task_log WHERE task_name = :t"),
+                                    {'t': _TXN_PAYEE_MARKER}).fetchone():
+                        return
+                    summary = _backfill_txn_payee_body()
+                    conn.execute(text(
+                        "INSERT INTO system_task_log (task_name, last_run_at, last_result) "
+                        "VALUES (:t, CURRENT_TIMESTAMP, :r) ON CONFLICT (task_name) DO NOTHING"),
+                        {'t': _TXN_PAYEE_MARKER, 'r': summary[:2000]})
+                    conn.commit()
+                except Exception as _e:
+                    db.session.rollback()
+                    logging.error(f"[txn-payee backfill] failed: {_e}")
+                finally:
+                    if is_pg:
+                        try:
+                            conn.execute(text("SELECT pg_advisory_unlock(:k)"),
+                                         {'k': _TXN_PAYEE_LOCK_KEY})
+                            conn.commit()
+                        except Exception:
+                            pass
+    except Exception as _e:
+        logging.warning(f"[txn-payee backfill] aborted: {_e}")
+
+
+with app.app_context():
+    _backfill_txn_payee()
+
+
 # ── Daily trash purge — soft-deleted Dropbox files >30 days hard-deleted ──
 # Runs once per worker boot if it's been >24h since the last successful run.
 # Multiple gunicorn workers booting at once: an advisory lock + UPSERT on a
@@ -31583,12 +31757,13 @@ def docs_inbox_batch(pid):
                 done += 1
 
             elif action == 'assign_payee':
-                from actuals import doc_owner_id as _owner_of_b
+                from actuals import doc_owner_id as _owner_of_b, propagate_doc_owner_to_txns as _prop_b
                 _before_owner = _owner_of_b(d)
                 d.set_owner(payee.id if payee else None)
                 if payee:
                     _flag_person_doc_duplicate(d)
                     _apply_w9_date_rule(d)
+                _prop_b(d)      # Phase 3: the document's charges follow its owner
                 db.session.commit()
                 if payee:
                     try:
@@ -32113,6 +32288,20 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
                 match_status        = 'unmatched',
                 created_via_user_id = (uploader.id if uploader is not None else None),
             )
+            # Attribution (Documents Phase 3): the document's owner when
+            # the upload named one (mobile / inbox payee pick), else the
+            # vendor string's linked Payee.
+            try:
+                from actuals import doc_owner_id as _own_u, payee_for_vendor_string as _pfv_u
+                _who_u = _own_u(upload)
+                if _who_u:
+                    auto_txn.payee_id, auto_txn.payee_source = int(_who_u), 'doc'
+                else:
+                    _who_u = _pfv_u(pid, upload.vendor)
+                    if _who_u:
+                        auto_txn.payee_id, auto_txn.payee_source = int(_who_u), 'alias'
+            except Exception:
+                pass
             db.session.add(auto_txn)
             db.session.flush()
             # Advisory AI coding suggestion (2026-06-18). Fail-open: a model
@@ -32633,7 +32822,19 @@ def _qbo_auto_sync_loop():
                 if not qconn or not qconn.refresh_token:
                     continue       # QBO not connected — nothing to pull
                 import json as _json_qa
-                from qbo_sync import sync_project as _sp
+                from qbo_sync import sync_project as _sp, sync_vendors as _sv
+                # Vendor mirror first (Documents Phase 3): QuickBooks →
+                # FPBudget only, so the project syncs below attribute
+                # their charges to freshly linked Payees. Fail-open.
+                try:
+                    _vr = _sv(qconn, db) or {}
+                    logging.info(f"[qbo-auto] vendors: {_vr}")
+                except Exception as _ve:
+                    logging.warning(f"[qbo-auto] vendor mirror failed (non-fatal): {_ve}")
+                    try:
+                        db.session.rollback()
+                    except Exception:
+                        pass
                 n_proj = n_rows = n_err = 0
                 for prj in ProjectSheet.query.filter(
                         ProjectSheet.status == 'active').all():
@@ -35314,20 +35515,33 @@ def docs_parse_people(uid):
                       CrewMember.query.filter(CrewMember.id.in_(_cm_ids)).all()}
                      if _cm_ids else {})
         _ca_by_line = {}
+        _id_by_line_name = {}     # (line id, name) → crew_member_id (Phase 3)
         for c in _cas:
             nm = c.name_override or _cm_names.get(c.crew_member_id, '')
             if nm:
                 _ca_by_line.setdefault(c.budget_line_id, []).append(nm)
+                if c.crew_member_id:
+                    _id_by_line_name[(c.budget_line_id, nm)] = c.crew_member_id
         for l in _lines:
             names = list(_ca_by_line.get(l.id, []))
             if l.assigned_crew_id and _cm_names.get(l.assigned_crew_id):
                 names.append(_cm_names[l.assigned_crew_id])
+                _id_by_line_name[(l.id, _cm_names[l.assigned_crew_id])] = l.assigned_crew_id
             _pv = _picker_value_for_line(l)
             from budget_calc import section_for_code as _sfc_pp
+            # Payee ids behind the names (Documents Phase 3): each parsed
+            # row carries the person's crew_member_id so the itemized
+            # child transaction attributes to THEM, not to the payroll
+            # company. A line with exactly one person names them even
+            # when the name came from the description.
+            _ids = {_id_by_line_name[(l.id, n)] for n in names if (l.id, n) in _id_by_line_name}
             roster.append({"value": str(_pv if _pv is not None else l.id),
                            "label": f"{l.account_code} · {(l.description or l.account_name or '')[:60]}",
                            "sec": _sfc_pp(l.account_code),
                            "names": sorted({n for n in names if n}),
+                           "member_by_name": {n: _id_by_line_name[(l.id, n)] for n in names
+                                              if (l.id, n) in _id_by_line_name},
+                           "single_member": (next(iter(_ids)) if len(_ids) == 1 else None),
                            "desc": (l.description or '').strip()})
 
     import ai_layer as _ai_pp
@@ -35369,6 +35583,26 @@ def docs_parse_people(uid):
                     elif best is not r:
                         best = 'AMBIG'            # two different lines — punt
         return None if best == 'AMBIG' else best
+
+    def _member_for(raw_name, r):
+        """The crew_member_id a parsed row attributes to: the roster name
+        the parsed name equals (or contains) when that name has an id,
+        else the line's single person, else None (never guessed)."""
+        if not r:
+            return None
+        alts = {_norm(raw_name)}
+        if ',' in (raw_name or ''):
+            _parts = [x.strip() for x in raw_name.split(',')]
+            if len(_parts) == 2:
+                alts.add(_norm(_parts[1] + ' ' + _parts[0]))
+        hits = set()
+        for n, cid in (r.get("member_by_name") or {}).items():
+            c = _norm(n)
+            if c and any(a == c or (a and (a in c or c in a)) for a in alts):
+                hits.add(cid)
+        if len(hits) == 1:
+            return next(iter(hits))
+        return r.get("single_member")
 
     out_rows, matched_n = [], 0
     fringes_total = wc_total = fee_total = 0.0
@@ -35414,6 +35648,7 @@ def docs_parse_people(uid):
                          "line_id": (mt["value"] if mt else ""),
                          "line_label": (mt["label"] if mt else ""),
                          "matched": bool(mt),
+                         "crew_member_id": _member_for(nm, mt),
                          "delta": split["delta"]})
         if split["fringes"]:
             fringes_total = round(fringes_total + split["fringes"], 2)
@@ -36632,6 +36867,7 @@ def docs_upload_line_items(uid):
                 "id": k.id,
                 "description": k.note or '',
                 "amount": float(k.amount) if k.amount is not None else None,
+                "payee_id": getattr(k, 'payee_id', None),      # Phase 3: kept on re-save
                 # Section-coded subline → 'section:N' so the picker rehydrates.
                 "budget_line_id": _lid or (f"section:{k.account_code}" if k.account_code else None),
                 "line_label": (f"{bl.account_code} · {bl.description or bl.account_name}" if bl
@@ -36947,8 +37183,16 @@ def _itemize_apply(upload, parent, rows, main_line_raw, strict=True):
             uncoded_n += 1
             uncoded_total = round(uncoded_total + amt, 2)
             continue
-        sublines.append((amt, target, (r.get("description") or '')[:300]))
-    _sub_total_check = round(sum(a for a, _, _ in sublines), 2)
+        # Payee per row (Documents Phase 3): the payroll parse names the
+        # person behind each row; a plain itemization inherits the
+        # document's owner below.
+        _cmid = r.get("crew_member_id")
+        try:
+            _cmid = int(_cmid) if _cmid not in (None, '', 0, '0') else None
+        except (TypeError, ValueError):
+            _cmid = None
+        sublines.append((amt, target, (r.get("description") or '')[:300], _cmid))
+    _sub_total_check = round(sum(a for a, _, _, _ in sublines), 2)
     if doc_total > 0 and _sub_total_check > doc_total + 0.01:
         return {"error": f"Sublines total ${_sub_total_check:,.2f} exceeds the "
                          f"document total ${doc_total:,.2f} — fix the amounts "
@@ -37022,11 +37266,21 @@ def _itemize_apply(upload, parent, rows, main_line_raw, strict=True):
         except Exception as _use:
             logging.warning("[itemize] sibling uncode failed: %s", _use)
 
-    def _mk_child(amt, target, note):
+    from actuals import doc_owner_id as _doc_owner_of
+    _doc_owner = _doc_owner_of(upload)
+
+    def _mk_child(amt, target, note, crew_member_id=None):
         c = Transaction(project_id=pid, source='invoice_split', parent_transaction_id=parent.id,
                         doc_upload_id=upload.id, amount=amt, vendor=parent.vendor,
                         txn_date=parent.txn_date, is_expense=bool(getattr(parent, 'is_expense', True)),
                         note=note[:300], match_status='confirmed')
+        # Attribution (Phase 3): the row's person (payroll parse), else the
+        # document's owner — written BEFORE coding so the line's person
+        # does not pre-empt a document that names someone else.
+        _who = crew_member_id or _doc_owner
+        if _who:
+            c.payee_id = int(_who)
+            c.payee_source = 'doc'
         db.session.add(c); db.session.flush()
         _apply_target(c, target)
         _add_evidence(c.id, upload.id, 'itemized')   # A2: invoice backs each subline
@@ -37035,6 +37289,8 @@ def _itemize_apply(upload, parent, rows, main_line_raw, strict=True):
     if not sublines:
         # No split → the whole document codes to the main line (or clears).
         if mtarget:
+            if _doc_owner and not getattr(parent, 'payee_id', None):
+                parent.payee_id = int(_doc_owner); parent.payee_source = 'doc'
             _apply_target(parent, mtarget)
             _clear_ai_code_suggestion(parent)
             _uncode_doc_siblings(parent.id)   # coding is singular per doc (2026-07)
@@ -37050,8 +37306,8 @@ def _itemize_apply(upload, parent, rows, main_line_raw, strict=True):
         return {"ok": True, "cleared": True, "children": 0}, None
 
     # Split present → parent becomes a container; children carry the coding.
-    created = [_mk_child(a, l, n) for (a, l, n) in sublines]
-    sub_total = round(sum(a for a, _, _ in sublines), 2)
+    created = [_mk_child(a, l, n, cm_) for (a, l, n, cm_) in sublines]
+    sub_total = round(sum(a for a, _, _, _ in sublines), 2)
     # Remainder auto-bills to the main line (QuickBooks 'rest goes here').
     remainder = round(doc_total - sub_total, 2)
     main_amt = 0.0
@@ -39480,6 +39736,11 @@ def docs_upload_update(uid):
             if CrewMember.query.get(_cm_id) is None:
                 return jsonify({"error": "That payee does not exist."}), 400
             upload.set_owner(_cm_id)
+        # Phase 3: a person naming the document's payee attributes the
+        # charges that document backs (never over a 'manual' pick on the
+        # transaction itself). Fail-open inside the helper.
+        from actuals import propagate_doc_owner_to_txns as _prop_owner
+        _prop_owner(upload)
     if "tax_form_kind" in data:
         k = (data.get("tax_form_kind") or "").strip().lower()
         if k and k not in _TAX_KINDS:
@@ -40251,6 +40512,7 @@ import routes.mobile_web  # noqa: E402,F401
 import routes.actuals  # noqa: E402,F401
 import routes.actuals_admin  # noqa: E402,F401
 import routes.payees  # noqa: E402,F401
+
 
 if __name__ == "__main__":
     if _HAS_SOCKETIO:

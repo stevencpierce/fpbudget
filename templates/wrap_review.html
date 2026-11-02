@@ -155,10 +155,11 @@
     <span class="muted">— {{ exceptions.tax_check | length }}</span></h2>
   {% if exceptions.tax_check %}
   <table>
-    <thead><tr><th>Payee</th><th style="width:70px">Year</th><th style="width:160px;text-align:right">Non-card paid</th><th style="width:110px;text-align:right">Threshold</th></tr></thead>
+    <thead><tr><th>Payee</th><th style="width:70px">Year</th><th style="width:160px;text-align:right">Non-card paid</th><th style="width:110px;text-align:right">Threshold</th><th style="width:90px">W-9</th><th style="width:150px">QuickBooks</th></tr></thead>
     <tbody>
     {% for p in exceptions.tax_check %}
-      <tr><td><a href="/payees/{{ p.payee_id }}">{{ p.name }}</a></td><td>{{ p.year }}</td><td class="num">{{ '{:,.2f}'.format(p.paid) }}</td><td class="num">{{ '{:,.0f}'.format(p.threshold) }}</td></tr>
+      <tr><td><a href="/payees/{{ p.payee_id }}">{{ p.name }}</a></td><td>{{ p.year }}</td><td class="num">{{ '{:,.2f}'.format(p.paid) }}</td><td class="num">{{ '{:,.0f}'.format(p.threshold) }}</td>
+        <td><span class="pay-st bad">Missing</span></td><td><span class="pay-st {{ p.qbo_state }}">{{ p.qbo_label }}</span></td></tr>
     {% endfor %}
     </tbody>
   </table>

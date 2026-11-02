@@ -248,12 +248,19 @@ def _extract_txn_fields(txn, entity, acct_ref, account_meta):
     # Chain: payee EntityRef → Deposit line payer → first line
     # description → the raw bank text in PrivateNote (better than blank).
     lines = txn.get("Line", []) or []
-    vendor = (txn.get("EntityRef") or {}).get("name", "")
+    _eref = txn.get("EntityRef") or {}
+    vendor = _eref.get("name", "")
+    # The QuickBooks Vendor id behind the payee (Documents Phase 3): kept as
+    # qbo_entity_ref so the charge attributes to the Payee that mirrors
+    # that vendor — now, or later when the vendor gets linked.
+    entity_ref = str(_eref.get("value") or "") if _eref.get("value") else None
     if not vendor:
         for _l in lines:
-            _ent = (((_l.get("DepositLineDetail") or {}).get("Entity")) or {}).get("name")
-            if _ent:
-                vendor = _ent
+            _ent = (((_l.get("DepositLineDetail") or {}).get("Entity")) or {})
+            if _ent.get("name"):
+                vendor = _ent["name"]
+                if not entity_ref and _ent.get("value"):
+                    entity_ref = str(_ent["value"])
                 break
     if not vendor:
         vendor = lines[0].get("Description", "") if lines else ""
@@ -321,6 +328,7 @@ def _extract_txn_fields(txn, entity, acct_ref, account_meta):
         "is_expense":      is_expense,
         "account_name":    acct_disp,     # display only (Card / Acct + last-4)
         "note":            note,
+        "qbo_entity_ref":  entity_ref,    # Vendor id behind EntityRef (may be None)
     }
 
 
@@ -695,6 +703,37 @@ def repair_is_expense(project_sheet, conn, db, start_date, end_date, apply=False
             "missing_in_local": missing[:100]}
 
 
+def _payee_by_qbo_vendor(db):
+    """{qbo_vendor_id: crew_member_id} for every linked Payee."""
+    from models import CrewMember
+    try:
+        return {str(v): i for i, v in
+                db.session.query(CrewMember.id, CrewMember.qbo_vendor_id)
+                .filter(CrewMember.qbo_vendor_id.isnot(None)).all()}
+    except Exception as _e:
+        log.warning(f"[qbo] payee map unavailable: {_e}")
+        return {}
+
+
+def _attribute_from_entity_ref(txn, entity_ref, payee_by_vendor):
+    """Set payee_id / payee_source='qbo' on a synced row from its EntityRef
+    when a Payee mirrors that vendor. Fills a NULL; replaces only an
+    earlier 'qbo' value (QuickBooks changed the payee); never touches a
+    value another source — a person above all — set. Returns True when the
+    row changed."""
+    if not entity_ref:
+        return False
+    cm_id = payee_by_vendor.get(str(entity_ref))
+    if not cm_id:
+        return False
+    try:
+        from actuals import set_txn_payee
+        return set_txn_payee(txn, cm_id, 'qbo', replace=('qbo',))
+    except Exception as _e:
+        log.warning(f"[qbo] payee attribution failed on txn {getattr(txn, 'id', None)}: {_e}")
+        return False
+
+
 def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
     """Pull QBO transactions for one project into the shared Transaction
     table. Idempotent — re-running is a no-op for txns already imported.
@@ -832,6 +871,13 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
                        Transaction.qbo_txn_id.isnot(None)).all()):
         _existing_map[(_t.qbo_txn_id, _t.qbo_txn_type)] = _t
 
+    # Payee attribution for free (Documents Phase 3): EntityRef.value →
+    # the Payee carrying that qbo_vendor_id. No matching, no guessing. A
+    # vendor QuickBooks names that no Payee mirrors yet attributes nobody
+    # (its id is kept on the row for when it is linked).
+    payee_by_vendor = _payee_by_qbo_vendor(db)
+    attributed = 0
+
     imported = 0
     reconciled = 0
     enriched = 0
@@ -856,6 +902,10 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
                     _m = mappings.get(r["qbo_category"].lower())
                     if _m:
                         _ex.suggested_account_code = _m[0]
+            if r.get("qbo_entity_ref") and not getattr(_ex, 'qbo_entity_ref', None):
+                _ex.qbo_entity_ref = r["qbo_entity_ref"]; _f = True
+            if _attribute_from_entity_ref(_ex, r.get("qbo_entity_ref"), payee_by_vendor):
+                attributed += 1; _f = True
             if _f:
                 enriched += 1
             continue
@@ -913,6 +963,10 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             # the precedence here removes that step entirely.
             existing_doc_txn.vendor         = existing_doc_txn.vendor or r["vendor"]
             existing_doc_txn.txn_date       = r["txn_date"] or existing_doc_txn.txn_date
+            if r.get("qbo_entity_ref") and not getattr(existing_doc_txn, 'qbo_entity_ref', None):
+                existing_doc_txn.qbo_entity_ref = r["qbo_entity_ref"]
+            if _attribute_from_entity_ref(existing_doc_txn, r.get("qbo_entity_ref"), payee_by_vendor):
+                attributed += 1
             # Suggested, never confirmed (owner decision 2026-10-30: every
             # receipt match, exact or near, waits for a click — Concur's
             # "smart matching, confirmed by a person"). Audit H3 (2026-07-20)
@@ -947,13 +1001,14 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             reconciled += 1
             continue
 
-        db.session.add(Transaction(
+        _new = Transaction(
             project_id              = project_sheet.id,
             source                  = 'qbo_sync',
             qbo_txn_id              = r["qbo_txn_id"],
             qbo_txn_type            = r["qbo_txn_type"],
             qbo_account_id          = r["qbo_account_id"],
             qbo_category            = r["qbo_category"],
+            qbo_entity_ref          = r.get("qbo_entity_ref"),
             txn_date                = r["txn_date"],
             vendor                  = r["vendor"],
             amount                  = r["amount"],
@@ -964,7 +1019,10 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             suggested_account_code  = suggested_code,
             account_code            = None,                # user-confirms via Actuals UI
             match_status            = 'unmatched',
-        ))
+        )
+        if _attribute_from_entity_ref(_new, r.get("qbo_entity_ref"), payee_by_vendor):
+            attributed += 1
+        db.session.add(_new)
         imported += 1
 
     # 8. Watermark advance.
@@ -977,8 +1035,8 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
 
     db.session.commit()
     log.info(f"[qbo {project_sheet.name}] imported {imported} txns "
-             f"(reconciled={reconciled}, enriched={enriched}, cdc={cdc_count}); "
-             f"watermark → {safe_end}")
+             f"(reconciled={reconciled}, enriched={enriched}, cdc={cdc_count}, "
+             f"payee-attributed={attributed}); watermark → {safe_end}")
     # Surface unmatched account refs — transactions QBO returned that
     # weren't on accounts the user selected for this project. Resolve
     # to display names if we can so the UI can say "add Chase 8432" not
@@ -1008,6 +1066,7 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
         "enriched":        enriched,      # existing rows whose blanks got filled
         "reconciled":      reconciled,    # merged into existing doc Transactions
         "cdc_additions":   cdc_count,
+        "attributed":      attributed,    # rows given a payee from EntityRef
         "sync_through":    safe_end,
         "effective_start": effective_start,
         "effective_end":   safe_end,
@@ -1038,3 +1097,368 @@ def seed_default_category_mappings(db):
         db.session.commit()
         log.info(f"[qbo] seeded {inserted} default category mappings")
     return inserted
+
+
+# ── Vendor mirror (DOCUMENTS_HANDOFF Phase 3, 2026-11-02) ─────────────
+#
+# QuickBooks is the system of record for vendors and 1099s. sync_vendors()
+# mirrors the Vendor entity onto Payees ONE WAY (QuickBooks → FPBudget):
+# every QuickBooks vendor lands in the qbo_vendor table; a Payee that
+# carries the vendor's id has its mirrored fields refreshed; a Payee whose
+# name matches a vendor's DisplayName exactly (and carries no id yet) is
+# linked; everything else waits for the Link screen (/admin/qbo-vendors).
+# No Payee is ever created here, and NOTHING is ever written to QuickBooks
+# from this function.
+#
+# The ONE write FPBudget makes to QuickBooks is Create (ensure_vendor_for_
+# payee → create_vendor): a Payee with no qbo_vendor_id may become a NEW
+# vendor there. There is deliberately no update, sparse-update or delete
+# helper in this module — a record that exists in QuickBooks is
+# QuickBooks's (Steven, Nov 1 2026).
+
+VENDOR_PAGE_SIZE = 1000
+
+
+def _qbo_str(v, n=200):
+    s = (v or "")
+    if not isinstance(s, str):
+        s = str(s)
+    s = s.strip()
+    return s[:n] if s else None
+
+
+def vendor_fields(v):
+    """The mirrored fields of one raw QBO Vendor dict → a plain dict keyed
+    like QBOVendor's columns. Pure (tests pin it). No TIN is read."""
+    vid = v.get("Id")
+    if not vid:
+        return None
+    addr = v.get("BillAddr") or {}
+    meta = v.get("MetaData") or {}
+    return {
+        "qbo_vendor_id": str(vid),
+        "display_name":  _qbo_str(v.get("DisplayName")),
+        "company_name":  _qbo_str(v.get("CompanyName")),
+        "given_name":    _qbo_str(v.get("GivenName"), 100),
+        "family_name":   _qbo_str(v.get("FamilyName"), 100),
+        "email":         _qbo_str((v.get("PrimaryEmailAddr") or {}).get("Address")),
+        "phone":         _qbo_str((v.get("PrimaryPhone") or {}).get("FreeFormNumber"), 50),
+        "address_line1": _qbo_str(addr.get("Line1")),
+        "address_line2": _qbo_str(" ".join(x for x in (addr.get("Line2"), addr.get("Line3")) if x)),
+        "city":          _qbo_str(addr.get("City"), 120),
+        "state":         _qbo_str(addr.get("CountrySubDivisionCode"), 40),
+        "postal_code":   _qbo_str(addr.get("PostalCode"), 20),
+        "vendor_1099":   (bool(v["Vendor1099"]) if v.get("Vendor1099") is not None else None),
+        "active":        (bool(v["Active"]) if v.get("Active") is not None else None),
+        "sync_token":    _qbo_str(v.get("SyncToken"), 20),
+        "qbo_updated_at": _parse_qbo_timestamp(meta.get("LastUpdatedTime")),
+    }
+
+
+# CrewMember columns the mirror OVERWRITES on every sync for a linked
+# Payee (QuickBooks owns them). `name` is NOT among them: it is the label
+# every budget, call sheet and picker shows and a person Payee's name is
+# theirs; the QuickBooks DisplayName lives on the qbo_vendor row. A value
+# QuickBooks leaves EMPTY does not blank the local copy.
+MIRRORED_PAYEE_FIELDS = ('legal_name', 'email', 'phone', 'address_line1',
+                         'address_line2', 'city', 'state', 'postal_code')
+
+
+def apply_vendor_to_payee(cm, f, now=None):
+    """Write the mirrored fields of vendor dict `f` (vendor_fields()) onto
+    CrewMember `cm`. Pure on the object (no DB). Returns the list of fields
+    that changed."""
+    now = now or datetime.datetime.utcnow()
+    changed = []
+
+    def _set(field, value):
+        if value in (None, '') or getattr(cm, field, None) == value:
+            return
+        setattr(cm, field, value)
+        changed.append(field)
+
+    _set('legal_name', f.get("company_name") or f.get("display_name"))
+    if f.get("company_name"):
+        _set('company', f["company_name"])
+    for fld in ('email', 'phone', 'address_line1', 'address_line2', 'city', 'state', 'postal_code'):
+        _set(fld, f.get(fld))
+    if f.get("vendor_1099") is not None and cm.qbo_vendor_1099 != f["vendor_1099"]:
+        cm.qbo_vendor_1099 = f["vendor_1099"]; changed.append('qbo_vendor_1099')
+    # Active mirrors for vendor / loan-out Payees (the vendor record IS the
+    # payee); a person Payee's crew-roster state is FPBudget's.
+    if f.get("active") is not None and getattr(cm, 'kind', None) in ('vendor', 'loan_out') \
+            and bool(cm.active) != f["active"]:
+        cm.active = f["active"]; changed.append('active')
+    if f.get("sync_token") and cm.qbo_sync_token != f["sync_token"]:
+        cm.qbo_sync_token = f["sync_token"]
+    cm.qbo_synced_at = now
+    if not cm.qbo_origin:
+        cm.qbo_origin = 'qbo'
+    return changed
+
+
+def match_vendor_to_payee(f, by_vendor_id, by_name):
+    """Which Payee a QuickBooks vendor is, by the two rules and nothing
+    else. Pure (tests pin it).
+
+      by_vendor_id  {qbo_vendor_id: payee}   — a linked Payee wins
+      by_name       {lower(name): [payee…]}  — over name AND legal_name of
+                    Payees with NO qbo_vendor_id
+
+    Returns (payee, how) with how in 'id' | 'name', or (None, None): a
+    DisplayName that two unlinked Payees share is ambiguous and is left
+    for the Link screen; nothing is ever fuzzy."""
+    cm = by_vendor_id.get(f["qbo_vendor_id"])
+    if cm is not None:
+        return cm, 'id'
+    key = (f.get("display_name") or '').strip().lower()
+    if key:
+        hits = by_name.get(key) or []
+        uniq = {id(x): x for x in hits}
+        if len(uniq) == 1:
+            return next(iter(uniq.values())), 'name'
+    return None, None
+
+
+def _vendor_query(conn, db, where="", start_pos=1, page_size=VENDOR_PAGE_SIZE):
+    token = get_valid_token(conn, db)
+    query = (f"SELECT * FROM Vendor {where} "
+             f"STARTPOSITION {start_pos} MAXRESULTS {page_size}").replace("  ", " ")
+    resp = requests.get(f"{_qbo_base_url()}/{conn.realm_id}/query",
+                        headers=_headers(token), params={"query": query}, timeout=60)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Vendor query failed: {resp.status_code} {resp.text[:200]}")
+    payload = resp.json()
+    return (payload.get("QueryResponse", {}).get("Vendor", []) or [],
+            _parse_qbo_timestamp(payload.get("time")))
+
+
+def fetch_vendors(conn, db, changed_since=None):
+    """Every QuickBooks vendor (active and inactive) on a full pull, or
+    those changed since `changed_since` through ChangeDataCapture.
+    Returns (list of raw Vendor dicts, server_time)."""
+    if changed_since is None:
+        rows, server_time, start_pos = [], None, 1
+        while True:
+            page, t = _vendor_query(conn, db, "WHERE Active IN (true, false)", start_pos)
+            server_time = server_time or t
+            rows.extend(page)
+            if len(page) < VENDOR_PAGE_SIZE:
+                break
+            start_pos += VENDOR_PAGE_SIZE
+            if start_pos > 50000:
+                log.warning("[qbo-vendors] pagination safety cap")
+                break
+        return rows, server_time
+    token = get_valid_token(conn, db)
+    resp = requests.get(f"{_qbo_base_url()}/{conn.realm_id}/cdc",
+                        headers=_headers(token),
+                        params={"entities": "Vendor",
+                                "changedSince": changed_since.strftime("%Y-%m-%dT%H:%M:%S")},
+                        timeout=60)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Vendor CDC failed: {resp.status_code} {resp.text[:200]}")
+    payload = resp.json()
+    out = []
+    for block in payload.get("CDCResponse", []) or []:
+        for qr in block.get("QueryResponse", []) or []:
+            out.extend(qr.get("Vendor", []) or [])
+    return out, _parse_qbo_timestamp(payload.get("time"))
+
+
+def sync_vendors(conn, db, fetch=None):
+    """One-way mirror QuickBooks Vendor → FPBudget (see the section
+    comment). Full pull when conn.vendor_cdc_since is NULL or older than
+    the CDC window, CDC otherwise. `fetch` lets tests inject the pull.
+
+    Returns {"mode", "fetched", "upserted", "refreshed", "linked",
+             "unlinked", "ambiguous", "server_time"}. Commits. Never
+    writes to QuickBooks."""
+    from models import CrewMember, QBOVendor
+    now = datetime.datetime.utcnow()
+    since = getattr(conn, 'vendor_cdc_since', None)
+    if since is not None and (now - since).days >= CDC_MAX_LOOKBACK_DAYS:
+        since = None
+    mode = 'cdc' if since else 'full'
+    raw, server_time = (fetch or fetch_vendors)(conn, db, since)
+
+    members = CrewMember.query.all()
+    by_vendor_id = {str(m.qbo_vendor_id): m for m in members if m.qbo_vendor_id}
+    by_name = {}
+    for m in members:
+        if m.qbo_vendor_id:
+            continue
+        for raw_name in (m.name, m.legal_name):
+            k = (raw_name or '').strip().lower()
+            if k and m not in by_name.setdefault(k, []):
+                by_name[k].append(m)
+
+    upserted = refreshed = linked = unlinked = ambiguous = 0
+    for v in raw:
+        if (v.get("status") or '').lower() == 'deleted':
+            continue
+        f = vendor_fields(v)
+        if not f:
+            continue
+        row = QBOVendor.query.get(f["qbo_vendor_id"])
+        if row is None:
+            row = QBOVendor(qbo_vendor_id=f["qbo_vendor_id"])
+            db.session.add(row)
+        for k, val in f.items():
+            setattr(row, k, val)
+        row.synced_at = now
+        upserted += 1
+
+        cm, how = match_vendor_to_payee(f, by_vendor_id, by_name)
+        if cm is None:
+            key = (f.get("display_name") or '').strip().lower()
+            if key and len(by_name.get(key) or []) > 1:
+                ambiguous += 1
+                log.info(f"[qbo-vendors] '{f.get('display_name')}' matches "
+                         f"{len(by_name[key])} payees by name — left for the Link screen")
+            unlinked += 1
+            continue
+        if how == 'name':
+            cm.qbo_vendor_id = f["qbo_vendor_id"]
+            by_vendor_id[f["qbo_vendor_id"]] = cm
+            for raw_name in (cm.name, cm.legal_name):
+                k = (raw_name or '').strip().lower()
+                if k and cm in (by_name.get(k) or []):
+                    by_name[k].remove(cm)
+            linked += 1
+            log.info(f"[qbo-vendors] linked payee #{cm.id} '{cm.name}' to QuickBooks "
+                     f"vendor {f['qbo_vendor_id']} by exact DisplayName")
+        else:
+            refreshed += 1
+        apply_vendor_to_payee(cm, f, now)
+
+    # Watermark: the server's clock (CDC compares against it), minus a
+    # small overlap so an edit landing during the pull is not missed.
+    conn.vendor_cdc_since = (server_time or now) - datetime.timedelta(minutes=5)
+    db.session.commit()
+    log.info(f"[qbo-vendors] {mode}: fetched {len(raw)}, upserted {upserted}, "
+             f"refreshed {refreshed}, linked {linked}, unlinked {unlinked}, ambiguous {ambiguous}")
+    return {"mode": mode, "fetched": len(raw), "upserted": upserted,
+            "refreshed": refreshed, "linked": linked, "unlinked": unlinked,
+            "ambiguous": ambiguous, "server_time": server_time}
+
+
+# ── The one write: Create a Vendor from a Payee ───────────────────────
+
+def _qbo_quote(s):
+    """A string literal for a QuickBooks query (single quotes doubled by
+    backslash-escaping, per the QBO query grammar)."""
+    return "'" + (s or "").replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def find_vendor_by_display_name(conn, db, display_name):
+    """The QuickBooks Vendor whose DisplayName equals `display_name`
+    exactly (QuickBooks compares DisplayName case-insensitively and keeps
+    it unique), active or not. Returns the raw Vendor dict or None."""
+    name = (display_name or '').strip()
+    if not name:
+        return None
+    rows, _t = _vendor_query(conn, db,
+                             f"WHERE DisplayName = {_qbo_quote(name)} AND Active IN (true, false)",
+                             1, 10)
+    for v in rows:
+        if (v.get("DisplayName") or '').strip().lower() == name.lower():
+            return v
+    return rows[0] if rows else None
+
+
+def vendor_create_payload(cm, w9_on_file=False):
+    """The body of the ONE write: a new QuickBooks Vendor from a Payee's
+    own fields. Pure (tests pin it). DisplayName = legal_name or name;
+    CompanyName, PrimaryEmailAddr, PrimaryPhone, BillAddr when present;
+    Vendor1099 = true when a W-9 is on file. Carries NO Id and NO
+    SyncToken — this body can only ever create."""
+    display = (cm.legal_name or cm.name or '').strip()
+    body = {"DisplayName": display[:100]}
+    company = (cm.company or (cm.legal_name if getattr(cm, 'kind', None) != 'person' else None) or '').strip()
+    if company:
+        body["CompanyName"] = company[:100]
+    if getattr(cm, 'kind', None) == 'person' and not cm.company:
+        parts = (cm.name or '').strip().split()
+        if len(parts) >= 2:
+            body["GivenName"] = parts[0][:100]
+            body["FamilyName"] = " ".join(parts[1:])[:100]
+    if cm.email:
+        body["PrimaryEmailAddr"] = {"Address": cm.email.strip()[:100]}
+    if cm.phone:
+        body["PrimaryPhone"] = {"FreeFormNumber": cm.phone.strip()[:30]}
+    addr = {}
+    if cm.address_line1:
+        addr["Line1"] = cm.address_line1.strip()[:500]
+    if cm.address_line2:
+        addr["Line2"] = cm.address_line2.strip()[:500]
+    if cm.city:
+        addr["City"] = cm.city.strip()[:255]
+    if cm.state:
+        addr["CountrySubDivisionCode"] = cm.state.strip()[:255]
+    if cm.postal_code:
+        addr["PostalCode"] = cm.postal_code.strip()[:30]
+    if addr:
+        body["BillAddr"] = addr
+    body["Vendor1099"] = bool(w9_on_file)
+    return body
+
+
+def create_vendor(conn, db, body):
+    """POST a NEW Vendor to QuickBooks. Refuses a body that names an
+    existing record (Id / SyncToken / sparse) so this helper can never
+    update one. Returns the created Vendor dict."""
+    for k in ("Id", "SyncToken", "sparse"):
+        if k in body:
+            raise ValueError(f"create_vendor refuses a body carrying {k!r}: "
+                             "FPBudget never updates a QuickBooks record")
+    token = get_valid_token(conn, db)
+    resp = requests.post(f"{_qbo_base_url()}/{conn.realm_id}/vendor",
+                         headers={**_headers(token), "Content-Type": "application/json"},
+                         json=body, timeout=60)
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Vendor create failed: {resp.status_code} {resp.text[:300]}")
+    v = (resp.json() or {}).get("Vendor") or {}
+    if not v.get("Id"):
+        raise RuntimeError("Vendor create returned no Id")
+    return v
+
+
+def ensure_vendor_for_payee(conn, db, cm, w9_on_file=False):
+    """Give a Payee a QuickBooks vendor record, by the Nov 1 rule:
+
+      * refuse (ValueError) when the Payee already carries a qbo_vendor_id
+        or is a W-2 employee (employees go to Wrapbook);
+      * an exact DisplayName match in QuickBooks → LINK only (store its Id,
+        mirror its fields, qbo_origin='qbo'); never duplicated, never
+        updated;
+      * else CREATE a Vendor from the Payee's fields and store the Id with
+        qbo_origin='fpbudget'. After that the record is QuickBooks's.
+
+    Does NOT commit. Returns {"action": 'linked'|'created', "vendor_id",
+    "display_name", "payload"}."""
+    from models import QBOVendor
+    if cm.qbo_vendor_id:
+        raise ValueError("This payee is already linked to a QuickBooks vendor.")
+    if getattr(cm, 'is_w2_employee', False):
+        raise ValueError("W-2 employees are paid through Wrapbook and are not QuickBooks vendors.")
+    body = vendor_create_payload(cm, w9_on_file)
+    if not body["DisplayName"]:
+        raise ValueError("The payee needs a name before it can go to QuickBooks.")
+    existing = find_vendor_by_display_name(conn, db, body["DisplayName"])
+    now = datetime.datetime.utcnow()
+    if existing:
+        v, action, origin = existing, 'linked', 'qbo'
+    else:
+        v, action, origin = create_vendor(conn, db, body), 'created', 'fpbudget'
+    f = vendor_fields(v)
+    cm.qbo_vendor_id = f["qbo_vendor_id"]
+    cm.qbo_origin = origin
+    apply_vendor_to_payee(cm, f, now)
+    row = QBOVendor.query.get(f["qbo_vendor_id"]) or QBOVendor(qbo_vendor_id=f["qbo_vendor_id"])
+    for k, val in f.items():
+        setattr(row, k, val)
+    row.synced_at = now
+    db.session.add(row)
+    return {"action": action, "vendor_id": f["qbo_vendor_id"],
+            "display_name": f.get("display_name"), "payload": body if action == 'created' else None}

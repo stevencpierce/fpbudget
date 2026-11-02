@@ -2068,7 +2068,7 @@
       }
       const money = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
       j.rows.forEach(row => {
-        _itemAddRow(row.desc, row.amount, row.line_id || '');
+        _itemAddRow(row.desc, row.amount, row.line_id || '', row.crew_member_id);
         // Tie-out delta (Phase 4): the parts did not sum to the person's
         // total; the difference sits on this row — yellow flag, never a
         // silent merge.

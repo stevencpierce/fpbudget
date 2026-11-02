@@ -257,16 +257,18 @@
   <h3>D. 1099 review — payees at or over the year's reporting threshold, non-card, without a W-9 on file ({{ exceptions.tax_check | length }})</h3>
   {% if exceptions.tax_check %}
   <table>
-    <thead><tr><th>Payee</th><th style="width:.6in">Year</th><th class="num" style="width:1.2in">Non-card paid</th><th class="num" style="width:.9in">Threshold</th></tr></thead>
+    <thead><tr><th>Payee</th><th style="width:.6in">Year</th><th class="num" style="width:1.2in">Non-card paid</th><th class="num" style="width:.9in">Threshold</th><th style="width:.9in">W-9</th><th style="width:1.3in">QuickBooks</th></tr></thead>
     <tbody>
       {% for p in exceptions.tax_check %}
-      <tr><td>{{ p.name }}</td><td>{{ p.year }}</td><td class="num">{{ '{:,.2f}'.format(p.paid) }}</td><td class="num">{{ '{:,.0f}'.format(p.threshold) }}</td></tr>
+      <tr><td>{{ p.name }}</td><td>{{ p.year }}</td><td class="num">{{ '{:,.2f}'.format(p.paid) }}</td><td class="num">{{ '{:,.0f}'.format(p.threshold) }}</td><td>Missing</td><td>{{ p.qbo_label }}</td></tr>
       {% endfor %}
     </tbody>
   </table>
   <p class="muted" style="font-size:7.5pt; margin-top:4pt">Advisory only — non-card payments per calendar
     year across all projects for each payee on this project; W-2 employees excluded. Collect a W-9 (or
-    confirm W-2 employee status) before QuickBooks files information returns.</p>
+    confirm W-2 employee status) before QuickBooks files information returns. QuickBooks column: the
+    vendor record QuickBooks will file from — a payee not in QuickBooks, or with 1099 tracking off, cannot
+    be filed until that is fixed there.</p>
   {% else %}<p class="muted">None — every reportable payee has a W-9 on file. ✓</p>{% endif %}
 
   {# ── Attestation ── #}
