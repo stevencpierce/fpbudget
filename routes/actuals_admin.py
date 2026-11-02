@@ -12,7 +12,7 @@ from datetime import (datetime)
 from flask import (jsonify, redirect, render_template, request, url_for)
 from flask_login import (current_user, login_required)
 
-from app import (app, _NON_LEDGER_DOC_CATEGORIES, _log_activity, _sync_claim_state, admin_required, super_admin_required)
+from app import (app, _NON_LEDGER_DOC_CATEGORIES, _delete_evidence_for_txns, _log_activity, _sync_claim_state, admin_required, super_admin_required)
 from models import (DocUpload, ProjectSheet, Transaction, TransactionSplit, db)
 
 
@@ -407,19 +407,53 @@ def admin_cleanup_estimate_txns():
                    Transaction.id.desc()))
     rows = q.all()
     if request.method == "POST" and request.form.get("confirm") == "delete":
-        _ids = [t.id for (t, _d) in rows]
-        if _ids:
+        # Cleanup A #3 (2026-11-02): this used to hard-delete every row in the
+        # list, bank charges included — a QBO charge matched to a doc that was
+        # later retyped as a PO vanished from the ledger. Only the documents'
+        # OWN rows (source='doc_upload') are deleted; bank / manual rows are
+        # UNLINKED from the paperwork and keep their coding. Evidence + splits
+        # are cleared first (no FK cascade on either).
+        _doomed = [t.id for (t, _d) in rows if t.source == 'doc_upload']
+        _unlink = [t.id for (t, _d) in rows if t.source != 'doc_upload']
+        _unlinked = 0
+        if _unlink:
+            _unlinked = (Transaction.query
+                         .filter(Transaction.id.in_(_unlink))
+                         .update({"doc_upload_id": None,
+                                  "match_status": "unmatched",
+                                  "match_confidence": None},
+                                 synchronize_session=False))
+        if _doomed:
+            Transaction.query.filter(Transaction.parent_transaction_id.in_(_doomed)).update(
+                {"parent_transaction_id": None}, synchronize_session=False)
+            Transaction.query.filter(Transaction.backup_of_txn_id.in_(_doomed)).update(
+                {"backup_of_txn_id": None}, synchronize_session=False)
+            _delete_evidence_for_txns(_doomed)
+            TransactionSplit.query.filter(TransactionSplit.transaction_id.in_(_doomed))\
+                .delete(synchronize_session=False)
+            db.session.flush()
             (Transaction.query
-             .filter(Transaction.id.in_(_ids))
+             .filter(Transaction.id.in_(_doomed))
              .delete(synchronize_session=False))
+        if _doomed or _unlink:
             db.session.commit()
-            logging.warning(f"[admin/cleanup] deleted {len(_ids)} estimate-linked "
-                            f"Transaction rows by user={current_user.id}")
+            logging.warning(f"[admin/cleanup] deleted {len(_doomed)} doc-born estimate-linked "
+                            f"Transaction rows, unlinked {_unlinked} bank/manual rows "
+                            f"by user={current_user.id}")
+            try:
+                _log_activity(action='delete', entity_type='transaction', entity_id=0,
+                              entity_label=f'Estimate-linked cleanup ({len(_doomed)} deleted)',
+                              before={'deleted_ids': _doomed[:200], 'unlinked_ids': _unlink[:200]},
+                              note=f'Admin cleanup: removed {len(_doomed)} doc-born row(s) '
+                                   f'behind non-ledger paperwork; unlinked {_unlinked} bank/manual row(s)')
+            except Exception:
+                pass
             return render_template_string(
-                "<h2>Deleted {{ n }} estimate-linked Transaction rows.</h2>"
+                "<h2>Deleted {{ n }} doc-born estimate-linked Transaction rows; "
+                "unlinked {{ u }} bank / manual charge(s) (kept, coding intact).</h2>"
                 "<p><a href=\"{{ url_for('admin_cleanup_estimate_txns') }}\">Refresh list</a> · "
                 "<a href=\"{{ url_for('dashboard') }}\">Dashboard</a></p>",
-                n=len(_ids))
+                n=len(_doomed), u=_unlinked)
         return redirect(url_for('admin_cleanup_estimate_txns'))
 
     HTML = """
@@ -441,27 +475,31 @@ def admin_cleanup_estimate_txns():
   Transactions whose linked DocUpload has a non-ledger category
   (estimate / quote / purchase_order / contract / tax_form / release / legal /
   insurance / misc). These shouldn't exist — they're paperwork, not spend —
-  but legacy data + post-upload category edits can leave them. Deleting them
-  here cleans up the Actuals view and PO Actualized totals.
+  but legacy data + post-upload category edits can leave them. Cleaning up
+  here deletes only the documents' <b>own</b> rows (source = doc_upload);
+  bank / QuickBooks / CSV / manual charges in the list are <b>unlinked</b>
+  from the paperwork and kept with their coding.
 </div>
 {% if rows %}
 <form method="post" style="margin:18px 0">
   <input type="hidden" name="confirm" value="delete">
   <button class="danger" type="submit"
-    onclick="return confirm('Delete {{ rows|length }} Transaction rows? Cannot be undone.')">
-    🗑 Delete all {{ rows|length }} rows
+    onclick="return confirm('Clean up {{ rows|length }} rows? Doc-born rows are deleted (cannot be undone); bank / manual charges are unlinked and kept.')">
+    🗑 Clean up all {{ rows|length }} rows
   </button>
 </form>
 <table>
   <thead><tr>
-    <th>txn id</th><th>doc id</th><th>category</th>
+    <th>txn id</th><th>source</th><th>doc id</th><th>category</th>
     <th>txn date</th><th>vendor</th><th class="amt">amount</th>
     <th>doc filename</th>
   </tr></thead>
   <tbody>
   {% for t, d in rows %}
   <tr>
-    <td>{{ t.id }}</td><td>{{ d.id }}</td>
+    <td>{{ t.id }}</td>
+    <td>{{ t.source }}{% if t.source != 'doc_upload' %} <i>(unlink)</i>{% else %} <i>(delete)</i>{% endif %}</td>
+    <td>{{ d.id }}</td>
     <td><span class="cat">{{ d.category }}</span></td>
     <td>{{ t.txn_date or '—' }}</td>
     <td>{{ t.vendor or '—' }}</td>
