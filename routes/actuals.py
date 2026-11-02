@@ -1,8 +1,8 @@
 """Project Actuals routes — M1b-2 slice of the app.py split (ACTUALS_HANDOFF
 Phase 2, 2026-10-30).
 
-Every /projects/<pid>/actuals/... route, the /register (reconcile workspace)
-page and its workspace.json, plus the private helpers only they use
+Every /projects/<pid>/actuals/... route — the Actuals workspace page and its
+workspace.json — plus the private helpers only they use
 (_guard_doc_expense, _ledger_resolve_line, _txn_excluded_info, _txn_state_json).
 See routes/__init__.py for the pattern: plain @app.route on the SAME app
 object, imported at the bottom of app.py, so every endpoint name and URL is
@@ -19,7 +19,7 @@ import logging
 import os
 from budget_calc import (FP_COA_SECTIONS)
 from datetime import (datetime)
-from flask import (abort, flash, jsonify, redirect, render_template, request, url_for)
+from flask import (abort, jsonify, render_template, request)
 from flask_login import (current_user, login_required)
 from sqlalchemy import (func, text)
 
@@ -1784,38 +1784,6 @@ def actuals_vendor_rename_undo(pid):
     return jsonify({"ok": True, "reverted": n})
 
 
-@app.route("/projects/<int:pid>/actuals/init", methods=["GET"])
-@login_required
-def actuals_init_actual_budget(pid):
-    """Manual entry point to initialize the project's Actual budget
-    from Working. Used by the mode-switcher's 'Actual' button when no
-    Actual exists yet — clicking sends the user here, we clone, then
-    redirect to the new Actual budget. Per user 2026-05-01: lets users
-    proactively enter the Actual phase view rather than waiting for the
-    auto-clone trigger that fires on first transaction link."""
-    _require_project_role(pid, 'editor')
-    from actuals import (get_current_actual_budget, get_current_working_budget,
-                          get_current_estimated_budget, clone_working_to_actual,
-                          clone_estimated_to_working)
-    existing = get_current_actual_budget(pid)
-    if existing:
-        return redirect(url_for('budget_view', pid=pid, bid=existing.id))
-    working = get_current_working_budget(pid)
-    if not working:
-        est = get_current_estimated_budget(pid)
-        if not est:
-            flash('No Estimated or Working budget — create one first.', 'error')
-            return redirect(url_for('project_detail', pid=pid))
-        working = clone_estimated_to_working(est)
-        db.session.add(working)
-        db.session.commit()
-    actual = clone_working_to_actual(working)
-    db.session.add(actual)
-    db.session.commit()
-    flash('Actual budget initialized from Working.', 'success')
-    return redirect(url_for('budget_view', pid=pid, bid=actual.id))
-
-
 @app.route("/projects/<int:pid>/actuals/auto-match", methods=["POST"])
 @login_required
 def actuals_run_auto_match(pid):
@@ -1953,250 +1921,6 @@ def actuals_reconcile_json(pid):
             "orphan_receipts_total": round(sum(abs(r["amount"] or 0) for r in orphan_receipts), 2),
         },
     })
-
-
-@app.route("/projects/<int:pid>/reconcile/workspace.json")
-@login_required
-def reconcile_workspace_json(pid):
-    """DEPRECATED (ACTUALS_HANDOFF Phase 3, 2026-11-01): the /register page
-    that read this payload now redirects to /projects/<pid>/actuals, whose
-    data is actuals_workspace_json (workspace.json). Kept for ONE release
-    so a stale open tab keeps working; delete with the legacy #tab-actuals
-    cleanup.
-
-    THE two-pane Reconcile workspace dataset (owner 2026-10-30: "what I
-    really want is my QuickBooks transactions and then match them up with
-    a receipt … receipts land in the receipts bucket … viewable side by
-    side with the electronic transactions … if I click on a receipt, I
-    want to be able to very obviously create an expense").
-
-    Left pane  — charges: every electronic transaction (QBO/CSV), with
-                 its coding and its matched/suggested receipt.
-    Right pane — receipts: every OCR'd receipt/invoice still waiting
-                 (not matched to a charge, not activated as an expense).
-    Plus cash_expenses (receipts explicitly turned into expenses),
-    section_coded (dollars coded to a section with no line — the
-    "mystery $400" list, each with WHERE it came from), and stats.
-    Runs the heuristic + incremental AI matchers first, fail-open."""
-    ProjectSheet.query.get_or_404(pid)
-    _require_project_role(pid, 'viewer')
-    from actuals import run_auto_match
-    try:
-        run_auto_match(pid)
-    except Exception as _e:
-        logging.warning(f"[workspace] auto-match failed (continuing): {_e}")
-    try:
-        _ai_match_batch(pid, limit=8)
-    except Exception as _ae:
-        logging.warning(f"[workspace] AI batch failed (continuing): {_ae}")
-
-    from budget_calc import FP_COA_NAMES as _WS_COA
-    docs = {d.id: d for d in DocUpload.query.filter(
-        DocUpload.project_id == pid,
-        DocUpload.status.notin_(('deleted',))).all()}
-    lines_by_id = {}
-    def _line_label(lid):
-        if lid not in lines_by_id:
-            _l = BudgetLine.query.get(lid)
-            lines_by_id[lid] = (f"{_l.account_code} · {(_l.description or _l.account_name or '')[:50]}"
-                                if _l else f"line #{lid}")
-        return lines_by_id[lid]
-    def _coding(t):
-        if t.budget_line_id:
-            return {"state": "line", "label": _line_label(t.budget_line_id)}
-        if t.account_code:
-            return {"state": "section",
-                    "label": f"\U0001f4c2 {t.account_code} · {_WS_COA.get(t.account_code, '')}"}
-        return {"state": "uncoded", "label": "uncoded"}
-    def _doc_brief(d):
-        return {"doc_id": d.id,
-                "name": (d.filed_filename or d.original_filename or f"Doc #{d.id}")[:120],
-                "vendor": d.vendor, "amount": float(d.amount) if d.amount is not None else None,
-                "date": d.doc_date.isoformat() if d.doc_date else None,
-                "dup_pending": bool(d.is_duplicate and (d.status or '') != 'duplicate'),
-                "thumb": f"/docs/upload/{d.id}/thumb"}
-
-    # Every top-level money row: electronic (qbo/csv/reconciled) PLUS
-    # legacy hand-typed rows (source='manual_entry', the model default —
-    # owner 2026-10-31: "there are a couple in here that I added" and the
-    # register hid them). Only doc-born evidence rows and split children
-    # are excluded; NULL-source ancients ride along (notin_ drops NULLs).
-    txns = (Transaction.query
-            .filter(Transaction.project_id == pid,
-                    db.or_(Transaction.source.is_(None),
-                           Transaction.source.notin_(('doc_upload', 'invoice_split'))),
-                    Transaction.backup_of_txn_id.is_(None))
-            .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
-            .all())
-    # Split children (itemized invoices) grouped under their parent.
-    _kids_by_parent = {}
-    for _k in Transaction.query.filter(
-            Transaction.project_id == pid,
-            Transaction.source == 'invoice_split').all():
-        if _k.parent_transaction_id:
-            _kids_by_parent.setdefault(_k.parent_transaction_id, []).append(_k)
-    _proj_names = {}
-    def _proj_name(_ppid):
-        if _ppid not in _proj_names:
-            _pp = ProjectSheet.query.get(_ppid)
-            _proj_names[_ppid] = _pp.name if _pp else f'project #{_ppid}'
-        return _proj_names[_ppid]
-    charges, matched_doc_ids, suggested_by_doc = [], set(), {}
-    claimed_elsewhere = []
-    np_count = 0
-    for t in txns:
-        if t.not_project_expense:
-            _cl = getattr(t, 'claimed_by_project_id', None)
-            if _cl and _cl != pid:
-                claimed_elsewhere.append({
-                    "id": t.id, "vendor": t.vendor or '—',
-                    "amount": float(t.amount or 0),
-                    "date": (t.txn_date or '')[:10],
-                    "claimed_by": _proj_name(_cl)})
-            else:
-                np_count += 1
-            continue
-        state = ('matched' if (t.doc_upload_id and t.match_status == 'confirmed')
-                 else 'suggested' if (t.doc_upload_id and t.match_status == 'suggested')
-                 else 'unmatched')
-        if state != 'unmatched' and t.doc_upload_id not in docs:
-            state = 'unmatched'   # its doc was deleted since — don't emit a
-                                  # matched/suggested row with no doc payload
-        row = {"id": t.id, "date": (t.txn_date or '')[:10], "vendor": t.vendor or '—',
-               "amount": float(t.amount or 0) * (1 if t.is_expense else -1),
-               "source": t.source, "card": getattr(t, 'card_last4', None),
-               "memo": (t.note or '')[:140] or (t.qbo_category or ''),
-               "qbo_category": t.qbo_category,
-               "state": state, "coding": _coding(t)}
-        _kids = _kids_by_parent.get(t.id)
-        if _kids:
-            row["split"] = [{"desc": (k.note or '')[:90],
-                             "amount": float(k.amount or 0),
-                             "coding": _coding(k)} for k in _kids]
-        if t.doc_upload_id and t.doc_upload_id in docs:
-            d = docs[t.doc_upload_id]
-            if state == 'matched':
-                matched_doc_ids.add(d.id)
-                row["doc"] = _doc_brief(d)
-            else:
-                suggested_by_doc[d.id] = t.id
-                row["suggestion"] = {**_doc_brief(d),
-                                     "confidence": float(t.match_confidence or 0)}
-        charges.append(row)
-
-    # Receipts bucket: proof docs not matched, whose own ledger row (if
-    # any) was never activated into an expense.
-    _doc_txns = {t.doc_upload_id: t for t in Transaction.query.filter(
-        Transaction.project_id == pid, Transaction.source == 'doc_upload',
-        Transaction.doc_upload_id.isnot(None)).all()}
-    receipts, cash_expenses = [], []
-    for d in docs.values():
-        if (d.category or '') not in ('receipt', 'invoice'):
-            continue
-        if (d.status or '') in ('duplicate',):
-            continue
-        dt = _doc_txns.get(d.id)
-        if dt is not None and dt.activated_at is not None:
-            if not dt.not_project_expense:
-                cash_expenses.append({**_doc_brief(d), "txn_id": dt.id,
-                                      "coding": _coding(dt)})
-                charges.append({
-                    "id": dt.id, "date": (dt.txn_date or '')[:10],
-                    "vendor": dt.vendor or d.vendor or '—',
-                    "amount": float(dt.amount or 0),
-                    "source": "cash", "card": getattr(dt, 'card_last4', None),
-                    "memo": (dt.note or '')[:140], "qbo_category": None,
-                    "state": "matched", "coding": _coding(dt),
-                    "cash_reason": (getattr(dt, 'no_charge_reason', None)
-                                    or 'no electronic charge'),
-                    "doc": _doc_brief(d)})
-            continue
-        if d.id in matched_doc_ids:
-            continue
-        if dt is not None and dt.not_project_expense:
-            continue
-        r = {**_doc_brief(d), "txn_id": (dt.id if dt is not None else None),
-             "status": d.status}
-        if d.id in suggested_by_doc:
-            r["suggested_charge_id"] = suggested_by_doc[d.id]
-        receipts.append(r)
-    receipts.sort(key=lambda r: (r.get("date") or ''), reverse=True)
-    cash_expenses.sort(key=lambda r: (r.get("date") or ''), reverse=True)
-
-    # Section-coded spend with no line — each with provenance so "there's
-    # $400 coded to the section but nothing assigned, I don't know what
-    # that's for" answers itself.
-    section_coded = []
-    for t in Transaction.query.filter(
-            Transaction.project_id == pid,
-            Transaction.budget_line_id.is_(None),
-            Transaction.account_code.isnot(None),
-            Transaction.not_project_expense == False).all():   # noqa: E712
-        if getattr(t, 'backup_of_txn_id', None):
-            continue
-        if t.source == 'doc_upload' and t.activated_at is None:
-            continue
-        _d = docs.get(t.doc_upload_id) if t.doc_upload_id else None
-        section_coded.append({
-            "txn_id": t.id, "vendor": t.vendor or '—',
-            "amount": float(t.amount or 0), "date": (t.txn_date or '')[:10],
-            "section": f"{t.account_code} · {_WS_COA.get(t.account_code, '')}",
-            "source": ("receipt-only expense" if t.source == 'doc_upload'
-                       else ("itemized split" if t.source == 'invoice_split' else t.source)),
-            "doc": ((_d.filed_filename or _d.original_filename) if _d else None),
-            "doc_id": (_d.id if _d else None)})
-    section_coded.sort(key=lambda r: r["section"])
-
-    charges.sort(key=lambda c: (c.get("date") or ''), reverse=True)
-    n_unmatched = sum(1 for c in charges if c["state"] == 'unmatched')
-    n_suggested = sum(1 for c in charges if c["state"] == 'suggested')
-    _prj = ProjectSheet.query.get(pid)
-    import json as _json_ws
-    try:
-        _acct_n = len(_json_ws.loads(_prj.qbo_account_ids or '[]'))
-    except Exception:
-        _acct_n = 0
-    from models import QBOConnection as _WSQC
-    _qc = None
-    try:
-        _qc = _WSQC.query.first()
-    except Exception:
-        pass
-    return jsonify({
-        "ok": True,
-        "charges": charges, "receipts": receipts,
-        "claimed_elsewhere": claimed_elsewhere,
-        "sync": {"connected": bool(_qc and _qc.refresh_token),
-                 "accounts": _acct_n,
-                 "last_synced": (_prj.last_synced.isoformat(timespec='minutes')
-                                 if _prj.last_synced else None),
-                 "sync_through": _prj.sync_through,
-                 "auto": "twice a day"},
-        "cash_expenses": cash_expenses, "section_coded": section_coded,
-        "stats": {
-            "charges": len(charges), "charges_unmatched": n_unmatched,
-            "charges_suggested": n_suggested,
-            "charges_matched": len(charges) - n_unmatched - n_suggested,
-            "receipts_waiting": len(receipts),
-            "cash_expenses": len(cash_expenses),
-            "section_coded": len(section_coded),
-            "claimed_elsewhere": len(claimed_elsewhere),
-            "not_project": np_count,
-        }})
-
-
-@app.route("/projects/<int:pid>/reconcile")
-@app.route("/projects/<int:pid>/register")
-@login_required
-def reconcile_workspace_page(pid):
-    """Retired (ACTUALS_HANDOFF Phase 3, 2026-11-01): the register and the
-    older /reconcile URL both 302 to the Actuals workspace. Endpoint name
-    kept so url_for('reconcile_workspace_page') in old links still
-    resolves. Query string (e.g. ?txn=) rides along."""
-    ProjectSheet.query.get_or_404(pid)
-    _qs = request.query_string.decode() if request.query_string else ''
-    return redirect(url_for('actuals_workspace_page', pid=pid)
-                    + (('?' + _qs) if _qs else ''), code=302)
 
 
 def _ws_crew_options(pid):
@@ -3012,104 +2736,6 @@ def actuals_docs_list_for_picker(pid):
             "has_image":      bool(d.content_type and d.content_type.startswith('image/')),
         })
     return jsonify({"ok": True, "docs": out})
-
-
-@app.route("/projects/<int:pid>/actuals/reconcile-columns.json", methods=["GET"])
-@login_required
-def actuals_reconcile_data(pid):
-    """Return the two columns for the Reconcile sub-tab.
-
-    URL history (ACTUALS_HANDOFF Phase 0, 2026-10-30): this handler was
-    registered on the SAME url as actuals_reconcile_json above
-    (/actuals/reconcile.json). Flask serves the first registration, so this
-    one was dead and the Reconcile sub-tab (b04.js _reconcileRender) always
-    received the triage shape and rendered two empty columns. It now lives at
-    /actuals/reconcile-columns.json; the triage panel keeps
-    /actuals/reconcile.json. scripts/route_audit.py now fails on a duplicate
-    rule so this cannot recur.
-
-      - transactions: ledger rows that need a receipt (no doc_upload_id,
-        not flagged as not-a-project-expense, not already confirmed).
-      - receipts: DocUploads not yet linked to ANY Transaction. We compute
-        link state by joining txn.doc_upload_id back to doc_upload.id.
-        A receipt that's already linked to one txn but could legitimately
-        back another (Lyft week rollup) shows in the standard Match view's
-        'Link existing receipt' picker — Reconcile is strictly the
-        zero-link cohort, since that's where the user gets the most
-        leverage.
-    """
-    ProjectSheet.query.get_or_404(pid)
-    _require_project_role(pid, 'viewer')
-
-    # Unmatched transactions: project-scoped, no linked doc, not flagged
-    # as not-project, and not in 'confirmed' state. Order by date desc
-    # so the newest ones surface first.
-    txn_rows = (Transaction.query
-                .filter(Transaction.project_id == pid,
-                        Transaction.doc_upload_id.is_(None),
-                        Transaction.not_project_expense == False,
-                        Transaction.is_expense == True,
-                        Transaction.match_status != 'confirmed')
-                .order_by(Transaction.txn_date.desc().nullslast(),
-                          Transaction.id.desc())
-                .all())
-    transactions = [{
-        "id":         t.id,
-        "vendor":     t.vendor or '',
-        "amount":     float(t.amount) if t.amount is not None else None,
-        "txn_date":   t.txn_date,
-        "note":       t.note or '',
-        "account_code":      t.account_code,
-        "account_code_name": t.account_code_name or '',
-        "source":     t.source or 'manual',
-    } for t in txn_rows]
-
-    # Unlinked receipts: DocUploads on this project that no Transaction
-    # currently references. SELECT … WHERE id NOT IN (SELECT doc_upload_id
-    # FROM transaction WHERE doc_upload_id IS NOT NULL).
-    from sqlalchemy.orm import defer as _defer_r
-    linked_doc_ids = {row[0] for row in
-                      db.session.query(Transaction.doc_upload_id)
-                      .filter(Transaction.project_id == pid,
-                              Transaction.doc_upload_id.isnot(None))
-                      .all()}
-    doc_rows = (DocUpload.query
-                .filter(DocUpload.project_id == pid,
-                        DocUpload.status != 'error')
-                .options(_defer_r(DocUpload.veryfi_data))
-                .order_by(DocUpload.doc_date.desc().nullslast(),
-                          DocUpload.uploaded_at.desc())
-                .all())
-    receipts = []
-    for d in doc_rows:
-        if d.id in linked_doc_ids:
-            continue
-        # Flagged duplicates (pending or confirmed) never appear in any matching
-        # list — they're parked until "Keep" pulls them back. (User 2026-06-02.)
-        if d.is_duplicate or d.status == 'duplicate':
-            continue
-        # Only receipts/invoices are valid spend proof — everything else
-        # (estimates, employee docs, tax-credit docs, contracts, POs, …) is
-        # never part of Actuals matching. (User 2026-06-02.)
-        if (d.category or '') not in ('receipt', 'invoice'):
-            continue
-        receipts.append({
-            "id":              d.id,
-            "vendor":          d.vendor or '',
-            "amount":          float(d.amount) if d.amount is not None else None,
-            "doc_date":        d.doc_date.isoformat() if d.doc_date else None,
-            "category":        d.category or '',
-            "veryfi_category": d.veryfi_category or '',
-            "filename":        d.filed_filename or d.original_filename or f'Upload #{d.id}',
-        })
-
-    return jsonify({
-        "ok":            True,
-        "transactions": transactions,
-        "receipts":     receipts,
-        "txn_count":    len(transactions),
-        "doc_count":    len(receipts),
-    })
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/link-doc", methods=["POST"])
@@ -3947,8 +3573,8 @@ def _ws_line_estimates(budget, lines):
 @login_required
 def actuals_workspace_json(pid):
     """ONE payload for the new Actuals workspace (Phase 2, 2026-10-30), built
-    from the same reads as reconcile_workspace_json (which /register keeps
-    until Phase 3 retires it).
+    from the same reads the retired /register payload (reconcile_workspace_json,
+    removed in Cleanup B 2026-11-02) used.
 
       transactions      — every pool row of this project, one per QBO charge
                           (sibling rows of the same qbo_txn_id collapse to
@@ -4013,7 +3639,7 @@ def actuals_workspace_json(pid):
                 "dup_pending": bool(d.is_duplicate and (d.status or '') != 'duplicate'),
                 "thumb": f"/docs/upload/{d.id}/thumb"}
 
-    # Every top-level money row (same selection as reconcile_workspace_json):
+    # Every top-level money row (same selection the retired reconcile_workspace_json used):
     # electronic + hand-typed; doc-born rows only once activated; never
     # split children or backup rows.
     txns = (Transaction.query
