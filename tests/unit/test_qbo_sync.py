@@ -156,3 +156,35 @@ def test_repair_flip_decision_uses_same_mapping():
     assert to_credit, "a Purchase with Credit=true must be flipped to a credit"
     fresh2 = _extract_txn_fields(_purchase(), "CreditCardCredit", "41", ACCT_META)
     assert not fresh2["is_expense"]
+
+
+# ── BillPayment names its vendor in VendorRef (Nov 2 2026) ─────────────────
+
+def _bill_payment(**kw):
+    base = {
+        "Id": "1300000322", "TxnDate": "2026-10-20", "TotalAmt": 4500.0,
+        "PayType": "Check",
+        "VendorRef": {"value": "214", "name": "Ryan Mauskopf"},
+        "CheckPayment": {"BankAccountRef": {"value": "7", "name": "Ops Checking"}},
+        "Line": [{"Amount": 4500.0, "LinkedTxn": [{"TxnId": "900", "TxnType": "Bill"}]}],
+    }
+    base.update(kw)
+    return base
+
+
+def test_bill_payment_vendor_comes_from_vendorref():
+    r = _extract_txn_fields(_bill_payment(), "BillPayment", "7", ACCT_META)
+    assert r["vendor"] == "Ryan Mauskopf"
+    assert r["qbo_entity_ref"] == "214"
+    assert r["is_expense"] is True and r["amount"] == 4500.0
+
+
+def test_bill_payment_entityref_still_wins_when_present():
+    r = _extract_txn_fields(_bill_payment(EntityRef={"value": "9", "name": "Someone Else", "type": "Vendor"}),
+                            "BillPayment", "7", ACCT_META)
+    assert r["vendor"] == "Someone Else" and r["qbo_entity_ref"] == "9"
+
+
+def test_purchase_ignores_vendorref():
+    r = _extract_txn_fields(_purchase(VendorRef={"value": "5", "name": "Wrong"}), "Purchase", "41", ACCT_META)
+    assert r["vendor"] == "Lyft" and r["qbo_entity_ref"] == "88"

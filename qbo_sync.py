@@ -258,6 +258,15 @@ def _extract_txn_fields(txn, entity, acct_ref, account_meta):
     entity_ref = None
     if _eref.get("value") and (_eref.get("type") or "Vendor") == "Vendor":
         entity_ref = str(_eref["value"])
+    # BillPayment names its vendor in VendorRef, not EntityRef (the API's
+    # own shape) — every bill payment arrived as "—" with no payee until
+    # this was read (Steven, Nov 2 2026: nine ACH rows with no name).
+    if entity == "BillPayment":
+        _vref = txn.get("VendorRef") or {}
+        if not vendor and _vref.get("name"):
+            vendor = _vref["name"]
+        if not entity_ref and _vref.get("value"):
+            entity_ref = str(_vref["value"])
     if not vendor:
         for _l in lines:
             _ent = (((_l.get("DepositLineDetail") or {}).get("Entity")) or {})
