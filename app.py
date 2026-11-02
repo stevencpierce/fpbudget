@@ -3688,6 +3688,17 @@ def super_admin_required(f):
     return decorated
 
 
+def admin_required_403(f):
+    """admin_required for POST / JSON endpoints: a plain 403 instead of the
+    flash-and-redirect that page routes want (Cleanup E, 2026-11-02)."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated or current_user.role not in ('super_admin', 'admin'):
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated
+
+
 _FORCE_PW_ALLOWED = {"profile", "logout", "login", "static",
                      "reset_password", "forgot_password",
                      "callsheet_view_public", "callsheet_confirm_public",
@@ -16387,7 +16398,10 @@ def admin_crew_lookup():
 
 @app.route("/settings/company", methods=["GET"])
 @login_required
+@super_admin_required
 def get_company_settings():
+    # Company-wide = Admin (Cleanup E, 2026-11-02): the profile is read and
+    # written only from the Admin hub's Company section, super-admin only.
     cs = CompanySettings.query.get(1) or CompanySettings(id=1)
     return jsonify({
         "company_name":  cs.company_name  or "",
@@ -16403,6 +16417,7 @@ def get_company_settings():
 
 @app.route("/settings/company", methods=["POST"])
 @login_required
+@super_admin_required
 def save_company_settings():
     data = request.get_json(force=True)
     cs = CompanySettings.query.get(1)
@@ -23949,11 +23964,13 @@ def project_fringes_import_defaults(pid):
 def fringe_config():
     fringes = FringeConfig.query.filter_by(project_id=None).order_by(
         FringeConfig.fringe_type).all()
-    return render_template("fringe_config.html", fringes=fringes)
+    return render_template("fringe_config.html", fringes=fringes,
+                           is_admin=current_user.role in ('super_admin', 'admin'))
 
 
 @app.route("/fringe-config", methods=["POST"])
 @login_required
+@admin_required_403
 def fringe_config_save():
     fid   = request.form.get("fringe_id", type=int)
     fringe = FringeConfig.query.get_or_404(fid)
@@ -23969,6 +23986,7 @@ def fringe_config_save():
 
 @app.route("/fringe-config/new", methods=["POST"])
 @login_required
+@admin_required_403
 def fringe_config_new():
     fringe_type = request.form.get("fringe_type", "").strip().upper()[:5]
     label       = request.form.get("label", "").strip()
@@ -23999,6 +24017,7 @@ def fringe_config_new():
 
 @app.route("/fringe-config/<int:fid>/delete", methods=["POST"])
 @login_required
+@admin_required_403
 def fringe_config_delete(fid):
     fringe = FringeConfig.query.get_or_404(fid)
     PROTECTED = {"E", "N", "L", "U", "S", "I", "D"}
@@ -35673,6 +35692,7 @@ def person_update(pid, cmid):
 
 @app.route("/vendors/audit", methods=["GET"])
 @login_required
+@admin_required_403
 def vendors_audit():
     """READ-ONLY ghost-vendor audit (User 2026-07.): is_vendor CrewMember rows
     that NOTHING references — no per-project loan-out link, no global loan-out
