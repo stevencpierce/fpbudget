@@ -5474,22 +5474,20 @@ def _build_wrap_book_data(pid):
                 else (profile.payroll_week_start if profile else 6))
     live = _po_live_line_totals(budget, lines, pid) if budget else {}
 
-    # Every real expense on the project (doc-born rows only once activated).
+    # Every real expense on the project — the ONE spend predicate
+    # (actuals.row_counts_as_spend: not-project / un-activated receipt rows /
+    # backup receipts drop out; Cleanup D routed this hand copy through it).
+    # Split containers are NOT excluded here on purpose: the wrap book has no
+    # per-split rows yet, so a split parent still lists under "uncoded".
+    from actuals import row_counts_as_spend as _rcas_wb
     txns = (Transaction.query
             .filter(Transaction.project_id == pid,
                     Transaction.not_project_expense == False)
             .all())
-    def _is_expense_row(t):
-        if t.source == 'doc_upload' and not getattr(t, 'activated_at', None):
-            return False
-        if getattr(t, 'backup_of_txn_id', None):
-            return False          # documentation riding on another txn
-        return bool(t.budget_line_id or t.account_code)
-    exp_rows = [t for t in txns if _is_expense_row(t)]
-    uncoded  = [t for t in txns
-                if (t.source != 'doc_upload' or getattr(t, 'activated_at', None))
-                and not getattr(t, 'backup_of_txn_id', None)
-                and not (t.budget_line_id or t.account_code)
+    spend_rows = [t for t in txns if _rcas_wb(t)]
+    exp_rows = [t for t in spend_rows if (t.budget_line_id or t.account_code)]
+    uncoded  = [t for t in spend_rows
+                if not (t.budget_line_id or t.account_code)
                 and t.source in ('qbo_sync', 'csv_import', 'reconciled', 'manual_entry')]
 
     doc_ids = {t.doc_upload_id for t in txns if t.doc_upload_id}
@@ -6264,11 +6262,11 @@ def budget_new(pid):
     project    = ProjectSheet.query.get_or_404(pid)
     # Source: prefer the current Estimated so settings/lines carry forward
     source_bid = request.form.get("source_bid", type=int)
+    # ONE "current" rule (Cleanup D): the live Estimated is the newest of
+    # its kind — actuals.get_current_estimated_budget, never a hand query.
+    from actuals import get_current_estimated_budget as _gceb_new
     source = (Budget.query.filter_by(id=source_bid, project_id=pid).first()
-              if source_bid else
-              Budget.query.filter(Budget.project_id == pid,
-                                  Budget.budget_mode == 'estimated',
-                                  Budget.version_status == 'current').first())
+              if source_bid else _gceb_new(pid))
     if source is None:
         source = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
 
@@ -8437,23 +8435,8 @@ def budget_view(pid, bid):
 
     all_templates = BudgetTemplate.query.order_by(BudgetTemplate.name).all()
 
-    # Per-line actuals for Compare tab
-    actuals_by_code_full = {}
-    for r in db.session.query(
-        Transaction.account_code,
-        Transaction.account_code_name,
-        func.sum(_signed_amount()).label("total"),   # credits subtract (CR-3)
-        func.count(Transaction.id).label("count")
-    ).filter(
-        Transaction.project_id == pid,
-        Transaction.not_project_expense == False,
-        Transaction.account_code != None,
-    ).group_by(Transaction.account_code, Transaction.account_code_name).all():
-        actuals_by_code_full[r[0]] = {
-            "name":  r[1] or "",
-            "total": float(r[2]),
-            "count": r[3],
-        }
+    # (Cleanup D: the per-code "Compare tab" rollup that lived here was a
+    # fourth hand copy of the spend rule and no template read it — gone.)
 
     # ── Per-line ACTUAL sums from linked transactions (added 2026-04-30) ─
     # Transactions FK directly to Actual budget lines; each Actual line
@@ -9282,7 +9265,7 @@ def budget_view(pid, bid):
     try:
         _has_line_actuals = db.session.query(Transaction.id).filter(
             Transaction.project_id == pid,
-            Transaction.not_project_expense == False,
+            _counts_as_spend(_split_parents_bv),   # the ONE spend rule (Cleanup D)
             db.or_(Transaction.budget_line_id.isnot(None),
                    Transaction.account_code.isnot(None))).first() is not None
     except Exception:
@@ -9792,7 +9775,6 @@ def budget_view(pid, bid):
         person_vendor=person_vendor,
         vendor_groups=vendor_groups,
         cm_name_by_id=cm_name_by_id,
-        actuals_by_code=actuals_by_code_full,
         coa_sections=FP_COA_SECTIONS,
         all_templates=all_templates,
         tax_credits=tax_credits,
@@ -12622,20 +12604,25 @@ def _run_budget_mismatch_scan(pid):
         from actuals import get_live_budget as _glb_scan, line_overages as _line_overages
         live = _glb_scan(pid)
         if live:
+            # Per-line spend by the ONE spend rule + the ONE signed-amount
+            # rule + the shared split helper (Cleanup D). The old loop took
+            # un-activated receipt rows, backups and split parents at full
+            # value and added credits as positive (amounts are stored
+            # unsigned; is_expense carries the sign).
+            from actuals import (counts_as_spend as _cas_scan,
+                                 split_sums_by_line as _ssbl_scan)
+            _line_ids_scan = [r[0] for r in db.session.query(BudgetLine.id)
+                              .filter(BudgetLine.budget_id == live.id).all()]
             sums = {}
-            for t in (Transaction.query
-                      .filter(Transaction.project_id == pid,
-                              Transaction.budget_line_id.isnot(None),
-                              Transaction.not_project_expense == False).all()):   # noqa: E712
-                if t.amount is None:
-                    continue
-                try:
-                    amt = float(t.amount)
-                except (TypeError, ValueError):
-                    continue
-                if amt <= 0:   # expenses only (refunds/credits are negative)
-                    continue
-                sums[t.budget_line_id] = sums.get(t.budget_line_id, 0.0) + amt
+            for _lid, _amt in (db.session.query(Transaction.budget_line_id,
+                                                func.sum(_signed_amount()))
+                               .filter(Transaction.project_id == pid,
+                                       Transaction.budget_line_id.in_(_line_ids_scan or [-1]),
+                                       _cas_scan(_split_parent_id_set(pid)))
+                               .group_by(Transaction.budget_line_id).all()):
+                sums[_lid] = float(_amt or 0)
+            for _lid, _amt in _ssbl_scan(pid, _line_ids_scan).items():
+                sums[_lid] = sums.get(_lid, 0.0) + _amt
             planned_by_line = {}
             labels = {}
             for ln in BudgetLine.query.filter_by(budget_id=live.id).all():
@@ -20800,6 +20787,15 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                                      .filter(BudgetLine.po_id == po.id)
                                      .subquery())
             from sqlalchemy import or_ as _or_po
+            # The ONE spend rule (actuals.counts_as_spend) + the shared split
+            # helper (Cleanup D): this total used to take un-activated receipt
+            # rows, backup receipts and split parents at full value, and
+            # missed the split pieces coded to the PO's lines.
+            from actuals import (counts_as_spend as _cas_po,
+                                 split_sums_by_line as _ssbl_po,
+                                 signed_amount_value as _signed_amount_value_po)
+            _po_pid = po.project_id
+            _po_parents = _split_parent_id_set(_po_pid)
             _billed_q = (db.session
                          .query(_func_po.coalesce(_func_po.sum(_signed_amount()), 0))
                          .join(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
@@ -20807,9 +20803,15 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                                      BudgetLine.po_id == po.id,
                                      BudgetLine.source_line_id.in_(_working_po_lines_sub),
                                  ),
-                                 Transaction.not_project_expense == False,
+                                 _cas_po(_po_parents),
                                  _exclude_estimate_linked_txns_clause()))
             _billed = float(_billed_q.scalar() or 0)
+            _po_line_ids = [r[0] for r in db.session.query(BudgetLine.id)
+                            .filter(_or_po(BudgetLine.po_id == po.id,
+                                           BudgetLine.source_line_id.in_(_working_po_lines_sub)))
+                            .all()]
+            if _po_line_ids:
+                _billed += sum(_ssbl_po(_po_pid, _po_line_ids).values())
         except Exception as _be:
             logging.warning(f"[po rollup] billed calc failed for po={po.id}: {_be}")
         out["billed_total"] = round(_billed, 2)
@@ -20830,8 +20832,7 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                                      BudgetLine.po_id == po.id,
                                      BudgetLine.source_line_id.in_(_working_po_lines_sub),
                                  ),
-                                 Transaction.not_project_expense == False,
-                                 Transaction.is_expense == True,
+                                 _cas_po(_po_parents),   # same rows as billed_total
                                  _exclude_estimate_linked_txns_clause())
                          .order_by(Transaction.txn_date.desc().nullslast(),
                                    Transaction.id.desc()))
@@ -20841,7 +20842,10 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                     # Already a YYYY-MM-DD string per Transaction model.
                     "txn_date":      _t.txn_date or "",
                     "vendor":        _t.vendor or "",
-                    "amount":        float(_t.amount) if _t.amount is not None else None,
+                    # Signed like the total it explains (a credit shows negative).
+                    "amount":        (_signed_amount_value_po(_t.amount, _t.is_expense)
+                                      if _t.amount is not None else None),
+                    "is_expense":    bool(_t.is_expense),
                     "note":          _t.note or "",
                     "source":        _t.source or "manual",
                     "match_status":  _t.match_status or "unmatched",
@@ -21653,19 +21657,11 @@ def line_assign_po(pid, bid, lid):
             return jsonify({"error": "PurchaseOrder not found on this project"}), 404
 
     # ── Resolve the canonical Working sister line ──────────────────────
-    # Same project, mode=working, version_status preferred 'current'.
+    # The project's live Working — ONE rule (actuals.get_current_working_budget,
+    # Cleanup D) instead of a 'current'-then-non-archived hand query.
     canonical_working = None
-    _wb = (Budget.query
-           .filter_by(project_id=pid, budget_mode='working',
-                      version_status='current')
-           .filter(Budget.is_actual == False)
-           .order_by(Budget.id.desc()).first())
-    if not _wb:
-        _wb = (Budget.query
-               .filter_by(project_id=pid, budget_mode='working')
-               .filter(Budget.is_actual == False)
-               .filter(Budget.version_status != 'archived')
-               .order_by(Budget.id.desc()).first())
+    from actuals import get_current_working_budget as _gcwb_po
+    _wb = _gcwb_po(pid)
 
     line_budget = Budget.query.get(bid)
     _is_working_line = (line_budget
@@ -21972,15 +21968,28 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
             _working_lines_sub = (db.session.query(BudgetLine.id)
                                   .filter(BudgetLine.id.in_(_line_ids))
                                   .subquery())
+            # The ONE spend rule + the shared split helper (Cleanup D) — this
+            # total used to take un-activated receipt rows, backups and split
+            # parents at full value and missed split pieces on its lines.
+            from actuals import (counts_as_spend as _cas_sb,
+                                 split_sums_by_line as _ssbl_sb)
+            _sb_pid = sb.project_id
             _billed_q = (db.session
                          .query(_func_sb.coalesce(_func_sb.sum(_signed_amount()), 0))
                          .join(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
                          .filter(_or_sb(BudgetLine.id.in_(_line_ids),
                                         BudgetLine.id.in_(_src_ids or [0]),
                                         BudgetLine.source_line_id.in_(_working_lines_sub)),
-                                 Transaction.not_project_expense == False,
+                                 _cas_sb(_split_parent_id_set(_sb_pid)),
                                  _exclude_estimate_linked_txns_clause()))
             billed = float(_billed_q.scalar() or 0)
+            _sb_all_ids = [r[0] for r in db.session.query(BudgetLine.id)
+                           .filter(_or_sb(BudgetLine.id.in_(_line_ids),
+                                          BudgetLine.id.in_(_src_ids or [0]),
+                                          BudgetLine.source_line_id.in_(_working_lines_sub)))
+                           .all()]
+            if _sb_all_ids:
+                billed += sum(_ssbl_sb(_sb_pid, _sb_all_ids).values())
     except Exception as _bbe:
         logging.warning(f"[sub_budget] billed calc failed for sub_budget={sb.id}: {_bbe}")
 
@@ -22334,16 +22343,8 @@ def assign_crew(pid, bid, lid):
     #   • Estimated     → (account_code, sort_order) match on the
     #                     project's current Working budget
     canonical_working = None
-    _wb = (Budget.query
-           .filter_by(project_id=pid, budget_mode='working', version_status='current')
-           .filter(Budget.is_actual == False)
-           .order_by(Budget.id.desc()).first())
-    if not _wb:
-        _wb = (Budget.query
-               .filter_by(project_id=pid, budget_mode='working')
-               .filter(Budget.is_actual == False)
-               .filter(Budget.version_status != 'archived')
-               .order_by(Budget.id.desc()).first())
+    from actuals import get_current_working_budget as _gcwb_crew
+    _wb = _gcwb_crew(pid)   # ONE "current Working" rule (Cleanup D)
     line_budget = Budget.query.get(bid)
     _is_working_line = (line_budget and line_budget.budget_mode == 'working'
                         and not line_budget.is_actual)
@@ -35919,6 +35920,12 @@ def person_profile(pid, cmid):
     cm = CrewMember.query.get_or_404(cmid)
     _pcm = ProjectCrewMember.query.filter_by(project_id=pid, crew_member_id=cmid).first()
     from actuals import get_current_working_budget, get_current_estimated_budget
+    # The ONE spend rule + split helper for every money figure on this page
+    # (Cleanup D; the old sums took un-activated receipt rows, backups and
+    # split parents at full value).
+    from actuals import (counts_as_spend as _cas_pp, split_sums_by_line as _ssbl_pp,
+                         signed_amount_value as _sav_pp)
+    _parents_pp = _split_parent_id_set(pid)
     b = get_current_working_budget(pid) or get_current_estimated_budget(pid)
 
     deal = []
@@ -35960,7 +35967,8 @@ def person_profile(pid, cmid):
             actual = round(float(db.session.query(func.sum(_signed_amount()))
                            .filter(Transaction.project_id == pid,
                                    Transaction.budget_line_id.in_(_sib_ids),
-                                   Transaction.not_project_expense == False).scalar() or 0), 2)
+                                   _cas_pp(_parents_pp)).scalar() or 0)
+                           + sum(_ssbl_pp(pid, _sib_ids).values()), 2)
             # Mismatch = the person's actuals OVER the budgeted amount for the line.
             _tol = max(50.0, abs(budgeted) * 0.05)
             mismatch = None
@@ -36010,7 +36018,7 @@ def person_profile(pid, cmid):
     if conds:
         from sqlalchemy import or_ as _or_pay
         for t in (pay_q.filter(_or_pay(*conds))
-                  .filter(Transaction.not_project_expense == False,
+                  .filter(_cas_pp(_parents_pp),
                           Transaction.source != 'invoice_split')
                   .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc()).all()):
             payments.append({
@@ -36019,7 +36027,9 @@ def person_profile(pid, cmid):
                 "match_status": t.match_status, "doc_upload_id": t.doc_upload_id,
                 "is_expense": bool(t.is_expense),
             })
-    total_paid = round(sum((p["amount"] or 0) for p in payments if p["is_expense"]), 2)
+    # Signed total (actuals.signed_amount_value): a refund nets against what
+    # the person was paid — it used to be ignored here.
+    total_paid = round(sum(_sav_pp(p["amount"], p["is_expense"]) for p in payments), 2)
 
     reps = [{"name": s.name, "role_type": s.role_type, "email": s.email,
              "phone": s.phone, "company": s.company}
@@ -36323,9 +36333,10 @@ def people_summary(pid):
 
     # txn_id -> (signed_amount, set(cmids)) so we count each txn once per person.
     txn_people = {}
+    from actuals import (counts_as_spend as _cas_ps, signed_amount_value as _sav_ps)
     _base = (Transaction.query
              .filter(Transaction.project_id == pid,
-                     Transaction.not_project_expense == False,
+                     _cas_ps(_split_parent_id_set(pid)),   # the ONE spend rule (Cleanup D)
                      Transaction.source != 'invoice_split'))
     if all_doc_ids:
         for t in _base.filter(Transaction.doc_upload_id.in_(all_doc_ids)).all():
@@ -36341,9 +36352,7 @@ def people_summary(pid):
     # same way _signed_amount does (expenses positive, credits negative).
     paid_by_person = {}
     for _t, _who in txn_people.values():
-        _sa = float(_t.amount or 0)
-        if not bool(_t.is_expense):
-            _sa = -_sa                     # credit → subtracts (CR-3, matches _signed_amount)
+        _sa = _sav_ps(_t.amount, _t.is_expense)   # the ONE signed-amount rule
         for cm in _who:
             paid_by_person[cm] = paid_by_person.get(cm, 0.0) + _sa
 
@@ -36382,12 +36391,15 @@ def budget_mismatches(pid, bid):
     sib = {}
     for ln in proj_lines:
         sib.setdefault((ln.account_code, ln.description or ''), []).append(ln.id)
+    from actuals import counts_as_spend as _cas_bm, split_sums_by_line as _ssbl_bm
     rows = (db.session.query(Transaction.budget_line_id, func.sum(_signed_amount()))
             .filter(Transaction.project_id == pid,
-                    Transaction.not_project_expense == False,
+                    _cas_bm(_split_parent_id_set(pid)),   # the ONE spend rule (Cleanup D)
                     Transaction.budget_line_id.isnot(None))
             .group_by(Transaction.budget_line_id).all())
     actual_by_line = {r[0]: float(r[1] or 0) for r in rows}
+    for _lid, _amt in _ssbl_bm(pid).items():
+        actual_by_line[_lid] = actual_by_line.get(_lid, 0.0) + _amt
     out = []
     for ln in proj_lines:
         if ln.budget_id != bid or not ln.is_labor:

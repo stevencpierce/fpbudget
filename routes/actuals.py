@@ -504,20 +504,21 @@ def actuals_not_project_json(pid):
             _pp = ProjectSheet.query.get(_p)
             _proj_names[_p] = _pp.name if _pp else f'project #{_p}'
         return _proj_names[_p]
+    from actuals import signed_amount_value as _sav_np
     not_project, claimed_elsewhere = [], []
     for t in rows:
         _cl = getattr(t, 'claimed_by_project_id', None)
         if _cl and _cl != pid:
             claimed_elsewhere.append({
                 "id": t.id, "vendor": t.vendor or '—',
-                "amount": float(t.amount or 0) * (1 if t.is_expense else -1),
+                "amount": _sav_np(t.amount, t.is_expense),
                 "date": (t.txn_date or '')[:10],
                 "claimed_by": _pname(_cl)})
             continue
         not_project.append({
             "id": t.id, "date": (t.txn_date or '')[:10],
             "vendor": t.vendor or '—',
-            "amount": float(t.amount or 0) * (1 if t.is_expense else -1),
+            "amount": _sav_np(t.amount, t.is_expense),
             "card_last4": getattr(t, 'card_last4', None),
             "source": t.source,
             "memo": (t.note or '')[:140] or (t.qbo_category or ''),
@@ -719,6 +720,20 @@ def actuals_line_ledger(pid, lid):
 
     out = []
     coded_total = 0.0
+    # Coded total = the per-line Actual cell's rule: the ONE spend predicate
+    # (row_counts_as_spend) and the ONE signed-amount rule (a refund nets
+    # against the line). It used to add every row's expense amount and
+    # ignore credits (Cleanup D).
+    from actuals import (row_counts_as_spend as _rcas_lg,
+                         signed_amount_value as _sav_lg,
+                         split_sums_by_line as _ssbl_lg)
+    _parents_lg = _split_parent_id_set(pid)
+    # Split pieces coded to these lines (their parent has no line of its own).
+    try:
+        _split_total_lg = sum(_ssbl_lg(pid, sib_ids).values())
+    except Exception as _sle:
+        logging.warning(f"[ledger] split sums failed: {_sle}")
+        _split_total_lg = 0.0
     for t in txns:
         # Effective doc: own doc, else (for a split child) its parent's doc.
         eff_doc_id = t.doc_upload_id
@@ -727,9 +742,8 @@ def actuals_line_ledger(pid, lid):
         doc = DocUpload.query.get(eff_doc_id) if eff_doc_id else None
         _dt = t.txn_date
         amt = float(t.amount) if t.amount is not None else None
-        # Coded total mirrors the section rollup: expense amounts count, credits 0.
-        if t.is_expense and amt is not None:
-            coded_total += amt
+        if amt is not None and _rcas_lg(t, _parents_lg):
+            coded_total += _sav_lg(amt, t.is_expense)
         out.append({
             "id": t.id,
             "date": (_dt.isoformat() if hasattr(_dt, 'isoformat') else _dt),
@@ -774,7 +788,7 @@ def actuals_line_ledger(pid, lid):
             "account_code": line.account_code,
             "description": (line.description or line.account_name or ''),
             "budget_total": budget_total,
-            "coded_total": round(coded_total, 2),
+            "coded_total": round(coded_total + _split_total_lg, 2),
             "txn_count": len(out),
         },
         "section": {
@@ -927,19 +941,20 @@ def actuals_section_transactions(pid, code):
     split doc doesn't surface its uncoded parent here. (Migration P3, User
     2026-07 — bring the Actual view's section-only detail into Working.)"""
     ProjectSheet.query.get_or_404(pid)
+    from actuals import counts_as_spend as _cas_sec
     _split_parents = _split_parent_id_set(pid)
+    # The ONE spend rule (Cleanup D): the same rows the section rollup sums,
+    # so this list ties to the section's Actual cell.
     txns = (Transaction.query
             .filter(Transaction.project_id == pid,
                     Transaction.account_code == code,
                     Transaction.budget_line_id.is_(None),
-                    Transaction.not_project_expense == False,   # noqa: E712
+                    _cas_sec(_split_parents),
                     Transaction.source != 'invoice_split')
             .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
             .all())
     out = []
     for t in txns:
-        if t.id in _split_parents:
-            continue   # itemized container — its sublines carry the coding
         doc = DocUpload.query.get(t.doc_upload_id) if t.doc_upload_id else None
         _dt = t.txn_date
         out.append({
