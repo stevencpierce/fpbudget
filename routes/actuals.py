@@ -3467,7 +3467,12 @@ def actuals_qbo_accounts_list(pid):
 @login_required
 def actuals_qbo_accounts_save(pid):
     """Save the project's QBO account selection. Body:
-    {"account_ids": ["1","42",...]}"""
+    {"account_ids": ["1","42",...]}. Admin only (Cleanup A #13, 2026-11-02):
+    which bank accounts feed a project is a company setting, not a project
+    editor's call."""
+    if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+        return jsonify({"error": "Only an admin can change the QuickBooks accounts "
+                                 "for a project."}), 403
     project = ProjectSheet.query.get_or_404(pid)
     data = request.get_json(force=True) or {}
     ids  = data.get("account_ids") or []

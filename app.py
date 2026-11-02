@@ -5732,6 +5732,9 @@ def project_wrap(pid):
 @login_required
 def project_archive(pid):
     p = ProjectSheet.query.get_or_404(pid)
+    # Archiving moves the Dropbox folder — owner (LP) or admin only
+    # (Cleanup A #14, 2026-11-02; any editor could before).
+    _require_project_role(pid, 'owner')
     if p.dropbox_folder:
         try:
             dbx = _dbx_client()
@@ -5815,6 +5818,7 @@ def projects_bulk_archive():
         flash("No projects selected.", "warning")
         return redirect(url_for("dashboard"))
     archived = 0
+    skipped = 0
     for raw in ids:
         try:
             pid = int(raw)
@@ -5822,6 +5826,10 @@ def projects_bulk_archive():
             continue
         p = ProjectSheet.query.get(pid)
         if not p:
+            continue
+        # Owner / admin only, per project (Cleanup A #14).
+        if _user_project_role(pid) != 'owner':
+            skipped += 1
             continue
         if p.dropbox_folder:
             try:
@@ -5837,6 +5845,9 @@ def projects_bulk_archive():
         archived += 1
     db.session.commit()
     flash(f"Archived {archived} project{'s' if archived != 1 else ''}.", "success")
+    if skipped:
+        flash(f"Skipped {skipped} project{'s' if skipped != 1 else ''} — only the "
+              f"project owner or an admin can archive.", "warning")
     return redirect(url_for("dashboard"))
 
 
@@ -36581,6 +36592,9 @@ def crew_profile_json(cid):
     couple of cross-project queries build lookup maps, then a small per-project
     loop (a person is usually on <10 shows) fills engagement rows — NO per-doc
     or per-line N+1. (User 2026-07 — global person profile on Crew DB.)"""
+    # Crew PII is global — same guard as the sibling /crew routes
+    # (security audit C1; Cleanup A #12, 2026-11-02).
+    _require_global_editor()
     cm = CrewMember.query.get_or_404(cid)
     from actuals import get_current_working_budget, get_current_estimated_budget
 
