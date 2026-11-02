@@ -1647,19 +1647,109 @@ def admin_docs_wipe_project(pid):
     do clean-start iteration while the Analyzer pipeline is still
     being refined. Dropbox files are MOVED (not deleted) so there's a
     recovery window if we trash something we shouldn't have.
+
+    Cleanup A #2 (2026-11-02): the wipe used to delete EVERY Transaction on
+    the project — bank charges included — and moved Dropbox files before the
+    DB commit, so a failed commit left files in /_TRASH with live rows still
+    pointing at them. Now: only the documents' own ledger rows
+    (source='doc_upload') are deleted; bank / manual rows are UNLINKED
+    (doc_upload_id=None, coding kept); every DB change is committed BEFORE a
+    single Dropbox move.
     """
     if not current_user.is_authenticated or getattr(current_user, 'role', None) != 'super_admin':
         return jsonify({"error": "super admin only"}), 403
 
     project = ProjectSheet.query.get_or_404(pid)
     uploads = DocUpload.query.filter_by(project_id=pid).all()
+    # Snapshot the Dropbox paths now — the rows are gone by the time we move.
+    _paths_to_trash = [(up.id, up.filed_dropbox_path, up.source_archive_path) for up in uploads]
 
     deleted_count = 0
     moved_count   = 0
     errors        = []
     trash_root    = None
 
-    # Only bother with Dropbox if we have credentials.
+    # ── Phase 1: database, committed before anything touches Dropbox ──
+    # Step 0: the documents' OWN ledger rows go; everything else is unlinked.
+    # Evidence rows and splits point at the doomed rows with no FK cascade,
+    # so they are cleared first (same order as project_delete).
+    try:
+        _doomed_ids = [r[0] for r in db.session.query(Transaction.id)
+                       .filter(Transaction.project_id == pid,
+                               Transaction.source == 'doc_upload').all()]
+        _unlinked = (Transaction.query
+                     .filter(Transaction.project_id == pid,
+                             Transaction.source != 'doc_upload',
+                             Transaction.doc_upload_id.isnot(None))
+                     .update({"doc_upload_id": None,
+                              "match_status": "unmatched",
+                              "match_confidence": None},
+                             synchronize_session=False))
+        if _doomed_ids:
+            Transaction.query.filter(Transaction.parent_transaction_id.in_(_doomed_ids)).update(
+                {"parent_transaction_id": None}, synchronize_session=False)
+            Transaction.query.filter(Transaction.backup_of_txn_id.in_(_doomed_ids)).update(
+                {"backup_of_txn_id": None}, synchronize_session=False)
+            _delete_evidence_for_txns(_doomed_ids)
+            TransactionSplit.query.filter(TransactionSplit.transaction_id.in_(_doomed_ids))\
+                .delete(synchronize_session=False)
+            db.session.flush()
+            _txn_count = (Transaction.query
+                          .filter(Transaction.id.in_(_doomed_ids))
+                          .delete(synchronize_session=False))
+            logging.info(f"[DOCS WIPE] deleted {_txn_count} doc-born Transaction rows "
+                         f"for project {pid}; unlinked {_unlinked} bank/manual rows")
+        # Evidence rows that point at the documents themselves.
+        try:
+            from models import ExpenseEvidence as _EE_wipe
+            _doc_ids = [u.id for u in uploads]
+            if _doc_ids:
+                _EE_wipe.query.filter(_EE_wipe.doc_upload_id.in_(_doc_ids))\
+                    .delete(synchronize_session=False)
+        except Exception as _eee:
+            errors.append(f"evidence cleanup failed: {_eee}")
+    except Exception as _txe:
+        db.session.rollback()
+        return jsonify({"error": f"Transaction cleanup failed, nothing changed: {_txe}",
+                        "deleted_count": 0, "moved_count": 0, "errors": [str(_txe)]}), 500
+
+    # Self dup-ref first (doc_upload.duplicate_of_id → doc_upload), as in
+    # project_delete, so the per-row deletes can't trip on each other.
+    try:
+        DocUpload.query.filter_by(project_id=pid).update(
+            {"duplicate_of_id": None}, synchronize_session=False)
+        db.session.flush()
+    except Exception as _dre:
+        errors.append(f"duplicate_of clear failed: {_dre}")
+    for up in uploads:
+        try:
+            db.session.delete(up)
+            deleted_count += 1
+        except Exception as _re:
+            errors.append(f"upload {up.id}: db delete failed: {_re}")
+
+    # COMMIT THE DB WORK NOW. Nothing has moved in Dropbox yet, so a failed
+    # commit leaves the project exactly as it was.
+    try:
+        db.session.commit()
+    except Exception as _ce:
+        db.session.rollback()
+        return jsonify({
+            "error": f"Commit failed, nothing changed: {_ce}",
+            "deleted_count": 0,
+            "moved_count": 0,
+            "errors": [str(_ce)],
+        }), 500
+    try:
+        _log_activity(action='delete', entity_type='doc_upload_bulk', entity_id=pid,
+                      entity_label=f'Wiped {deleted_count} docs', project_id=pid,
+                      before={'doc_count': deleted_count},
+                      note=f'Super-admin docs wipe: {deleted_count} document(s) and '
+                           f'their own ledger rows removed; bank charges unlinked')
+    except Exception:
+        pass
+
+    # ── Phase 2: Dropbox (best-effort, after the commit) ──────────────
     dbx = None
     has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
     if has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN'):
@@ -1669,15 +1759,13 @@ def admin_docs_wipe_project(pid):
             logging.warning(f"[DOCS WIPE] dropbox client init failed: {_de}")
             dbx = None
 
-    if dbx and uploads:
+    if dbx and _paths_to_trash:
         # Build a dated trash folder specific to this wipe so we can find
         # the files again if a mistake was made.
         from datetime import datetime as _dt
         _stamp = _dt.utcnow().strftime("%Y-%m-%d_%H%M%S")
         _slug  = project.dropbox_folder or f"project-{pid}"
         trash_root = f"/_TRASH/{_stamp}_{_slug}"
-        # Ensure trash folder exists (Dropbox auto-creates parent folders
-        # on move, so this is best-effort).
         try:
             dbx.files_create_folder_v2(trash_root, autorename=False)
         except Exception:
@@ -1731,56 +1819,15 @@ def admin_docs_wipe_project(pid):
                 errors.append(f"{label_id} ({original_src}): {err1}")
         return False
 
-    # Step 0: delete every Transaction row for this project FIRST.
-    # The 2026-04-30 doc-upload→Transaction auto-create wire means
-    # every DocUpload now has a Transaction with doc_upload_id FK
-    # pointing at it. Deleting the upload without first dropping the
-    # txn raises ForeignKeyViolation. We clear all project txns at
-    # once (faster than per-row) — for the wipe-test path that's the
-    # right semantics anyway: Doc rows go, txn rows go, fresh slate.
-    try:
-        _txn_count = (db.session.query(Transaction)
-                      .filter_by(project_id=pid)
-                      .delete(synchronize_session=False))
-        if _txn_count:
-            logging.info(f"[DOCS WIPE] deleted {_txn_count} Transaction rows for project {pid}")
-    except Exception as _txe:
-        errors.append(f"transaction wipe failed: {_txe}")
-
-    for up in uploads:
-        # Step 1: move the filed (processed) Dropbox copy to trash.
-        if _move_to_trash(up.filed_dropbox_path, f"upload {up.id} filed"):
+    for _uid, _filed, _archive in _paths_to_trash:
+        # Move the filed (processed) Dropbox copy to trash, then the
+        # source-archive copy if it's a different path. (For status='review'
+        # rows, filed_=archive_path so we don't double-move.)
+        if _move_to_trash(_filed, f"upload {_uid} filed"):
             moved_count += 1
-        # Step 1b: also move the source-archive copy to trash, but only
-        # if it's a different path. (For status='review' rows, filed_=
-        # archive_path so we don't double-move.)
-        if (up.source_archive_path
-                and up.source_archive_path != up.filed_dropbox_path):
-            if _move_to_trash(up.source_archive_path, f"upload {up.id} archive"):
+        if _archive and _archive != _filed:
+            if _move_to_trash(_archive, f"upload {_uid} archive"):
                 moved_count += 1
-        # Step 2: delete the DB row regardless of Dropbox outcome.
-        try:
-            db.session.delete(up)
-            deleted_count += 1
-        except Exception as _re:
-            errors.append(f"upload {up.id}: db delete failed: {_re}")
-
-    # Step 2.5: COMMIT THE DB DELETES NOW. Critical ordering — without
-    # this, any subsequent exception in the folder-cleanup phase could
-    # roll back the deletes, leaving orphan DocUpload rows even after
-    # Dropbox has been wiped (the "I have rows in software pointing at
-    # files Dropbox no longer has" symptom).
-    try:
-        db.session.commit()
-    except Exception as _ce:
-        db.session.rollback()
-        errors.append(f"commit failed: {_ce}")
-        return jsonify({
-            "error": f"Commit failed, wipe partial: {_ce}",
-            "deleted_count": 0,
-            "moved_count": moved_count,
-            "errors": errors[:20],
-        }), 500
 
     # Step 3: nuke the project's PROCESSED DOCUMENTS + source-archive
     # subtrees so an empty-folder skeleton doesn't sit around between
@@ -1814,6 +1861,8 @@ def admin_docs_wipe_project(pid):
     return jsonify({
         "ok":            True,
         "deleted_count": deleted_count,
+        "txn_deleted":   len(_doomed_ids),
+        "txn_unlinked":  int(_unlinked or 0),
         "moved_count":   moved_count,
         "trash_folder":  trash_root,
         "error_count":   len(errors),

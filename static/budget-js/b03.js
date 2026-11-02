@@ -1622,11 +1622,13 @@
   const _wipeBtn = document.getElementById('btn-wipe-docs');
   if (_wipeBtn) {
     _wipeBtn.addEventListener('click', async () => {
-      if (!confirm("Delete EVERY receipt/doc on this project?\n\n" +
-                   "• All DocUpload rows removed from the database\n" +
-                   "• Filed Dropbox files moved to /_TRASH/\n\n" +
+      if (!confirm("Wipe EVERY document on this project?\n\n" +
+                   "• Every document row is removed from the database\n" +
+                   "• The documents' OWN ledger rows (receipt-born, source=doc_upload) are deleted\n" +
+                   "• Bank / QuickBooks / CSV / manual charges are KEPT — they are unlinked from their receipts and their coding stays\n" +
+                   "• Filed Dropbox files are moved to /_TRASH/ after the database commit\n\n" +
                    "This is a testing tool. Proceed?")) return;
-      if (!confirm("Really sure? Only affects THIS project's docs.")) return;
+      if (!confirm("Really sure? Only affects THIS project's documents.")) return;
       _wipeBtn.disabled = true;
       _wipeBtn.textContent = 'Wiping…';
       try {
@@ -1637,7 +1639,9 @@
         const d = await r.json();
         if (!r.ok) { alert('Wipe failed: ' + (d.error || 'unknown')); return; }
         let msg = 'Wipe complete.\n\n';
-        msg += '• DocUpload rows deleted: ' + d.deleted_count + '\n';
+        msg += '• Document rows deleted: ' + d.deleted_count + '\n';
+        msg += '• Receipt-born ledger rows deleted: ' + (d.txn_deleted || 0) + '\n';
+        msg += '• Bank/manual charges unlinked (kept): ' + (d.txn_unlinked || 0) + '\n';
         msg += '• Dropbox files moved to trash: ' + d.moved_count + '\n';
         if (d.error_count) msg += '\nErrors: ' + d.error_count;
         if (d.trash_folder) msg += '\n\nTrash folder: ' + d.trash_folder;
