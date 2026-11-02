@@ -79,11 +79,11 @@ def _add_missing(bind, insp, tables, table, columns):
 
 def upgrade():
     bind = op.get_bind()
-    insp = sa.inspect(bind)
     try:
+        insp = sa.inspect(bind)
         tables = set(insp.get_table_names())
     except Exception:
-        tables = None   # offline --sql preview
+        insp, tables = None, None   # offline --sql preview
 
     _add_missing(bind, insp, tables, "transaction", _TXN_COLUMNS)
     _add_missing(bind, insp, tables, "vendor_alias", _ALIAS_COLUMNS)
