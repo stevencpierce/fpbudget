@@ -5,6 +5,7 @@
   <script src="{{ url_for('static', filename='csrf.js') }}?v={{ APP_COMMIT | default('x') }}"></script>
 <meta charset="UTF-8">
 <title>{{ project.name }} — Budget {{ 'Working' if is_working_view else 'Estimated' }}</title>
+  {% include '_favicon.html' %}
 <style>
   @page {
     size: letter landscape;
