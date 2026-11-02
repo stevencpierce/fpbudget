@@ -43,28 +43,38 @@ branch_labels = None
 depends_on = None
 
 
+# Column factories: sqlite cannot ALTER a table to add a foreign-key
+# constraint (alembic raises NotImplementedError), so the FK goes on for
+# Postgres only; a sqlite dev DB gets the plain integer column (the ORM
+# relationship does not need the constraint to work).
+def _fk_int(name, fk):
+    def make(dialect):
+        if dialect == "postgresql":
+            return sa.Column(name, sa.Integer, sa.ForeignKey(fk), nullable=True)
+        return sa.Column(name, sa.Integer, nullable=True)
+    return make
+
+
 _TXN_COLUMNS = (
-    ("payee_id",       sa.Column("payee_id", sa.Integer,
-                                 sa.ForeignKey("crew_member.id"), nullable=True)),
-    ("payee_source",   sa.Column("payee_source", sa.String(16), nullable=True)),
-    ("qbo_entity_ref", sa.Column("qbo_entity_ref", sa.String(40), nullable=True)),
+    ("payee_id",       _fk_int("payee_id", "crew_member.id")),
+    ("payee_source",   lambda d: sa.Column("payee_source", sa.String(16), nullable=True)),
+    ("qbo_entity_ref", lambda d: sa.Column("qbo_entity_ref", sa.String(40), nullable=True)),
 )
 _ALIAS_COLUMNS = (
-    ("payee_id", sa.Column("payee_id", sa.Integer,
-                           sa.ForeignKey("crew_member.id"), nullable=True)),
+    ("payee_id", _fk_int("payee_id", "crew_member.id")),
 )
 _CONN_COLUMNS = (
-    ("vendor_cdc_since", sa.Column("vendor_cdc_since", sa.DateTime, nullable=True)),
+    ("vendor_cdc_since", lambda d: sa.Column("vendor_cdc_since", sa.DateTime, nullable=True)),
 )
 
 
-def _add_missing(insp, tables, table, columns):
+def _add_missing(bind, insp, tables, table, columns):
     if tables is not None and table not in tables:
         return
     cols = {c["name"] for c in insp.get_columns(table)} if tables is not None else set()
-    for name, col in columns:
+    for name, make in columns:
         if name not in cols:
-            op.add_column(table, col)
+            op.add_column(table, make(bind.dialect.name))
 
 
 def upgrade():
@@ -75,14 +85,15 @@ def upgrade():
     except Exception:
         tables = None   # offline --sql preview
 
-    _add_missing(insp, tables, "transaction", _TXN_COLUMNS)
-    _add_missing(insp, tables, "vendor_alias", _ALIAS_COLUMNS)
-    _add_missing(insp, tables, "qbo_connection", _CONN_COLUMNS)
+    _add_missing(bind, insp, tables, "transaction", _TXN_COLUMNS)
+    _add_missing(bind, insp, tables, "vendor_alias", _ALIAS_COLUMNS)
+    _add_missing(bind, insp, tables, "qbo_connection", _CONN_COLUMNS)
     if tables is None or "transaction" in tables:
-        op.execute("CREATE INDEX IF NOT EXISTS ix_transaction_payee_id "
-                   "ON transaction (payee_id)")
-        op.execute("CREATE INDEX IF NOT EXISTS ix_transaction_qbo_entity_ref "
-                   "ON transaction (qbo_entity_ref)")
+        # "transaction" is a reserved word on sqlite — quote the table.
+        op.execute('CREATE INDEX IF NOT EXISTS ix_transaction_payee_id '
+                   'ON "transaction" (payee_id)')
+        op.execute('CREATE INDEX IF NOT EXISTS ix_transaction_qbo_entity_ref '
+                   'ON "transaction" (qbo_entity_ref)')
 
     if tables is None or "qbo_vendor" not in tables:
         op.create_table(

@@ -541,3 +541,55 @@ def test_09_vendor_name_link_and_unlink(ctx):
     assert r.status_code == 200 and r.get_json()["charges_cleared"] == 1
     with ctx["app"].app_context():
         assert VendorAlias.query.get(j["alias_id"]).payee_id is None
+
+
+# ── 10. payroll parse → itemize carries the person; pages render ──────────
+
+def test_10_parse_people_rows_carry_crew_member_id_and_itemize_writes_it(ctx, mp):
+    import ai_layer
+    c = ctx["client"]
+    with ctx["app"].app_context():
+        wrapbook = CrewMember(name="Wrapbook Payroll Co", kind="vendor", is_vendor=True, active=True)
+        db.session.add(wrapbook)
+        db.session.flush()
+        up = DocUpload(project_id=S["pid"], vendor="Wrapbook", amount=1300.00, status='done',
+                       original_filename="wrapbook.pdf", category="invoice",
+                       veryfi_data=json.dumps({"text": "payroll", "line_items": []}))
+        up.set_owner(wrapbook.id)
+        db.session.add(up)
+        db.session.flush()
+        db.session.add(Transaction(project_id=S["pid"], doc_upload_id=up.id, amount=1300.00,
+                                   vendor="Wrapbook", source="qbo_sync", is_expense=True,
+                                   txn_date="2026-09-01"))
+        db.session.commit()
+        S["wrapbook"], S["uid_doc"] = wrapbook.id, up.id
+
+    mp.setattr(ai_layer, "extract_people", lambda payload: {
+        "rows": [{"name": "Varga, Ines", "amount": 1300.00, "wages": 1000.00, "fringes": 200.00,
+                  "workers_comp": 60.00, "platform_fee": 40.00}],
+        "confidence": 0.9, "_provider": "stub", "document_total": 1300.00})
+    r = _post(c, f"/docs/upload/{S['uid_doc']}/parse-people", {})
+    assert r.status_code == 200, r.data
+    rows = {x["desc"]: x for x in r.get_json()["rows"]}
+    assert rows["Varga, Ines — payroll"]["line_id"] == str(S["l_theo"])
+    assert rows["Varga, Ines — payroll"]["crew_member_id"] == S["theo"], \
+        "the parsed row names the PERSON behind the line"
+    r = _post(c, f"/docs/upload/{S['uid_doc']}/itemize",
+              {"rows": [{"amount": x["amount"], "budget_line_id": x["line_id"],
+                         "description": x["desc"], "crew_member_id": x.get("crew_member_id")}
+                        for x in rows.values()],
+               "main_line_id": ""})
+    assert r.status_code == 200, r.data
+    with ctx["app"].app_context():
+        kids = {k.note: k for k in Transaction.query.filter_by(doc_upload_id=S["uid_doc"],
+                                                              source='invoice_split').all()}
+        assert (kids["Varga, Ines — payroll"].payee_id, kids["Varga, Ines — payroll"].payee_source) == (S["theo"], 'doc')
+        assert kids["Varga, Ines — employer fringes"].payee_id == S["wrapbook"], \
+            "a row with no person inherits the document's owner"
+    # the Payee pages render with the new cards
+    html = c.get(f"/payees/{S['harbor']}").get_data(as_text=True)
+    assert "QuickBooks owns the legal name" in html and "Harbor Grip" in html
+    html = c.get(f"/payees/{S['theo']}").get_data(as_text=True)
+    assert "Vendor names" in html
+    html = c.get("/payees").get_data(as_text=True)
+    assert "QuickBooks vendors" in html and "Create in QuickBooks" in html

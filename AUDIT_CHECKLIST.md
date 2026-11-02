@@ -185,3 +185,45 @@ from it (cash/reimbursement/accrual) — and every expense gets coded + backed.
   Working budget (by design); FEATURES rows for the old per-section fringe row
   are superseded by this entry. Confirm in a deploy log that
   `migrate_fringes_to_admin_2026_11` ran once in production.
+
+## 🧾 Documents Phase 3 — payment attribution, QuickBooks vendor mirror, 1099 sheet (2026-11-02, Steven's Nov 1 decision)
+- [x] D3-1 — Schema: `transaction.payee_id` (FK crew_member, indexed), `payee_source`
+  (`qbo | line | doc | alias | manual`), `qbo_entity_ref`; `vendor_alias.payee_id`;
+  `qbo_connection.vendor_cdc_since`; new `qbo_vendor` mirror table (alembic
+  `0024_txn_payee`, mirrored in `_web_worker_essential_columns`). The sqlite branch
+  adds the FK columns as plain integers (sqlite cannot ALTER in a constraint).
+- [x] D3-2 — Backfill: boot task `_backfill_txn_payee` (system_task_log marker
+  `backfill_txn_payee_2026_11` + advisory lock 20261102, sqlite-safe body): sets
+  `payee_id` where the document owner, the line's one crew member, a linked alias
+  or an exact vendor-name match name ONE payee; disagreeing signals are logged to
+  the ActivityLog (`attribution_conflict`, once per row) and left NULL. Confirm in
+  a deploy log that the marker ran once in production.
+- [x] D3-3 — Precedence (`actuals.set_txn_payee`): fill NULL; a writer replaces only
+  the sources it names (`qbo` → `qbo`, `line` → `line`, the doc editor's pick → every
+  automatic source); a `manual` value is never replaced by automation.
+  `paid_by_payee` prefers `payee_id` and falls back to the old inference only for
+  NULL rows, so nothing that counted before disappears.
+- [x] D3-4 — Vendor mirror: `qbo_sync.sync_vendors` (full pull → CDC, watermark
+  minus 5 min, re-pulls in full when the watermark is older than the CDC window);
+  QuickBooks → FPBudget only; linked payee refreshed (legal name, company, email,
+  phone, address, Vendor1099, Active for vendor / loan-out kinds; `name` never),
+  exact DisplayName links an unlinked non-W-2 payee, ambiguous / unknown wait for
+  `/admin/qbo-vendors`. Runs ahead of the project syncs in the 12-hour loop.
+  `sync_project` stamps `qbo_entity_ref` and attributes `qbo` through
+  `CrewMember.qbo_vendor_id`.
+- [x] D3-5 — The one write: `qbo_sync.ensure_vendor_for_payee` → link an exact
+  DisplayName match or `create_vendor` (POST /vendor with a body that carries no
+  Id / SyncToken / sparse; the helper refuses one that does). No update helper
+  exists in the module. `POST /payees/<id>/qbo-create` (409 for linked / W-2),
+  the New-payee checkbox and the Payee page button use it; mirrored fields are
+  read-only in the edit form and refused by `apply_payee_fields` / `crew_edit`.
+- [x] D3-6 — Write paths: link / unlink (`line`), confirm_match + itemize +
+  payroll parse + doc editor / inbox owner pick (`doc`), CSV import + manual +
+  doc-born rows (`alias` from `VendorAlias.payee_id` or an exact name), manual
+  expense `payee_id` (`manual`), vendor-name link / unlink on the Payee page.
+  Wrap Book 1099 review shows the QuickBooks state beside the W-9.
+- [ ] D3-7 — Deferred: a payee picker on the Actuals workspace row (the
+  `manual` source is reachable only through the manual-expense body and the
+  document editor today); mirroring a QuickBooks value that was EMPTIED (an
+  empty value never blanks the local copy); QuickBooks "Deleted" CDC entries
+  are skipped, not unlinked.

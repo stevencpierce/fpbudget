@@ -262,6 +262,23 @@ bottom under "Recent Pushes".
 
 ---
 
+## Payees, QuickBooks vendors & the 1099 sheet (Documents Phases 1–3)
+
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Payee directory `/payees` and Payee page `/payees/<id>` | Everyone the company pays, person or vendor, with paid-by-year (card / non-card), projects, documents on file, W-9 status, the QuickBooks state and the 1099 flag. Admin and super-admin only. `/crew` redirects here |
+| ✅ | 1099 prep sheet `/payees/report.csv?year=` | One row per payee paid that year, non-card first, with the year's threshold ($600 through 2025, $2,000 from 2026, per-year table), W-9 status, QuickBooks vendor id and 1099 flag |
+| ✅ | Payment attribution (Phase 3) | Every transaction can carry `payee_id` + `payee_source`: QuickBooks names the vendor on a synced charge (`qbo`), a budget line with one crew member (`line`), the document's owner — on confirm, itemize, payroll parse, or a payee pick in the editor / inbox (`doc`), a vendor name linked to a payee (`alias`), or a person's pick (`manual`, never overwritten by automation). Paid-per-payee sums `payee_id`; rows nothing has attributed yet still fall back to the old doc-owner / single-line inference |
+| ✅ | Backfill of existing charges | One-time boot task sets `payee_id` on every old row whose document, line, alias or exact vendor name point at one payee; a row whose signals disagree is logged to the Activity tab as an attribution conflict and left for a person |
+| ✅ | QuickBooks vendor mirror (one way) | Every 12 hours (and from Sync now) QuickBooks Vendors are mirrored into FPBudget: a linked payee's legal name, company, email, phone, address, 1099 flag and Active state follow QuickBooks; a payee whose name equals a vendor's DisplayName exactly is linked; the rest wait on the Link screen. FPBudget never writes a vendor's fields back |
+| ✅ | Link screen `/admin/qbo-vendors` | Super-admin: QuickBooks vendors with no payee, an exact-name suggestion chip, a picker to link an existing payee, Create payee from this vendor, Sync now. Linking attributes every synced charge that carries the vendor's id |
+| ✅ | Create in QuickBooks | A payee with no QuickBooks vendor gets a Create in QuickBooks button (and the New payee form a checkbox, hidden for W-2 employees). An exact DisplayName match in QuickBooks is linked, never duplicated; otherwise a Vendor is created from the payee's fields with 1099 tracking on when a W-9 is on file. After that the record is QuickBooks's: mirrored fields are read-only here. FPBudget never updates or overwrites a QuickBooks record |
+| ✅ | Vendor names ↔ payee | On the Payee page, link a raw vendor string (as it appears on bank text) to the payee so every CSV / manual / bank-text charge from that name attributes automatically; unlink clears the attribution it produced |
+| ✅ | Wrap Book 1099 review | Payees on the project at or over the year's threshold in non-card pay with no W-9, W-2 employees excluded, with the QuickBooks state (Not in QuickBooks / Linked · 1099 on / off) beside the W-9 |
+| ⚠️ | Payee picker on an Actuals row | Not yet: the `manual` source is reachable through the manual-expense form (`payee_id`) and the document editor's Payee field |
+
+---
+
 ## Top Sheet
 
 | Status | Feature | Plain English |
