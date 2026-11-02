@@ -2432,14 +2432,8 @@ a.tab-link:hover { background: var(--bg-3); }
 }
 .gantt-range-btns .btn:last-child { border-right: none; }
 
-/* ── Actuals tab ─────────────────────────────────────────────────────────── */
-.actuals-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  margin-bottom: .75rem;
-}
-.actuals-table .unbudgeted-row td { opacity: .8; }
+/* (.actuals-header / .actuals-table went with the in-page Actuals pane —
+   Cleanup B, 2026-11-02.) */
 .badge-unbudgeted {
   display: inline-block;
   font-size: .68rem;

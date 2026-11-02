@@ -9719,125 +9719,7 @@ def budget_view(pid, bid):
                    .options(_defer(DocUpload.veryfi_data))
                    .order_by(DocUpload.uploaded_at.desc())
                    .all())
-    # Full transactions for the ported Actuals tab (formerly the
-    # FPBudgetSync project_detail.html). Ordered most-recent first.
-    #
-    # Cross-project claim filter: if an electronic transaction has been
-    # claimed by another project (claimed_by_project_id != this pid),
-    # hide it from non-admin views. Admin/super-admin see them in a
-    # dimmed "claimed elsewhere" panel further down (not yet rendered
-    # — TBD). Per-project rule: claimed_by_project_id IS NULL OR equal
-    # to this project's id means it's still ours to work with.
-    #
-    # Defensive: the claimed_by_project_id column is added by self-heal
-    # DDL on worker boot. If a deploy hits this route before the
-    # ALTER TABLE has run, the query 500s with UndefinedColumn. Try
-    # the filtered query first; on any DB error fall back to the
-    # unfiltered query so the page still renders. Once every worker
-    # has booted with the new schema this fallback becomes a no-op.
-    _is_admin_view = (current_user.is_authenticated
-                      and current_user.role in ('admin', 'super_admin'))
-    try:
-        _txn_q = Transaction.query.filter_by(project_id=pid)
-        if not _is_admin_view:
-            from sqlalchemy import or_ as _or
-            _txn_q = _txn_q.filter(_or(
-                Transaction.claimed_by_project_id.is_(None),
-                Transaction.claimed_by_project_id == pid,
-            ))
-        actuals_transactions = (_txn_q
-                                .order_by(Transaction.txn_date.desc().nullslast(),
-                                          Transaction.id.desc())
-                                .all())
-    except Exception as _claim_err:
-        logging.warning(
-            "[budget_view] cross-project claim filter failed (column "
-            "likely missing — self-heal DDL pending): %s. Falling back "
-            "to unfiltered Transaction list.", _claim_err)
-        db.session.rollback()
-        actuals_transactions = (Transaction.query
-                                .filter_by(project_id=pid)
-                                .order_by(Transaction.txn_date.desc().nullslast(),
-                                          Transaction.id.desc())
-                                .all())
-    # Surface "claimed elsewhere" rows for admin+ as a separate list so
-    # the template can render them in a distinct panel without polluting
-    # the main rollup. Empty for non-admin users. Defensive: same DDL-
-    # not-yet-run guard as above.
-    actuals_claimed_elsewhere = []
-    actuals_claimed_project_names = {}  # {project_id: 'Project Name'}
-    if _is_admin_view:
-        try:
-            actuals_claimed_elsewhere = [
-                t for t in actuals_transactions
-                if getattr(t, 'claimed_by_project_id', None)
-                and t.claimed_by_project_id != pid
-            ]
-            if actuals_claimed_elsewhere:
-                _claim_pids = {t.claimed_by_project_id for t in actuals_claimed_elsewhere}
-                for _p in (ProjectSheet.query
-                           .filter(ProjectSheet.id.in_(_claim_pids)).all()):
-                    actuals_claimed_project_names[_p.id] = _p.name or f'Project #{_p.id}'
-        except Exception:
-            actuals_claimed_elsewhere = []
-            actuals_claimed_project_names = {}
-    # Distinct uploaders for the filter bar — derived from
-    # created_via_user_id (manual entry / receipt upload) + the linked
-    # DocUpload's uploader_id (so receipt-source rows attribute to the
-    # person who took the photo, not the system user). Returns
-    # [(user_id, display_name), ...] sorted by name.
-    _uploader_user_ids = set()
-    for t in actuals_transactions:
-        if t.created_via_user_id:
-            _uploader_user_ids.add(t.created_via_user_id)
-    if doc_uploads:
-        for d in doc_uploads:
-            if d.uploader_id:
-                _uploader_user_ids.add(d.uploader_id)
-    actuals_uploaders = []
-    if _uploader_user_ids:
-        for u in (User.query
-                  .filter(User.id.in_(_uploader_user_ids))
-                  .order_by(User.name.nullslast(), User.email)
-                  .all()):
-            label = u.name or (u.email.split('@')[0] if u.email else f'User #{u.id}')
-            actuals_uploaders.append((u.id, label))
-    # Convenience: doc upload by id, for the doc-badge column in the
-    # transactions list.
     docs_by_id = {d.id: d for d in doc_uploads}
-
-    # Docs-tab row parity (owner 2026-08-19: "make sure the documents and
-    # actuals tabs function the same way"): per-upload coding summary so a
-    # doc row shows the SAME coded-state and ✨ AI-accept chip its ledger
-    # row shows on the Actuals tab. Same electronic-charge preference as
-    # docs_upload_coding.
-    doc_coding_by_uid = {}
-    _txns_by_uid = {}
-    for _t in actuals_transactions:
-        if _t.doc_upload_id:
-            _txns_by_uid.setdefault(_t.doc_upload_id, []).append(_t)
-    for _uid, _ts in _txns_by_uid.items():
-        _t = (next((x for x in _ts
-                    if x.source in ('qbo_sync', 'csv_import', 'reconciled')
-                    and x.ai_suggested_code), None)
-              or next((x for x in _ts
-                       if x.source in ('qbo_sync', 'csv_import', 'reconciled')), None)
-              or _ts[0])
-        _is_coded = bool(_t.budget_line_id or _t.account_code)
-        doc_coding_by_uid[_uid] = {
-            'tid': _t.id,
-            'coded': _is_coded,
-            'code': _t.account_code,
-            'code_label': (_t.account_code_name
-                           or (str(_t.account_code) if _t.account_code else '')),
-            'not_project': bool(_t.not_project_expense),
-            'ai_code': (_t.ai_suggested_code if not _is_coded else None),
-            'ai_name': _t.ai_suggested_code_name or '',
-            'ai_conf': float(_t.ai_code_confidence or 0),
-        }
-    # QBO connection status (single global row for now)
-    from models import QBOConnection
-    qbo_connection = QBOConnection.query.first()
 
     # ── Budget lines available for the Actuals tab dropdown ─────────────
     # The dropdown picks from the project's current Working budget,
@@ -9873,185 +9755,8 @@ def budget_view(pid, bid):
                         auto_line_ids.setdefault(_lgl.auto_kind, _lgl.id)
         except Exception:
             pass
-    actuals_pick_budget, actuals_pick_groups = _line_picker_groups(pid)
+    _actuals_pick_budget, actuals_pick_groups = _line_picker_groups(pid)
 
-    # Per-line crew + PO badges for the Actuals "Chart of Accounts" sidebar
-    # (per user 2026-05-29: "is there a way to see in the chart of accounts
-    # if you've assigned an individual or a PO to something?"). Keyed by the
-    # PICK budget's OWN line ids so badges resolve whether the pick budget is
-    # the Working budget or the Estimated fallback. Crew names are bulk-loaded
-    # to avoid N+1; PO summaries reuse the project-wide pos_by_id built above.
-    actuals_pick_crew = {}   # {line_id: crew_name}
-    actuals_pick_po   = {}   # {line_id: {"po_number", "vendor_name", "status"}}
-    if actuals_pick_budget:
-        from models import CrewMember as _CM_badge
-        _pick_lines    = list(actuals_pick_budget.lines)
-        _pick_crew_ids = {ln.assigned_crew_id for ln in _pick_lines if ln.assigned_crew_id}
-        _pick_crew_nm  = {}
-        if _pick_crew_ids:
-            for _cm in _CM_badge.query.filter(_CM_badge.id.in_(_pick_crew_ids)).all():
-                _pick_crew_nm[_cm.id] = _cm.name or ''
-        for ln in _pick_lines:
-            if ln.assigned_crew_id:
-                actuals_pick_crew[ln.id] = _pick_crew_nm.get(ln.assigned_crew_id) or 'Assigned'
-            _po_id = getattr(ln, 'po_id', None)
-            if _po_id and _po_id in pos_by_id:
-                _p = pos_by_id[_po_id]
-                actuals_pick_po[ln.id] = {
-                    "po_number":   _p.get("po_number"),
-                    "vendor_name": _p.get("vendor_name"),
-                    "status":      _p.get("status"),
-                }
-
-    # Smart vendor → budget-line suggestions for the Actuals tab (computed
-    # by the shared helper so the page render and the on-demand refresh
-    # endpoint stay identical). 2026-05-29.
-    actuals_line_suggestions = _actuals_vendor_suggestions(pid)
-
-    # ── 📎 Backup suggestions (docs-model v3, 2026-07-20) ────────────────────
-    # A doc-only UNCODED receipt that closely matches an itemized invoice
-    # subline (amount ±$3/10%, date ±10d, receipt vendor ≈ the SUBLINE's
-    # description — the invoice vendor is usually different, e.g. garage
-    # receipt vs. the production company's invoice) is probably BACKUP
-    # DOCUMENTATION, not a second charge. Advisory chip only — one click runs
-    # the existing mark-backup with the matched target. {txn_id: {...}}
-    actuals_backup_suggestions = {}
-    try:
-        from actuals import _vendor_similarity as _bsim
-        from datetime import datetime as _bdt
-        _b_receipts = [t for t in actuals_transactions
-                       if t.source == 'doc_upload'
-                       and not t.budget_line_id and not t.account_code
-                       and not t.not_project_expense
-                       and getattr(t, 'backup_of_txn_id', None) is None
-                       and t.amount is not None]
-        if _b_receipts:
-            _b_targets = (Transaction.query
-                          .filter(Transaction.project_id == pid,
-                                  Transaction.source == 'invoice_split',
-                                  Transaction.backup_of_txn_id.is_(None)).all())
-            _b_taken = {b.backup_of_txn_id for b in Transaction.query.filter(
-                Transaction.project_id == pid,
-                Transaction.backup_of_txn_id.isnot(None)).all()}
-
-            def _b_date(v):
-                try:
-                    return _bdt.strptime(str(v)[:10], "%Y-%m-%d").date()
-                except Exception:
-                    return None
-            for r in _b_receipts:
-                r_amt = abs(float(r.amount or 0))
-                r_date = _b_date(r.txn_date)
-                best, best_score = None, 0.0
-                for tgt in _b_targets:
-                    if tgt.id in _b_taken or tgt.id == r.id:
-                        continue
-                    t_amt = abs(float(tgt.amount or 0))
-                    diff = abs(t_amt - r_amt)
-                    if diff > max(3.0, 0.10 * max(t_amt, r_amt)):
-                        continue
-                    t_date = _b_date(tgt.txn_date)
-                    if r_date and t_date and abs((r_date - t_date).days) > 10:
-                        continue
-                    name_sim = max(
-                        _bsim(r.vendor or '', tgt.note or ''),
-                        _bsim(r.vendor or '', tgt.vendor or ''))
-                    exact = diff <= 0.01
-                    if not exact and name_sim < 0.5:
-                        continue
-                    score = (0.6 if exact else 0.35) + 0.4 * name_sim
-                    if score > best_score:
-                        best, best_score = tgt, score
-                if best is not None:
-                    actuals_backup_suggestions[r.id] = {
-                        "target_id": best.id,
-                        "label": ((best.note or best.vendor or 'invoice line')[:60]
-                                  + f" · ${abs(float(best.amount or 0)):,.2f}"),
-                        "confidence": round(min(best_score, 0.99), 2),
-                    }
-    except Exception as _bse:
-        logging.warning(f"[actuals/backup-suggest] scan failed: {_bse}")
-
-    # ── "Code expenses" sub-tab: project-expense rows grouped by COA
-    # department (2026-06-15). A register-style view (Quicken/QuickBooks
-    # inspired) for fine-tuning which line each charge/receipt lands on,
-    # one department at a time. Uncoded rows surface in a leading
-    # "Needs coding" bucket. Reuses actuals_transactions — no extra query.
-    _code_buckets = {}   # section_code (or None) -> {"items": [...], "total": float}
-    # Itemized containers (parents with invoice_split children) stay out of the
-    # register + 'Needs coding' — their sublines carry the coding. (2026-07.)
-    _split_parents = _split_parent_id_set(pid)
-    for t in actuals_transactions:
-        if t.not_project_expense:
-            continue
-        if t.id in _split_parents:
-            continue
-        sec = None
-        if t.account_code is not None:
-            try:
-                sec = _section_for_code(int(t.account_code))
-            except (TypeError, ValueError):
-                sec = None
-        b = _code_buckets.setdefault(sec, {"items": [], "total": 0.0})
-        b["items"].append(t)
-        try:
-            # Credits subtract (actuals.signed_amount_value) — these bucket
-            # totals used to add a refund as if it were spend (Cleanup A #17).
-            b["total"] += _signed_amount_value(t.amount, t.is_expense)
-        except (TypeError, ValueError):
-            pass
-    _sec_order = {code: i for i, (code, _) in enumerate(FP_COA_SECTIONS)}
-    actuals_code_groups = []
-    if None in _code_buckets:                       # uncoded first
-        actuals_code_groups.append({
-            "code": None, "name": "Needs coding", "items": _code_buckets[None]["items"],
-            "count": len(_code_buckets[None]["items"]), "total": _code_buckets[None]["total"]})
-    for sec in sorted((k for k in _code_buckets if k is not None),
-                      key=lambda c: (_sec_order.get(c, 9999), c)):
-        actuals_code_groups.append({
-            "code": sec, "name": _section_name(sec) or f"Section {sec}",
-            "items": _code_buckets[sec]["items"],
-            "count": len(_code_buckets[sec]["items"]), "total": _code_buckets[sec]["total"]})
-
-    # Group uploads by category for the Docs-tab view. Per user 2026-04-30:
-    # tax forms, receipts, invoices, etc. should be visually clustered so
-    # the list is readable. Order matches the Analyzer's filing buckets.
-    _DOC_TYPE_ORDER = [
-        ('receipt',        'Receipts'),
-        ('invoice',        'Invoices'),
-        ('estimate',       'Estimates / SOWs'),
-        ('quote',          'Quotes'),
-        ('purchase_order', 'Purchase Orders'),
-        ('contract',       'Contracts'),
-        ('insurance',      'Insurance / COIs'),
-        ('tax_form',       'Tax Forms'),
-        ('payroll',        'Payroll'),
-        ('timecard',       'Timecards'),   # 2026-07 — Timecards slice 1
-        ('legal',          'Legal'),
-        ('release',        'Releases'),
-        ('employee_vendor_doc', 'Employee/Vendor Docs'),
-        ('misc',           'Miscellaneous'),
-        (None,             'Unsorted'),       # category is NULL/blank
-    ]
-    _docs_by_cat = {}
-    for u in doc_uploads:
-        key = (u.category or '').lower() or None
-        _docs_by_cat.setdefault(key, []).append(u)
-    doc_groups = []  # list of {key, label, rows}
-    seen = set()
-    for key, label in _DOC_TYPE_ORDER:
-        if key in _docs_by_cat:
-            doc_groups.append({"key": key or "_unsorted",
-                               "label": label,
-                               "rows": _docs_by_cat[key]})
-            seen.add(key)
-    # Any unexpected category (typo, deprecated value) gets its own bucket
-    # so we never lose rows in the UI.
-    for key, rows in _docs_by_cat.items():
-        if key not in seen:
-            doc_groups.append({"key": key or "_unsorted",
-                               "label": (key or 'Unsorted').title(),
-                               "rows": rows})
     # Dashboard summary counts — cheap aggregates for the Dashboard tab cards.
     try:
         from models import AnomalyFlag as _AF
@@ -10081,46 +9786,6 @@ def budget_view(pid, bid):
     except Exception as _de:
         logging.warning(f"[dashboard] stats failed: {_de}")
         dashboard_stats = {}
-
-    # Label map (Working line id → "code · description") so the Actuals picker
-    # shows the SPECIFIC line a charge is coded to — not just its section name.
-    # (User 2026-06-18.)
-    actuals_line_labels = {}
-    actuals_line_crew = {}   # line id → assigned person's name (crew invoices)
-    try:
-        from models import CrewMember as _CM, CrewAssignment as _CA
-        # Key by EVERY line in the project (working + actual + estimated) so the
-        # picker resolves whether _cur is a working OR an actual line id.
-        _pb_ids = [b.id for b in Budget.query.filter_by(project_id=pid).all()]
-        _alllines = (BudgetLine.query.filter(BudgetLine.budget_id.in_(_pb_ids)).all()
-                     if _pb_ids else [])
-        for _ln in _alllines:
-            _desc = (_ln.description or _ln.account_name or '').strip()
-            _lab = (f"{_ln.account_code} · {_desc}" if (_ln.account_code and _desc)
-                    else (_desc or str(_ln.account_code or '') or f"Line {_ln.id}"))
-            actuals_line_labels[_ln.id] = _lab[:90]
-        # Resolve each line's assigned crew member (assigned_crew_id, else the
-        # first CrewAssignment) → show the person on crew-invoice rows.
-        _ids = [ln.id for ln in _alllines]
-        _ca_by_line = {}
-        if _ids:
-            for _ca in _CA.query.filter(_CA.budget_line_id.in_(_ids)).all():
-                _ca_by_line.setdefault(_ca.budget_line_id, _ca.crew_member_id)
-        _line_cid = {}
-        for _ln in _alllines:
-            _cid = _ln.assigned_crew_id or _ca_by_line.get(_ln.id)
-            if _cid:
-                _line_cid[_ln.id] = _cid
-        if _line_cid:
-            _names = {c.id: c.name for c in
-                      _CM.query.filter(_CM.id.in_(set(_line_cid.values()))).all()}
-            for _lid, _cid in _line_cid.items():
-                if _names.get(_cid):
-                    actuals_line_crew[_lid] = _names[_cid]
-    except Exception as _le:
-        logging.warning(f"[actuals] line labels failed: {_le}")
-        actuals_line_labels = {}
-        actuals_line_crew = {}
 
     # ── Client estimate approval: badge + history ───────────────────────────
     # When a client approves (or declines) a sent estimate through the portal,
@@ -10176,23 +9841,13 @@ def budget_view(pid, bid):
     # Latest non-approved status (for an "awaiting"/"declined" badge when nothing approved yet)
     estimate_latest = estimate_share_history[0] if estimate_share_history else None
 
-    # Perf: the Docs (~1,200 rows) and Actuals (~1,300 rows) panes render to
-    # ~16MB of inline HTML. Only emit those heavy row-loops when their tab is
-    # actually requested (?tab=docs / ?tab=actuals); otherwise the panes lazy-
-    # load via a full reload when opened. Keeps the common Budget/Dashboard
-    # load light so budget entry stays fast. (User 2026-06-26 — "extremely slow".)
-    active_tab = (request.args.get('tab') or '').strip().lower()
     return render_template("budget.html",
-        active_tab=active_tab,
-        split_parent_ids=_split_parents,
         project=project,
         budget=budget,
         estimate_approval=estimate_approval,
         estimate_latest=estimate_latest,
         estimate_share_history=estimate_share_history,
         dashboard_stats=dashboard_stats,
-        actuals_line_labels=actuals_line_labels,
-        actuals_line_crew=actuals_line_crew,
         all_budgets=all_budgets,
         version_groups=version_groups,
         share_status_by_bid=share_status_by_bid,
@@ -10271,22 +9926,8 @@ def budget_view(pid, bid):
         budget_comment_count=budget_comment_count,
         line_assigned_location=line_assigned_location,
         doc_uploads=doc_uploads,
-        doc_groups=doc_groups,
-        actuals_transactions=actuals_transactions,
-        actuals_code_groups=actuals_code_groups,
-        actuals_line_suggestions=actuals_line_suggestions,
-        actuals_backup_suggestions=actuals_backup_suggestions,
-        actuals_claimed_elsewhere=actuals_claimed_elsewhere,
-        actuals_claimed_project_names=actuals_claimed_project_names,
-        actuals_is_admin_view=_is_admin_view,
         docs_by_id=docs_by_id,
-        doc_coding_by_uid=doc_coding_by_uid,
-        qbo_connection=qbo_connection,
         actuals_pick_groups=actuals_pick_groups,
-        actuals_pick_crew=actuals_pick_crew,
-        actuals_pick_po=actuals_pick_po,
-        actuals_pick_budget=actuals_pick_budget,
-        actuals_uploaders=actuals_uploaders,
         actual_by_line_id=actual_by_line_id,
         actual_section_only_by_code=actual_section_only_by_code,
         actual_to_working=actual_to_working,
