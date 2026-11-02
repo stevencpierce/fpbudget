@@ -19,8 +19,11 @@
        Travel=travel · Catering=catering · People=contacts ·
        Locations=locations · Actuals=actuals · Activity=activity ·
        Tools=import-tools · Settings=settings
-   Schedule/POs/Sub-Budgets/Call Sheets are their own routes on budget.html;
-   here they land on the budget page (?tab=working) — one click from their pane.
+   Schedule / POs / Sub-Budgets / Call Sheets are their own pages. POs and
+   Sub-Budgets are project-level routes; Schedule and Call Sheets need a
+   budget id, so they go through /projects/<pid>/budget?page=schedule|callsheets
+   and project_budget_redirect() resolves the budget. Docs and Actuals open
+   the Docs inbox and the Actuals workspace (Cleanup B, 2026-11-02).
 
    `active_tab` may be passed by the including page (e.g. 'docs') to highlight
    the current tab. Docs points at the standalone inbox, not the budget page.
@@ -32,16 +35,16 @@
     <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=topsheet">Dashboard</a>
     <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=topsheet-detail">Top Sheet</a>
     <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=working">Budget</a>
-    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=working">Schedule</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?page=schedule">Schedule</a>
     <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=travel">Travel</a>
     <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=catering">Catering</a>
     <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=contacts">People</a>
     <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=locations">Locations</a>
-    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=working">POs</a>
-    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=working">Sub-Budgets</a>
-    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=working">Call Sheets</a>
-    <a class="tab-btn tab-link {% if _at == 'docs' %}active{% endif %}" href="/projects/{{ _pid }}/docs">Docs</a>
-    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=actuals">Actuals</a>
+    <a class="tab-btn tab-link" href="{{ url_for('po_list_page', pid=_pid) }}">POs</a>
+    <a class="tab-btn tab-link" href="{{ url_for('sub_budgets_page', pid=_pid) }}">Sub-Budgets</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?page=callsheets">Call Sheets</a>
+    <a class="tab-btn tab-link {% if _at == 'docs' %}active{% endif %}" href="{{ url_for('docs_inbox_page', pid=_pid) }}">Docs</a>
+    <a class="tab-btn tab-link {% if _at == 'actuals' %}active{% endif %}" href="{{ url_for('actuals_workspace_page', pid=_pid) }}">Actuals</a>
     <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=activity">Activity</a>
     <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=import-tools">Tools</a>
     <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=settings">⚙ Settings</a>

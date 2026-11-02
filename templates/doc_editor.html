@@ -23,7 +23,7 @@
 {% include "_project_tabs.html" with context %}
 {% endif %}
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
-  <a id="edBackLink" href="{% if project %}/projects/{{ project.id }}/budget?tab=docs{% elif owner %}{{ url_for('payee_page', payee_id=owner.id) }}{% else %}{{ url_for('payees_directory') }}{% endif %}"
+  <a id="edBackLink" href="{% if project %}{{ url_for('docs_inbox_page', pid=project.id) }}{% elif owner %}{{ url_for('payee_page', payee_id=owner.id) }}{% else %}{{ url_for('payees_directory') }}{% endif %}"
      style="font-size:13px;padding:5px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;text-decoration:none">← {% if project %}Back to docs{% elif owner %}Back to {{ owner.name }}{% else %}Back to payees{% endif %}</a>
   <h1 id="docDetailTitle" style="margin:0;font-size:1.05rem;line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
     {{ upload.filed_filename or upload.original_filename or 'Document' }}
@@ -97,13 +97,13 @@
   var UID = {{ upload.id }};
   function $(id) { return document.getElementById(id); }
 
-  // ── Back / close destination: the docs list, with ?tab=docs so the budget
-  // page restores the exact list state the user left (user 2026-07). From
-  // the Docs Inbox (?from=inbox) Back returns to the inbox; a project-less
-  // document returns to its owner's Payee page.
+  // ── Back / close destination: the project's Docs inbox (Cleanup B,
+  // 2026-11-02: the budget page's in-page docs list is gone, so ?from=inbox
+  // no longer changes the destination — it only enables the inbox's
+  // prev/next sequence below); a project-less document returns to its
+  // owner's Payee page.
   var _fromInbox = (new URLSearchParams(location.search).get('from') === 'inbox');
-  var BACK_URL = !PID ? $('edBackLink').getAttribute('href')
-    : (_fromInbox ? ('/projects/' + PID + '/docs') : ('/projects/' + PID + '/budget?tab=docs'));
+  var BACK_URL = !PID ? $('edBackLink').getAttribute('href') : ('/projects/' + PID + '/docs');
   $('edBackLink').href = BACK_URL;
   function goBack() {
     // Unsaved itemization rows must never vanish silently (2026-07).

@@ -6036,6 +6036,15 @@ def project_budget_redirect(pid):
     if not latest:
         latest = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
     if latest:
+        # ?page=schedule|callsheets sends the shared project-tab strip's
+        # Schedule / Call Sheets links (templates/_project_tabs.html, which
+        # has no budget id) to that page on the resolved budget instead of
+        # the budget page. (Cleanup B, 2026-11-02.)
+        _page = (request.args.get('page') or '').strip().lower()
+        if _page == 'schedule':
+            return redirect(url_for("gantt_view", pid=pid, bid=latest.id))
+        if _page == 'callsheets':
+            return redirect(url_for("callsheet_view", pid=pid, bid=latest.id))
         # Preserve ?tab= (and ?goto=) through the redirect so the shared
         # project-tab strip on standalone pages (docs inbox / doc editor)
         # can deep-link straight to a budget-page pane. Without this the
