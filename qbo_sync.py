@@ -1286,7 +1286,9 @@ def sync_vendors(conn, db, fetch=None):
     by_vendor_id = {str(m.qbo_vendor_id): m for m in members if m.qbo_vendor_id}
     by_name = {}
     for m in members:
-        if m.qbo_vendor_id:
+        # Linked already, or a W-2 employee (Wrapbook's, never a vendor):
+        # not a candidate for the exact-name link.
+        if m.qbo_vendor_id or getattr(m, 'is_w2_employee', False):
             continue
         for raw_name in (m.name, m.legal_name):
             k = (raw_name or '').strip().lower()

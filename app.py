@@ -30917,7 +30917,16 @@ def _backfill_txn_payee_body():
             n_set += 1
             by_source[r["source"]] = by_source.get(r["source"], 0) + 1
     db.session.commit()
+    # Log each conflict once (the marker makes this a one-shot in
+    # production; a re-run in a dev shell must not pile up duplicates).
+    try:
+        _already = {r.entity_id for r in ActivityLog.query.filter_by(
+            action='attribution_conflict', entity_type='transaction').all()}
+    except Exception:
+        _already = set()
     for c in conflicts:
+        if c["txn_id"] in _already:
+            continue
         try:
             _log_activity(action='attribution_conflict', entity_type='transaction',
                           entity_id=c["txn_id"], entity_label=c["vendor"] or f"Txn #{c['txn_id']}",
