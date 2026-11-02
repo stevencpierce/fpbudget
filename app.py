@@ -13140,6 +13140,9 @@ def anomaly_resolve(pid, fid):
     _require_project_role(pid, 'editor')
     from models import AnomalyFlag
     import json as _j
+    from actuals import (review_resolve_allowed as _resolve_ok,
+                         anomaly_flag_txn_ids as _flag_tids,
+                         doc_edit_writes_through_to as _doc_writes_to)
     f = AnomalyFlag.query.filter_by(id=fid, project_id=pid).first_or_404()
     body = request.get_json(silent=True) or {}
     action = (body.get('action') or '').strip()
@@ -13148,6 +13151,19 @@ def anomaly_resolve(pid, fid):
         payload = _j.loads(f.payload_json) if f.payload_json else {}
     except Exception:
         payload = {}
+    # Cleanup A #4 (2026-11-02): a resolve may only touch a transaction the
+    # flag is ABOUT, and delete_txn is refused for bank-sourced rows — the
+    # old code deleted any charge id the client sent. Rule in actuals.py.
+    _flag_txn_ids = _flag_tids(f, payload)
+    if action in ('uncode', 'mark_not_project', 'delete_txn') and tid:
+        try:
+            _tid_int = int(tid)
+        except (TypeError, ValueError):
+            return jsonify({"error": "transaction_id must be an integer"}), 400
+        _chk_tx = Transaction.query.filter_by(id=_tid_int, project_id=pid).first()
+        _ok, _why = _resolve_ok(action, _chk_tx, _flag_txn_ids)
+        if not _ok:
+            return jsonify({"error": _why}), 400
     applied = None
     try:
         if action == 'apply_vendor' and f.doc_upload_id:
@@ -13156,8 +13172,10 @@ def anomaly_resolve(pid, fid):
             if suggested and doc:
                 raw = doc.vendor or ''
                 doc.vendor = suggested[:200]
+                # Only the doc's own row — a bank charge keeps the bank's name.
                 for tx in Transaction.query.filter_by(doc_upload_id=doc.id).all():
-                    tx.vendor = suggested[:300]
+                    if _doc_writes_to(tx):
+                        tx.vendor = suggested[:300]
                 from actuals import record_vendor_alias
                 record_vendor_alias(pid, raw, suggested)
                 applied = f'vendor → {suggested}'
@@ -13189,15 +13207,42 @@ def anomaly_resolve(pid, fid):
             amt = body.get('value', payload.get('suggested_amount'))
             doc = db.session.get(DocUpload, f.doc_upload_id)
             if amt is not None and doc:
+                try:
+                    amt = round(float(amt), 2)
+                except (TypeError, ValueError):
+                    return jsonify({"error": "amount must be a number"}), 400
                 doc.amount = amt
+                # Only the doc's own row — a matched bank charge's amount is
+                # what the bank says it is (Cleanup A #4).
                 for tx in Transaction.query.filter_by(doc_upload_id=doc.id).all():
-                    tx.amount = amt
+                    if _doc_writes_to(tx):
+                        tx.amount = amt
                 applied = f'amount → {amt}'
         elif action in ('uncode', 'mark_not_project', 'delete_txn') and tid:
             tx = Transaction.query.filter_by(id=int(tid), project_id=pid).first()
             if tx:
                 if action == 'delete_txn':
+                    _before_del = {"source": tx.source, "vendor": tx.vendor,
+                                   "amount": float(tx.amount) if tx.amount is not None else None,
+                                   "txn_date": tx.txn_date, "doc_upload_id": tx.doc_upload_id,
+                                   "budget_line_id": tx.budget_line_id,
+                                   "account_code": tx.account_code}
+                    Transaction.query.filter_by(parent_transaction_id=tx.id).update(
+                        {"parent_transaction_id": None}, synchronize_session=False)
+                    Transaction.query.filter_by(backup_of_txn_id=tx.id).update(
+                        {"backup_of_txn_id": None}, synchronize_session=False)
+                    _delete_evidence_for_txns([tx.id])
+                    TransactionSplit.query.filter_by(transaction_id=tx.id)\
+                        .delete(synchronize_session=False)
                     db.session.delete(tx)
+                    try:
+                        _log_activity(action='delete', entity_type='transaction',
+                                      entity_id=tx.id, entity_label=(tx.vendor or f'Txn #{tx.id}')[:80],
+                                      project_id=pid, before=_before_del,
+                                      dollar_delta=-float(tx.amount or 0),
+                                      note=f'Review queue: deleted doc-born row #{tx.id}')
+                    except Exception:
+                        pass
                     applied = f'deleted charge #{tid}'
                 else:
                     tx.account_code = None

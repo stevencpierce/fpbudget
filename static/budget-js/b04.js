@@ -947,7 +947,7 @@
       try {
         const r = await fetch(`/projects/${PROJ_ID}/anomalies/${fid}/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, transaction_id: tid }) });
         if (r.ok) { _dashRemoveCard(fid); if (typeof _actualsToast === 'function') _actualsToast('Resolved ✓', 'green'); }
-        else { if (btn) btn.disabled = false; alert('Action failed'); }
+        else { if (btn) btn.disabled = false; const d = await r.json().catch(() => ({})); alert(d.error || 'Action failed'); }
       } catch (e) { if (btn) btn.disabled = false; alert('Error: ' + e.message); }
     };
     window.dashDismiss = async function (fid, btn) {
