@@ -543,6 +543,13 @@ def budget_lock_denial(budget, anchor):
 # line-totals.json refresh) call so they never disagree about splits.
 
 PAYMENT_METHODS = ('company_card', 'cash', 'personal_card', 'check', 'ach', 'other')
+# The ONE label map (Cleanup D): served to templates / JS as
+# PAYMENT_METHOD_LABELS / window.__FP_PAYMENT_METHODS — the Actuals screen's
+# "How was it paid?" radios and the table's card cell both read it (the
+# radios used to lack ACH; a01.js had its own shorter map).
+PAYMENT_METHOD_LABELS = {'company_card': 'Company card', 'cash': 'Cash',
+                         'personal_card': 'Personal card', 'check': 'Check',
+                         'ach': 'ACH', 'other': 'Other'}
 
 # log-expense reason_kind → payment_method, for callers that still send the
 # older shape (reason_kind cash / check / other_card / other).

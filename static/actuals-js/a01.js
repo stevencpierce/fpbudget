@@ -196,7 +196,7 @@
   function cardCell(t) {
     if (t.card_last4) return '••' + esc(t.card_last4);
     const pm = t.payment_method;
-    if (pm) return ({ cash: 'Cash', personal_card: 'Personal', check: 'Check', ach: 'ACH', company_card: 'Card', other: 'Other' })[pm] || esc(pm);
+    if (pm) return esc((window.__FP_PAYMENT_METHODS || {})[pm] || pm);   // the ONE label map (Cleanup D)
     if ((t.qbo_txn_type || '') === 'BillPayment') return 'ACH';
     return '';
   }

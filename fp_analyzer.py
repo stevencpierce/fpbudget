@@ -80,6 +80,33 @@ DOCUMENT_TYPES = {
     "misc":            "01_ADMIN/PROCESSED DOCUMENTS/MISC",
 }
 
+# The ONE document-type picker list (Cleanup D, 2026-11-02): every type the
+# analyzer files (DOCUMENT_TYPES' keys) with its display label, in picker
+# order. Served to every template as DOC_TYPE_LABELS / window.__FP_DOC_TYPES
+# (app.inject_globals): the Docs inbox, the document editor's Doc Type
+# select, the phone upload page and the set-type validator all read it —
+# never a hand copy (the copies had drifted: the phone page lacked timecard
+# and employee_vendor_doc, the inbox fallback lacked timecard).
+# tests/unit/test_one_rule.py pins keys == DOCUMENT_TYPES keys.
+DOC_TYPE_LABELS = [
+    ("receipt",             "Receipt"),
+    ("invoice",             "Invoice"),
+    ("estimate",            "Estimate / Quote"),
+    ("purchase_order",      "Purchase Order (PO)"),
+    ("contract",            "Contract / SOW"),
+    ("insurance",           "Insurance / COI"),
+    ("tax_form",            "Tax Form (W-9, W-8, 1099)"),
+    ("payroll",             "Payroll"),
+    ("timecard",            "Timecard"),
+    ("legal",               "Legal"),
+    ("release",             "Release (Talent / Location)"),
+    ("employee_vendor_doc", "Employee/Vendor Doc (ID, DTR, onboarding)"),
+    ("misc",                "Miscellaneous"),
+]
+# Legacy DocUpload.category values folded into the merged keys (2026-05-11
+# taxonomy): rows tagged 'quote' / 'sow' display under Estimate / Contract.
+DOC_TYPE_ALIASES = {"quote": "estimate", "sow": "contract"}
+
 DOC_PREFIXES = {
     "receipt":         "RECEIPT",
     "invoice":         "INVOICE",

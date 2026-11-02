@@ -185,21 +185,12 @@
   <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Type</label>
   {# 2026-05-11 taxonomy: Quote merged into Estimate; SOW merged into
      Contract. Legacy 'quote'/'sow' rows aliased at value-set time. #}
-  {% set _dd_cat = (({'quote': 'estimate', 'sow': 'contract'}).get(du.category, du.category) or '') if du else '' %}
+  {# The ONE type list: fp_analyzer.DOC_TYPE_LABELS / DOC_TYPE_ALIASES (Cleanup D). #}
+  {% set _dd_cat = (DOC_TYPE_ALIASES.get(du.category, du.category) or '') if du else '' %}
   <select id="docDetailCategory" style="width:100%">
     <option value="" {{ 'selected' if _dd_cat == '' else '' }}>— unspecified —</option>
-    <option value="receipt" {{ 'selected' if _dd_cat == 'receipt' else '' }}>Receipt</option>
-    <option value="invoice" {{ 'selected' if _dd_cat == 'invoice' else '' }}>Invoice</option>
-    <option value="estimate" {{ 'selected' if _dd_cat == 'estimate' else '' }}>Estimate / Quote</option>
-    <option value="purchase_order" {{ 'selected' if _dd_cat == 'purchase_order' else '' }}>Purchase Order (PO)</option>
-    <option value="contract" {{ 'selected' if _dd_cat == 'contract' else '' }}>Contract / SOW</option>
-    <option value="insurance" {{ 'selected' if _dd_cat == 'insurance' else '' }}>Insurance / COI</option>
-    <option value="tax_form" {{ 'selected' if _dd_cat == 'tax_form' else '' }}>Tax Form (W-9, W-8, 1099)</option>
-    <option value="payroll" {{ 'selected' if _dd_cat == 'payroll' else '' }}>Payroll</option>
-    <option value="timecard" {{ 'selected' if _dd_cat == 'timecard' else '' }}>Timecard</option>
-    <option value="legal" {{ 'selected' if _dd_cat == 'legal' else '' }}>Legal</option>
-    <option value="release" {{ 'selected' if _dd_cat == 'release' else '' }}>Release (Talent / Location)</option>
-    <option value="employee_vendor_doc" {{ 'selected' if _dd_cat == 'employee_vendor_doc' else '' }}>Employee/Vendor Doc (ID, DTR, onboarding)</option>
-    <option value="misc" {{ 'selected' if _dd_cat == 'misc' else '' }}>Miscellaneous</option>
+    {% for _k, _lbl in DOC_TYPE_LABELS %}
+    <option value="{{ _k }}" {{ 'selected' if _dd_cat == _k else '' }}>{{ _lbl }}</option>
+    {% endfor %}
   </select>
 </div>

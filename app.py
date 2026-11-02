@@ -1057,7 +1057,17 @@ def inject_globals():
             # Doc categories that never sit on the actuals ledger — served to
             # JS (budget.html → window.__BJ) so b03.js carries no hand copy of
             # the rule. One definition: actuals.doc_class. (2026-10-30.)
-            "NON_LEDGER_DOC_CATEGORIES": _non_ledger_doc_categories_for_js()}
+            "NON_LEDGER_DOC_CATEGORIES": _non_ledger_doc_categories_for_js(),
+            # One rule per decision (Cleanup D, 2026-11-02): the canonical
+            # lists, served to every template (and to JS as window.__FP_* in
+            # base.html / mobile_upload.html) so no template or script keeps
+            # a private copy.
+            "DOC_TYPE_LABELS": _fp_doc_type_labels,        # fp_analyzer
+            "DOC_TYPE_ALIASES": _fp_doc_type_aliases,      # fp_analyzer
+            "PAYMENT_METHODS": _fp_payment_methods,        # actuals
+            "PAYMENT_METHOD_LABELS": _fp_payment_method_labels,
+            "MODE_META": _fp_mode_meta,                    # budget_calc
+            "FP_COA_SECTIONS": FP_COA_SECTIONS}            # budget_calc
 
 
 def _non_ledger_doc_categories_for_js():
@@ -1066,6 +1076,13 @@ def _non_ledger_doc_categories_for_js():
         return non_ledger_categories()
     except Exception:
         return []
+
+
+from fp_analyzer import (DOC_TYPE_LABELS as _fp_doc_type_labels,          # noqa: E402
+                         DOC_TYPE_ALIASES as _fp_doc_type_aliases)
+from actuals import (PAYMENT_METHODS as _fp_payment_methods,                # noqa: E402
+                     PAYMENT_METHOD_LABELS as _fp_payment_method_labels)
+from budget_calc import MODE_META as _fp_mode_meta                          # noqa: E402
 
 
 def _fmt_local(dt, tz_name=None):
@@ -28975,7 +28992,7 @@ def _do_boot_work():
                 db.session.add(BudgetTemplateLine(
                     template_id=tmpl_t.id,
                     account_code=code,
-                    account_name=acct,
+                    account_name=FP_COA_NAMES.get(code, acct),   # ONE section-name table
                     description=desc,
                     is_labor=labor,
                     quantity=qty,
@@ -29034,7 +29051,7 @@ def _do_boot_work():
             db.session.add(BudgetTemplateLine(
                 template_id=tmpl.id,
                 account_code=code,
-                account_name=acct,
+                account_name=FP_COA_NAMES.get(code, acct),   # ONE section-name table
                 description=desc,
                 is_labor=labor,
                 quantity=qty,
@@ -30897,16 +30914,10 @@ def docs_project(pid):
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Canonical doc-category vocabulary — the analyzer's DOCUMENT_TYPES keys. Used to
-# validate set_category batch requests + to build the facet list.
-try:
-    from fp_analyzer import DOCUMENT_TYPES as _INBOX_DOC_TYPES
-    _INBOX_CATEGORIES = set(_INBOX_DOC_TYPES.keys())
-except Exception:  # fail-open — never let an import break the module
-    _INBOX_CATEGORIES = {
-        'receipt', 'invoice', 'estimate', 'contract', 'purchase_order',
-        'insurance', 'tax_form', 'payroll', 'legal', 'release',
-        'employee_vendor_doc', 'misc',
-    }
+# validate set_category batch requests + to build the facet list. (fp_analyzer
+# is a hard import of this module, so the old hand-copied fallback — which had
+# drifted, lacking 'timecard' — is gone. Cleanup D.)
+_INBOX_CATEGORIES = set(fp_analyzer.DOCUMENT_TYPES.keys())
 
 # Static generic placeholder for PDFs / non-image docs and any thumb failure.
 # One inline SVG string, served as image/svg+xml. 📄 glyph on a neutral card.
@@ -31608,15 +31619,10 @@ def docs_inbox_page(pid):
     project = ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'viewer')
     # The grouped type picker (Evidence / Paperwork / Commitment) comes from
-    # the ONE class rule, actuals.doc_class — no hand copy in the template.
+    # the ONE class rule, actuals.doc_class, over the ONE type list,
+    # fp_analyzer.DOC_TYPE_LABELS — no hand copy here (Cleanup D).
     from actuals import doc_class as _dc
-    _type_labels = [
-        ('receipt', 'Receipt'), ('invoice', 'Invoice'), ('payroll', 'Payroll package'),
-        ('timecard', 'Timecard'), ('tax_form', 'Tax form (W-9, W-8)'),
-        ('contract', 'Contract / deal memo'), ('insurance', 'Insurance / COI'),
-        ('release', 'Release'), ('employee_vendor_doc', 'ID / onboarding'), ('legal', 'Legal'),
-        ('estimate', 'Estimate / quote'), ('purchase_order', 'Purchase order'), ('misc', 'Misc'),
-    ]
+    _type_labels = _fp_doc_type_labels
     type_groups = {
         'evidence':   {"label": "Evidence",   "blurb": "Backs a charge. Creates a ledger row.", "types": []},
         'paperwork':  {"label": "Paperwork",  "blurb": "Lives with the payee. No ledger row.", "types": []},

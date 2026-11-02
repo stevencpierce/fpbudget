@@ -610,11 +610,10 @@
         <fieldset class="aw-fs">
           <legend>How was it paid?</legend>
           <div class="aw-pay" id="aw-create-pay">
-            <label><input type="radio" name="aw-pay" value="company_card">Company card</label>
-            <label><input type="radio" name="aw-pay" value="cash" checked>Cash</label>
-            <label><input type="radio" name="aw-pay" value="personal_card">Personal card</label>
-            <label><input type="radio" name="aw-pay" value="check">Check</label>
-            <label><input type="radio" name="aw-pay" value="other">Other</label>
+            {# The ONE payment-method list (actuals.PAYMENT_METHODS / _LABELS) — Cleanup D; ACH was missing here. #}
+            {% for _pm in PAYMENT_METHODS %}
+            <label><input type="radio" name="aw-pay" value="{{ _pm }}"{{ ' checked' if _pm == 'cash' else '' }}>{{ PAYMENT_METHOD_LABELS[_pm] }}</label>
+            {% endfor %}
           </div>
         </fieldset>
         <div class="aw-grid2">

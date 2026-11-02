@@ -241,9 +241,8 @@ def api_docs_recent(pid):
 # unchanged. enforce_project_access gates <pid> centrally: any project
 # member may GET; POST/DELETE require editor or better.
 
-_MODE_LABELS = {"estimated": "Estimated", "working": "Working",
-                "schedule": "Working", "hybrid": "Hybrid",
-                "actual": "Actual"}
+# Mode labels come from the ONE table, budget_calc.MODE_META (Cleanup D).
+from budget_calc import mode_label as _mode_label   # noqa: E402
 
 
 @app.route("/api/v1/projects/<int:pid>/budgets", methods=["GET"])
@@ -257,8 +256,7 @@ def api_budgets_list(pid):
         "id": b.id,
         "name": b.name,
         "budget_mode": b.budget_mode,
-        "mode_label": ("Actual" if b.is_actual
-                       else _MODE_LABELS.get(b.budget_mode, b.budget_mode)),
+        "mode_label": _mode_label(b.budget_mode, b.is_actual),
         "is_actual": bool(b.is_actual),
         "version_status": b.version_status,
         "version_number": b.version_number,
@@ -299,9 +297,7 @@ def api_budget_summary(pid, bid):
             "id": budget.id,
             "name": budget.name,
             "budget_mode": budget.budget_mode,
-            "mode_label": ("Actual" if budget.is_actual
-                           else _MODE_LABELS.get(budget.budget_mode,
-                                                 budget.budget_mode)),
+            "mode_label": _mode_label(budget.budget_mode, budget.is_actual),
             "is_actual": bool(budget.is_actual),
             "version_status": budget.version_status,
             "version_number": budget.version_number,

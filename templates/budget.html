@@ -1,8 +1,5 @@
 {% extends "base.html" %}
-{% set MODE_META = {
-  'estimated':       {'label': 'ESTIMATED', 'short': 'Est',  'desc': 'Baseline — revise only when scope changes',          'cls': 'mode-estimated'},
-  'working':         {'label': 'WORKING',   'short': 'Work', 'desc': 'Current forecast — your live evolving projection',   'cls': 'mode-working'},
-} %}
+{# MODE_META is budget_calc.MODE_META, served by app.inject_globals (Cleanup D). #}
 {% set cur_mode = MODE_META.get(budget.budget_mode, MODE_META['estimated']) %}
 {# A live Working exists somewhere in the project (it may be an OLDER version
    than the Estimated on screen) — drives the Working / variance columns. #}

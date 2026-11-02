@@ -4,6 +4,13 @@
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <script src="{{ url_for('static', filename='csrf.js') }}?v={{ APP_COMMIT | default('x') }}"></script>
   <script src="{{ url_for('static', filename='fp-utils.js') }}?v={{ APP_COMMIT | default('x') }}"></script>
+  <script>
+    // One rule per decision (Cleanup D): the canonical lists, from the server.
+    window.__FP_DOC_TYPES = {{ DOC_TYPE_LABELS | tojson }};
+    window.__FP_DOC_TYPE_ALIASES = {{ DOC_TYPE_ALIASES | tojson }};
+    window.__FP_PAYMENT_METHODS = {{ PAYMENT_METHOD_LABELS | tojson }};
+    window.__FP_COA_SECTIONS = {{ FP_COA_SECTIONS | tojson }};
+  </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}FPBudget{% endblock %}</title>

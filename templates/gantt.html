@@ -2,10 +2,7 @@
 {% block title %}Schedule — {{ budget.name }}{% endblock %}
 
 {% block content %}
-{% set MODE_META = {
-  'estimated': {'label':'ESTIMATED', 'short':'Est',  'cls':'mode-estimated'},
-  'working':   {'label':'WORKING',   'short':'Work', 'cls':'mode-working'},
-} %}
+{# MODE_META is budget_calc.MODE_META, served by app.inject_globals (Cleanup D). #}
 {% set cur_mode = MODE_META.get(budget.budget_mode, MODE_META['estimated']) %}
 
 <div class="page-header budget-header">

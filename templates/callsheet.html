@@ -153,11 +153,7 @@
   @page { size: letter portrait; margin: .45in; }
 </style>
 {% endif %}
-{% set MODE_META = {
-  'estimated': {'label':'ESTIMATED', 'short':'Est',  'cls':'mode-estimated'},
-  'working':   {'label':'WORKING',   'short':'Work', 'cls':'mode-working'},
-  'actual':    {'label':'ACTUAL',    'short':'Act',  'cls':'mode-actual'},
-} %}
+{# MODE_META is budget_calc.MODE_META, served by app.inject_globals (Cleanup D). #}
 {% set cur_mode = MODE_META.get(budget.budget_mode, MODE_META['estimated']) %}
 
 {# ── Empty-section predicates (redesign round 2, 2026-07-13) ──────────────────
