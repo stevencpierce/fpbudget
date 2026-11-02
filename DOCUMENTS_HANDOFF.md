@@ -153,6 +153,13 @@ Same rules as the Actuals handoff: CLAUDE.md pre-deploy checks after every phase
 
 **Phase 4 — Later: Wrapbook handshake.** Not in this build. Wrapbook stays the system of record for employees; the goal is one way, Wrapbook → FPBudget: the worker roster (to set `is_w2_employee` and `wrapbook_worker_id` on person Payees) and each payroll run's per-person gross and employer fringe, replacing the PDF parse with structured data. Scope it once the Actuals build ships and after confirming what Wrapbook exposes (API, scheduled CSV export, or webhook).
 
+**Phase 5 — Wrap sweep and the Documents tab overhaul (after the Actuals tab is right).** Scoped Nov 2, 2026 from Steven's first live test; not started.
+
+- [ ] **Discard duplicate on the row.** The inbox's "Possible duplicate" chip gains the action it is missing: a **Discard duplicate** button on the row and in the bulk bar (with **Keep both** beside it) that calls the existing `resolve-duplicate` `confirm` path — the file moves to the project's `_DUPLICATES/` folder in Dropbox and the row leaves the inbox; the coded-or-matched guard stays. `_DUPLICATES/` stays per project.
+- [ ] **Dropbox matches the record at Wrap, not on every edit.** Editing vendor, amount, date, type or payee in FPBudget does not touch Dropbox. A **Wrap sweep** (button on the Wrap Book, dry-run report first, then Apply) renames and re-folders every document to match its record — `{date}_{PREFIX}_{vendor}_{total}` and the type's folder, paperwork under the Payee — and lists anything it could not reconcile. The point: at wrap, searching Finder or Dropbox finds the file by what the OCR and the edits say it is.
+- [ ] **OCR pulls everything useful.** Keep every field the OCR returns as document metadata (PO number, invoice number, payee, line items, tax, payment method, notes), not only the fields the filename uses; show them in the editor. Low-confidence pulls raise a review pop-up instead of filing silently.
+- [ ] **Documents tab overhaul, in the Actuals idiom.** The Documents tab gets the same treatment the Actuals tab got: one workspace with views, a row-level action set, bulk bar, keyboard shortcuts and drag-and-drop where it makes sense — and tools that line up with the Actuals tab (a receipt dropped on a charge there is the same object as a charge linked from a receipt here). Design pass on the Claude Design canvas first, then build.
+
 **Acceptance**
 
 - Changing a matched invoice to a contract leaves the bank charge in place and unlinked.
@@ -182,6 +189,13 @@ Same rules as the Actuals canvas: FPBudget's own light-theme tokens and Inter, H
 - No TIN stored in FPBudget; QuickBooks holds it, FPBudget holds the W-9 PDF.
 - Payee directory and Payee pages are admin and super-admin only.
 - `/crew` redirects to `/payees`; the per-project People tab stays as the project view and links to the Payee page.
+
+## Decisions (Steven, Nov 2, 2026 — after the first live test)
+
+- The Actuals screen is "definitely better, still a little clunky"; get the Actuals tab right first, then overhaul the Documents tab the same way. The two work hand in hand and need one interface language and tools that make sense together.
+- Dropbox renaming and re-foldering happens at Wrap only (for now), not on each edit; names carry what the OCR and the edits say.
+- Pull every useful OCR field into metadata; more data is better. Low confidence → review pop-up.
+- A possible duplicate needs a one-click Discard that moves the file to `_DUPLICATES/` in Dropbox and off the inbox.
 
 ## Sources
 
