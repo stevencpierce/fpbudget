@@ -389,6 +389,16 @@ input:focus, select:focus { border-color: var(--accent); }
 .section-name { font-weight: 600; font-size: .875rem; flex: 1; }
 .section-total-badge { font-size: .8rem; font-weight: 600; color: var(--text-muted); margin-left: auto; padding: .1rem .5rem; background: var(--bg-2); border-radius: var(--radius); border: 1px solid var(--border); }
 .line-table { border: 1px solid var(--border); }
+/* Tablet widths (iPad landscape is 1194px). The colgroup's fixed px
+   columns add up to ~1,250px, so under table-layout:fixed at 100% width the
+   22% Description column collapsed to ~30px: every label wrapped letter by
+   letter and the computed rows (fringes, workers' comp, fees) became tall
+   blank blocks. Give the table a floor and let the section scroll
+   sideways instead; desktop widths are unaffected. (Nov 2 2026, iPad.) */
+@media (max-width: 1300px) {
+  .section-block { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .section-block .line-table { min-width: 1440px; }
+}
 
 /* Resizable column handles. Each <th> in a budget table gets a 6px
    draggable strip on its right edge. Hover highlights it; dragging
