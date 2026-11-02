@@ -140,6 +140,15 @@ export interface LineSavePayload {
   override_estimated?: boolean;
 }
 
+/** A payee (person, loan-out or vendor) from GET /api/v1/payees — the
+ * owner a document can be tagged with at upload time (Documents Phase 2). */
+export interface ApiPayee {
+  id: number;
+  name: string;
+  kind: "person" | "loan_out" | "vendor";
+  on_project: boolean;
+}
+
 export interface RecentUpload {
   id: number;
   status: string;

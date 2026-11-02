@@ -94,6 +94,13 @@ def _ws_sections(c, pid):
 def test_01_two_departments_get_their_6500_lines_with_the_right_estimates():
     A.app.config["TESTING"] = True
     with A.app.app_context():
+        # Another test module may have booted app.py first (same process,
+        # its sqlite file, RUN_BOOT_TASKS unset) — make the pieces this
+        # module needs exist regardless of who imported app first.
+        from budget_calc import seed_fringes
+        db.create_all()
+        seed_fringes(db.session)
+        db.session.commit()
         u = User.query.filter_by(email="p4@test.tv").first()
         if not u:
             u = User(email="p4@test.tv", name="P4", role="super_admin")

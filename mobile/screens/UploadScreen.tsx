@@ -1,17 +1,25 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   FlatList,
+  Modal,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 
-import { ApiError, PickedFile, fetchRecent, uploadReceipt } from "../lib/api";
+import {
+  ApiError,
+  PickedFile,
+  fetchPayees,
+  fetchRecent,
+  uploadReceipt,
+} from "../lib/api";
 import { notify } from "../lib/confirm";
 import { colors, spacing } from "../lib/theme";
-import { ApiProject, RecentUpload, UploadResponse } from "../lib/types";
+import { ApiPayee, ApiProject, RecentUpload, UploadResponse } from "../lib/types";
 
 interface Props {
   project: ApiProject;
@@ -35,6 +43,10 @@ interface QueueItem {
   message?: string;
   vendor?: string | null;
   amount?: number | null;
+  // The payee chosen when the file was queued (Documents Phase 2) — a crew
+  // member photographing their own W-9 or invoice tags it on the spot.
+  payeeId?: number | null;
+  payeeName?: string | null;
 }
 
 let _nextKey = 1;
@@ -57,6 +69,21 @@ export default function UploadScreen({ project, onBack }: Props) {
   const [recent, setRecent] = useState<RecentUpload[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const uploadingRef = useRef(false);
+  // Optional Payee picker (Documents Phase 2): the roster from
+  // GET /api/v1/payees, this project's people first; the pick applies to
+  // every file queued after it until cleared.
+  const [payees, setPayees] = useState<ApiPayee[]>([]);
+  const [payee, setPayee] = useState<ApiPayee | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [payeeQuery, setPayeeQuery] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    fetchPayees(project.id)
+      .then((rows) => { if (alive) setPayees(rows); })
+      .catch(() => { /* picker stays empty; uploads still work */ });
+    return () => { alive = false; };
+  }, [project.id]);
 
   const loadRecent = useCallback(async () => {
     try {
@@ -82,7 +109,8 @@ export default function UploadScreen({ project, onBack }: Props) {
         (phase) =>
           patchItem(item.key, {
             state: phase === "processing" ? "processing" : "uploading",
-          })
+          }),
+        item.payeeId
       );
       const state: ItemState =
         res.status === "ok"
@@ -131,6 +159,8 @@ export default function UploadScreen({ project, onBack }: Props) {
       file: assetToFile(a),
       state: "queued",
       progress: 0,
+      payeeId: payee ? payee.id : null,
+      payeeName: payee ? payee.name : null,
     }));
     setQueue((q) => [...items, ...q]);
   };
@@ -204,6 +234,11 @@ export default function UploadScreen({ project, onBack }: Props) {
           <Text style={styles.fileName} numberOfLines={1}>
             {item.file.name}
           </Text>
+          {item.payeeName ? (
+            <Text style={styles.payeeTag} numberOfLines={1}>
+              👤 {item.payeeName}
+            </Text>
+          ) : null}
           <Text style={[styles.stateText, { color: stateColor[item.state] }]}>
             {stateText[item.state]}
           </Text>
@@ -248,6 +283,24 @@ export default function UploadScreen({ project, onBack }: Props) {
       </Text>
 
       {project.can_upload_docs ? (
+        <View>
+          <Pressable
+            style={({ pressed }) => [styles.payeeRow, pressed && styles.pressed]}
+            onPress={() => setPickerOpen(true)}
+            accessibilityLabel="Choose the payee these documents belong to"
+          >
+            <Text style={styles.payeeLabel}>Payee</Text>
+            <Text style={[styles.payeeValue, !payee && styles.payeeEmpty]} numberOfLines={1}>
+              {payee ? payee.name : "Optional — whose document is this?"}
+            </Text>
+            {payee ? (
+              <Pressable onPress={() => setPayee(null)} hitSlop={10}>
+                <Text style={styles.payeeClear}>✕</Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.payeeClear}>›</Text>
+            )}
+          </Pressable>
         <View style={styles.buttonRow}>
           <Pressable
             style={({ pressed }) => [styles.bigButton, pressed && styles.pressed]}
@@ -264,6 +317,7 @@ export default function UploadScreen({ project, onBack }: Props) {
             <Text style={styles.bigButtonText}>From library</Text>
           </Pressable>
         </View>
+        </View>
       ) : (
         <View style={styles.notReady}>
           <Text style={styles.notReadyText}>
@@ -272,6 +326,55 @@ export default function UploadScreen({ project, onBack }: Props) {
           </Text>
         </View>
       )}
+
+      <Modal visible={pickerOpen} animationType="slide" onRequestClose={() => setPickerOpen(false)}>
+        <View style={styles.pickerRoot}>
+          <View style={styles.header}>
+            <Pressable onPress={() => setPickerOpen(false)} hitSlop={12}>
+              <Text style={styles.back}>‹ Back</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.title}>Payee</Text>
+          <TextInput
+            style={styles.search}
+            placeholder="Search people and vendors"
+            placeholderTextColor={colors.textDim}
+            value={payeeQuery}
+            onChangeText={setPayeeQuery}
+            autoCorrect={false}
+          />
+          <FlatList
+            data={payees.filter(
+              (p) => !payeeQuery || p.name.toLowerCase().includes(payeeQuery.toLowerCase())
+            )}
+            keyExtractor={(p) => String(p.id)}
+            keyboardShouldPersistTaps="handled"
+            ListHeaderComponent={
+              <Pressable
+                style={({ pressed }) => [styles.payeeOption, pressed && styles.pressed]}
+                onPress={() => { setPayee(null); setPickerOpen(false); }}
+              >
+                <Text style={[styles.payeeOptionText, { color: colors.textDim }]}>No payee</Text>
+              </Pressable>
+            }
+            ListEmptyComponent={
+              <Text style={styles.emptyRecent}>No matching payee.</Text>
+            }
+            renderItem={({ item }) => (
+              <Pressable
+                style={({ pressed }) => [styles.payeeOption, pressed && styles.pressed]}
+                onPress={() => { setPayee(item); setPickerOpen(false); }}
+              >
+                <Text style={styles.payeeOptionText} numberOfLines={1}>{item.name}</Text>
+                <Text style={styles.payeeOptionMeta}>
+                  {item.kind === "vendor" ? "vendor" : item.kind === "loan_out" ? "loan-out" : ""}
+                  {item.on_project ? (item.kind === "person" ? "on this project" : " · on this project") : ""}
+                </Text>
+              </Pressable>
+            )}
+          />
+        </View>
+      </Modal>
 
       <FlatList
         data={recent}
@@ -343,6 +446,46 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   buttonRow: { flexDirection: "row", gap: spacing.sm },
+  payeeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    backgroundColor: colors.card,
+    borderColor: colors.cardBorder,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm + 2,
+    marginBottom: spacing.sm,
+  },
+  payeeLabel: {
+    color: colors.textDim,
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  payeeValue: { flex: 1, color: colors.text, fontSize: 15, fontWeight: "600" },
+  payeeEmpty: { color: colors.textDim, fontWeight: "400" },
+  payeeClear: { color: colors.textDim, fontSize: 16, paddingHorizontal: spacing.xs },
+  payeeTag: { color: colors.accent, fontSize: 12, marginTop: 2 },
+  pickerRoot: { flex: 1, backgroundColor: colors.bg, padding: spacing.md },
+  search: {
+    backgroundColor: colors.inputBg,
+    color: colors.text,
+    borderRadius: 10,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm + 2,
+    fontSize: 16,
+    marginBottom: spacing.sm,
+  },
+  payeeOption: {
+    paddingVertical: spacing.sm + 4,
+    borderBottomColor: colors.cardBorder,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  payeeOptionText: { color: colors.text, fontSize: 16, fontWeight: "600" },
+  payeeOptionMeta: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   bigButton: {
     flex: 1,
     backgroundColor: colors.accent,

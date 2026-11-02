@@ -92,6 +92,217 @@ def non_ledger_categories():
     return sorted(NON_LEDGER_CATEGORIES)
 
 
+# ── Document ownership rules (DOCUMENTS_HANDOFF Phase 2, 2026-11-01) ───────
+# Pure functions over plain objects (a DocUpload or a SimpleNamespace with
+# the same attribute names) so they unit-test without Flask or a DB. The
+# DB-touching callers in app.py read these, never re-derive them.
+
+TAX_FORM_KINDS = ('w9', 'w8ben', 'w8bene', 'w4', 'i9', 'other')
+TAX_FORM_KIND_LABELS = {'w9': 'W-9', 'w8ben': 'W-8BEN', 'w8bene': 'W-8BEN-E',
+                        'w4': 'W-4', 'i9': 'I-9', 'other': 'Other tax form'}
+# The kinds that satisfy "W-9 on file" (a W-8 is the foreign payee's W-9).
+W9_KINDS = frozenset({'w9', 'w8ben', 'w8bene'})
+
+# Sub-type string / filename → tax_form_kind. W-8BEN-E must be tested
+# before W-8BEN. Same table as alembic 0023's data step.
+_TAX_KIND_PATTERNS = (
+    ('w8bene', _re.compile(r"w-?8\s*ben-?\s*e(?![a-z])", _re.I)),
+    ('w8ben',  _re.compile(r"w-?8", _re.I)),
+    ('w9',     _re.compile(r"w-?9", _re.I)),
+    ('w4',     _re.compile(r"\bw-?4\b", _re.I)),
+    ('i9',     _re.compile(r"\bi-?9\b", _re.I)),
+)
+
+# Review reasons the Docs Inbox states in its "Why here" column, in the
+# order they are tested: the first that applies wins.
+REVIEW_TYPE_UNCLEAR      = 'type_unclear'
+REVIEW_CONFIRM_PAYEE     = 'confirm_payee'
+REVIEW_POSSIBLE_DUPLICATE = 'possible_duplicate'
+REVIEW_EXPIRY_MISSING    = 'expiry_missing'
+REVIEW_NO_LINE           = 'no_line'
+REVIEW_LOW_OCR           = 'low_ocr'
+REVIEW_REASON_LABELS = {
+    REVIEW_TYPE_UNCLEAR:       'Type unclear',
+    REVIEW_CONFIRM_PAYEE:      'Confirm payee',
+    REVIEW_POSSIBLE_DUPLICATE: 'Possible duplicate',
+    REVIEW_EXPIRY_MISSING:     'Expiry date missing',
+    REVIEW_NO_LINE:            'No line yet',
+    REVIEW_LOW_OCR:            'Low OCR confidence',
+}
+LOW_OCR_CONFIDENCE = 60.0        # DocUpload.confidence is 0-100
+COI_WARN_DAYS = 60
+
+
+def tax_form_kind_from_text(text):
+    """The tax_form_kind a sub-type string, OCR vendor or filename names
+    ('W-9', 'w9_lindqvist.pdf', 'W-8BEN-E'), else None."""
+    s = text or ''
+    for kind, rx in _TAX_KIND_PATTERNS:
+        if rx.search(s):
+            return kind
+    return None
+
+
+def doc_owner_id(doc):
+    """The owner of a document: owner_payee_id first, the alias column
+    crew_member_id for rows the 0023 data step has not touched."""
+    return (getattr(doc, 'owner_payee_id', None)
+            or getattr(doc, 'crew_member_id', None) or None)
+
+
+def doc_dup_key(doc):
+    """The GLOBAL duplicate identity of a person document, or None when the
+    document is not the kind that can duplicate.
+
+    Two documents are the same paperwork when they have the same owner and
+    the same kind: a tax form's tax_form_kind (two W-9s for one Payee are
+    the same form, whichever projects collected them), an employee/vendor
+    doc's sub-type (two driver's licences). A paperwork row with no owner
+    or no kind has no identity yet and is never flagged. Project is NOT part
+    of the key — that was the Phase 0 bug ("a W-9 collected again on
+    another project is not recognized")."""
+    owner = doc_owner_id(doc)
+    if not owner:
+        return None
+    cat = (getattr(doc, 'category', None) or '').strip().lower()
+    if cat == 'tax_form':
+        kind = (getattr(doc, 'tax_form_kind', None) or '').strip().lower()
+        if not kind:
+            kind = tax_form_kind_from_text(" ".join(str(x or '') for x in (
+                getattr(doc, 'doc_subtype', None), getattr(doc, 'filed_filename', None),
+                getattr(doc, 'original_filename', None)))) or ''
+        return (owner, f"tax_form:{kind}") if kind else None
+    if cat == 'employee_vendor_doc':
+        sub = (getattr(doc, 'doc_subtype', None) or getattr(doc, 'vendor', None) or '')
+        sub = sub.strip().lower()
+        return (owner, f"employee_vendor_doc:{sub}") if sub else None
+    return None
+
+
+def pick_dup_pair(a, b):
+    """Of two documents with the same doc_dup_key, which is the original
+    and which the newer copy: the lower id is the original."""
+    return (a, b) if (a.id or 0) <= (b.id or 0) else (b, a)
+
+
+def w9_date_from_doc(doc):
+    """The date a W-9 / W-8 document was received: received_on, else the
+    document date, else the upload day. None when the document is not a
+    W-9 / W-8 tax form."""
+    if (getattr(doc, 'category', None) or '').strip().lower() != 'tax_form':
+        return None
+    if (getattr(doc, 'tax_form_kind', None) or '').strip().lower() not in W9_KINDS:
+        return None
+    d = getattr(doc, 'received_on', None) or getattr(doc, 'doc_date', None)
+    if d is None:
+        up = getattr(doc, 'uploaded_at', None)
+        d = up.date() if (up is not None and hasattr(up, 'date')) else None
+    return d
+
+
+def w9_update_for(payee, doc):
+    """The ONE W-9 date rule: when a W-9 / W-8 document is saved with an
+    owner, the owner's w9_received_on / w9_doc_upload_id move to it if it
+    is NEWER (or the payee has none, or the payee already points at this
+    very document and its date changed). Returns {"w9_received_on",
+    "w9_doc_upload_id"} to write, or None when nothing changes. Pure."""
+    d = w9_date_from_doc(doc)
+    if d is None or doc_owner_id(doc) != getattr(payee, 'id', None):
+        return None
+    cur = getattr(payee, 'w9_received_on', None)
+    cur_doc = getattr(payee, 'w9_doc_upload_id', None)
+    update = {"w9_received_on": d, "w9_doc_upload_id": doc.id}
+    if cur is None:
+        return update                       # first W-9 for this payee
+    if cur_doc == doc.id:
+        return update if d != cur else None  # same form, date corrected
+    if d >= cur:
+        return update                       # newer (or same-day) form wins
+    return None                             # an older form never replaces a newer one
+
+
+def doc_review_reason(doc, txn=None, suggestion=None, today=None):
+    """Why a document sits in Needs review — ONE reason, derived server-side
+    so the inbox's "Why here" column says the same thing on every page.
+
+      type_unclear        no category, or status 'review' with no type
+      confirm_payee       a type that needs an owner (every paperwork type,
+                          plus invoice / payroll / timecard) with no owner
+                          and a crew-suggest match waiting to be confirmed
+      possible_duplicate  flagged is_duplicate but not yet resolved
+      expiry_missing      a COI (insurance) with no expires_on
+      no_line             an evidence doc whose charge has no budget line
+      low_ocr             OCR confidence under LOW_OCR_CONFIDENCE
+    Returns the reason key or None (nothing to review).
+
+    `txn` is the representative Transaction (or None); `suggestion` is the
+    crew-suggest result ({crew_member_id, confidence} or None)."""
+    cat = (getattr(doc, 'category', None) or '').strip().lower()
+    status = (getattr(doc, 'status', None) or '').lower()
+    if not cat:
+        return REVIEW_TYPE_UNCLEAR
+    dup_pending = bool(getattr(doc, 'is_duplicate', False)) and status != 'duplicate'
+    needs_owner = (doc_class(cat) == DOC_CLASS_PAPERWORK and cat != 'misc') \
+        or cat in ('invoice', 'payroll', 'timecard')
+    if needs_owner and not doc_owner_id(doc) and suggestion \
+            and suggestion.get('crew_member_id'):
+        return REVIEW_CONFIRM_PAYEE
+    if dup_pending:
+        return REVIEW_POSSIBLE_DUPLICATE
+    if cat == 'insurance' and not getattr(doc, 'expires_on', None):
+        return REVIEW_EXPIRY_MISSING
+    if doc_class(cat) == DOC_CLASS_EVIDENCE and txn is not None \
+            and not getattr(txn, 'budget_line_id', None) \
+            and not getattr(txn, 'account_code', None) \
+            and not getattr(txn, 'not_project_expense', False):
+        return REVIEW_NO_LINE
+    conf = getattr(doc, 'confidence', None)
+    try:
+        if conf is not None and float(conf) < LOW_OCR_CONFIDENCE and status == 'review':
+            return REVIEW_LOW_OCR
+    except (TypeError, ValueError):
+        pass
+    if status == 'review':
+        return REVIEW_TYPE_UNCLEAR
+    return None
+
+
+def doc_folder_segments(doc, payee_name=None, uploader_folder='unknown'):
+    """The sub-folders under a type folder a document files into — the one
+    path rule the analyzer layout, _doc_intended_path and _refile_doc share.
+
+      paperwork with an owner      [<Payee name>]            never the uploader
+      paperwork, no owner yet      [<uploader>]
+      evidence / commitment, AP    [<uploader>, <vendor>]    invoice, contract*,
+                                                            PO, insurance*
+      everything else              [<uploader>]
+    (* contract and insurance are paperwork, so with an owner they take the
+    Payee folder; only ownerless ones keep the legacy uploader/vendor shape.)
+    `payee_name` is the owner's display name, already filename-safe."""
+    cat = (getattr(doc, 'category', None) or 'misc').strip().lower()
+    klass = doc_class(cat)
+    if klass == DOC_CLASS_PAPERWORK and cat != 'misc' and doc_owner_id(doc) and payee_name:
+        return [payee_name]
+    if cat in ('invoice', 'contract', 'purchase_order', 'insurance'):
+        vendor = (getattr(doc, 'vendor', None) or '').strip() or 'Unknown_Vendor'
+        return [uploader_folder, vendor]
+    return [uploader_folder]
+
+
+def expiry_state(expires_on, today=None, warn_days=COI_WARN_DAYS):
+    """COI expiry: 'bad' when past, 'warn' within warn_days, 'ok' otherwise,
+    None when there is no date."""
+    if not expires_on:
+        return None
+    from datetime import date as _date
+    today = today or _date.today()
+    if expires_on < today:
+        return 'bad'
+    if (expires_on - today).days <= warn_days:
+        return 'warn'
+    return 'ok'
+
+
 # ── The one "counts as spend" predicate (ACTUALS_HANDOFF Phase 0) ─────────
 
 def counts_as_spend(split_parent_ids=None):
@@ -2880,26 +3091,36 @@ def w9_status_for(payee, non_card=None, threshold=None, fallback_date=None):
 
 
 def w9_fallback_dates(payee_ids=None):
-    """{crew_member_id: date} from tax_form documents whose sub-type or
-    filename says W-9 / W-8 — the pre-Phase-2 signal, read in ONE query.
-    Phase 2 (tax_form_kind + received_on) retires this."""
-    q = (db.session.query(DocUpload.crew_member_id, DocUpload.doc_date,
-                          DocUpload.uploaded_at, DocUpload.vendor,
+    """{crew_member_id: date} from tax_form documents: the Phase 2 signal
+    first (tax_form_kind in W9_KINDS, received_on), then the pre-Phase-2
+    signal (sub-type / OCR vendor / filename names a W-9 / W-8) for rows
+    the 0023 data step has not classified. ONE query. Newest wins."""
+    q = (db.session.query(DocUpload.owner_payee_id, DocUpload.crew_member_id,
+                          DocUpload.tax_form_kind, DocUpload.received_on,
+                          DocUpload.doc_date, DocUpload.uploaded_at,
+                          DocUpload.doc_subtype, DocUpload.vendor,
                           DocUpload.filed_filename, DocUpload.original_filename)
-         .filter(DocUpload.crew_member_id.isnot(None),
+         .filter(db.or_(DocUpload.owner_payee_id.isnot(None),
+                        DocUpload.crew_member_id.isnot(None)),
                  DocUpload.category == 'tax_form',
+                 DocUpload.is_duplicate == False,                  # noqa: E712 — pending dup ≠ on file
                  DocUpload.status.notin_(('deleted', 'duplicate'))))
     if payee_ids is not None:
         ids = list(payee_ids)
         if not ids:
             return {}
-        q = q.filter(DocUpload.crew_member_id.in_(ids))
-    hint = _re.compile(r'w-?[89]', _re.I)
+        q = q.filter(db.or_(DocUpload.owner_payee_id.in_(ids),
+                            DocUpload.crew_member_id.in_(ids)))
     out = {}
-    for cid, doc_date, uploaded_at, vendor, f1, f2 in q.all():
-        if not hint.search(" ".join(str(x or '') for x in (vendor, f1, f2))):
+    for (owner, alias, kind, received_on, doc_date, uploaded_at,
+         sub, vendor, f1, f2) in q.all():
+        cid = owner or alias
+        k = (kind or '').lower()
+        if not k:
+            k = tax_form_kind_from_text(" ".join(str(x or '') for x in (sub, vendor, f1, f2))) or ''
+        if k not in W9_KINDS:
             continue
-        d = doc_date or (uploaded_at.date() if uploaded_at else None)
+        d = received_on or doc_date or (uploaded_at.date() if uploaded_at else None)
         if d and (cid not in out or d > out[cid]):
             out[cid] = d
     return out

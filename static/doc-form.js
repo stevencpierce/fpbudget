@@ -18,37 +18,63 @@
   'use strict';
   const $ = id => document.getElementById(id);
 
-  // Per-type field spec. vendor = label for the top field; vendorPh =
-  // placeholder; amount = show Amount + Card last-4; date = date label;
-  // docnum = Document-# label (null hides it); crew/location = show the
-  // Person-Vendor / Location pickers.
+  // Per-type field spec. vendor = label for the top field (null hides the
+  // vendor row entirely); vendorPh = placeholder; amount = show Amount +
+  // Card last-4; date = date label; docnum = Document-# label (null hides
+  // it); location = show the Location picker; subtype = the controlled
+  // sub-type dropdown (employee/vendor docs); taxform = tax-form kind +
+  // received date; expires = the COI expiry date.
+  //
+  // Payee (owner) is shown for EVERY type since DOCUMENTS_HANDOFF Phase 2:
+  // paperwork lives with its payee, evidence names its payee for
+  // attribution. There is NO tax-ID field anywhere — QuickBooks holds the
+  // TIN; FPBudget holds the W-9 PDF, its kind and the date received.
   const FIELD_SPEC = {
-    receipt:        { vendor: 'Vendor',       amount: true,  date: 'Receipt Date',    docnum: null },
-    invoice:        { vendor: 'Vendor',       amount: true,  date: 'Invoice Date',    docnum: 'Invoice #', crew: true,  location: false },
-    estimate:       { vendor: 'Vendor',       amount: true,  date: 'Estimate Date',   docnum: 'Estimate #',  crew: false, location: false },
-    quote:          { vendor: 'Vendor',       amount: true,  date: 'Quote Date',      docnum: 'Quote #',     crew: false, location: false },
-    purchase_order: { vendor: 'Vendor',       amount: true,  date: 'PO Date',         docnum: 'PO #',        crew: false, location: false },
-    contract:       { vendor: 'Counterparty', amount: false, date: 'Effective Date',  docnum: 'Contract #',  crew: true,  location: false },
-    insurance:      { vendor: 'Insured / Carrier', amount: false, date: 'Expiration Date', docnum: 'Policy #', crew: false, location: true },
-    tax_form:       { vendor: 'Entity / Filer', amount: false, date: 'Tax Year / Date', docnum: 'Tax ID (EIN/SSN)', crew: true, location: false },
-    payroll:        { vendor: 'Vendor / Employee', amount: true, date: 'Pay Date',    docnum: 'Check / Ref #', crew: true, location: false },
-    timecard:       { vendor: 'Employee',     amount: false, date: 'Week Ending',     docnum: 'Ref #',       crew: true,  location: false },
-    legal:          { vendor: 'Counterparty', amount: false, date: 'Doc Date',        docnum: 'Reference #', crew: false, location: false },
-    release:        { vendor: 'Talent / Location', amount: false, date: 'Signed Date', docnum: null,         crew: true,  location: true },
-    employee_vendor_doc: { vendor: 'Document Type', vendorPh: 'e.g. Direct Deposit, W-9, ID, DTR…', amount: false, date: 'Doc Date', docnum: 'Doc # / ID', crew: true, location: false },
-    misc:           { vendor: 'Vendor',       amount: true,  date: 'Doc Date',        docnum: null,          crew: false, location: false },
+    receipt:        { vendor: 'Vendor',       amount: true,  date: 'Receipt Date',    docnum: null,          location: false, payeeHint: 'Optional for receipts' },
+    invoice:        { vendor: 'Vendor',       amount: true,  date: 'Invoice Date',    docnum: 'Invoice #',   location: false },
+    estimate:       { vendor: 'Vendor',       amount: true,  date: 'Estimate Date',   docnum: 'Estimate #',  location: false },
+    quote:          { vendor: 'Vendor',       amount: true,  date: 'Quote Date',      docnum: 'Quote #',     location: false },
+    purchase_order: { vendor: 'Vendor',       amount: true,  date: 'PO Date',         docnum: 'PO #',        location: false },
+    contract:       { vendor: 'Counterparty', amount: false, date: 'Effective Date',  docnum: 'Contract #',  location: false },
+    insurance:      { vendor: 'Insured / Carrier', amount: false, date: 'Issued Date', docnum: 'Policy #',  location: true, expires: true },
+    tax_form:       { vendor: null,           amount: false, date: 'Signed Date',     docnum: null,          location: false, taxform: true },
+    payroll:        { vendor: 'Vendor / Employee', amount: true, date: 'Pay Date',    docnum: 'Check / Ref #', location: false },
+    timecard:       { vendor: 'Employee',     amount: false, date: 'Week Ending',     docnum: 'Ref #',       location: false },
+    legal:          { vendor: 'Counterparty', amount: false, date: 'Doc Date',        docnum: 'Reference #', location: false },
+    release:        { vendor: 'Talent / Location', amount: false, date: 'Signed Date', docnum: null,         location: true },
+    employee_vendor_doc: { vendor: null,      amount: false, date: 'Doc Date',        docnum: 'Doc # / ID',  location: false, subtype: true },
+    misc:           { vendor: 'Vendor',       amount: true,  date: 'Doc Date',        docnum: null,          location: false },
   };
+  // Every type shows the Payee picker; the spec no longer needs a flag.
+  Object.keys(FIELD_SPEC).forEach(k => { FIELD_SPEC[k].crew = true; });
 
-  // The "vendor" value a save should persist: the controlled Document-Type
-  // dropdown for supporting docs, the free-text input otherwise.
+  // The "vendor" value a save should persist: the free-text input. The
+  // employee/vendor sub-type is a SEPARATE field (doc_subtype) since Phase
+  // 2 — it never rides in `vendor` again (that made "W-9" a vendor name).
   function vendorValue() {
     const cat = (($('docDetailCategory') || {}).value || '').toLowerCase();
-    if (cat === 'employee_vendor_doc') {
-      const s = $('docDetailDocSubtype');
-      return s ? (s.value || '') : '';
-    }
+    if (cat === 'employee_vendor_doc' || cat === 'tax_form') return '';
     const i = $('docDetailVendor');
     return i ? (i.value || '') : '';
+  }
+  // The employee/vendor sub-type (doc_subtype) a save should persist.
+  function subtypeValue() {
+    const cat = (($('docDetailCategory') || {}).value || '').toLowerCase();
+    if (cat !== 'employee_vendor_doc') return '';
+    const s = $('docDetailDocSubtype');
+    return s ? (s.value || '') : '';
+  }
+  // The paperwork fields a save should persist alongside the rest.
+  function paperworkValues() {
+    const cat = (($('docDetailCategory') || {}).value || '').toLowerCase();
+    const g = id => { const el = $(id); return el ? (el.value || '') : ''; };
+    return {
+      doc_subtype:   subtypeValue(),
+      tax_form_kind: cat === 'tax_form' ? g('docDetailTaxKind') : '',
+      received_on:   cat === 'tax_form' ? g('docDetailReceivedOn') : '',
+      expires_on:    cat === 'insurance' ? g('docDetailExpiresOn') : '',
+      owner_payee_id: g('docDetailCrewId') || null,
+    };
   }
 
   // Select the matching dropdown option for an existing supporting-doc
@@ -83,13 +109,16 @@
     if (vL) vL.textContent = spec.vendor || 'Vendor';
     const vIn = $('docDetailVendor');
     if (vIn) vIn.placeholder = spec.vendorPh || 'Vendor name…';
-    const subSel = $('docDetailDocSubtype');
-    const isEvd = (type || '').toLowerCase() === 'employee_vendor_doc';
-    if (subSel && vIn) {
-      subSel.style.display = isEvd ? '' : 'none';
-      vIn.style.display    = isEvd ? 'none' : '';
-      if (isEvd && !subSel.value && vIn.value) setSubtype(vIn.value);
-    }
+    const vendorField = $('docDetailVendorField');
+    if (vendorField) vendorField.style.display = spec.vendor ? '' : 'none';
+    const subField = $('docDetailSubtypeField');
+    if (subField) subField.style.display = spec.subtype ? '' : 'none';
+    const taxField = $('docDetailTaxFormField');
+    if (taxField) taxField.style.display = spec.taxform ? 'grid' : 'none';
+    const expField = $('docDetailExpiresField');
+    if (expField) expField.style.display = spec.expires ? '' : 'none';
+    const payeeHint = $('docDetailPayeeHint');
+    if (payeeHint) payeeHint.textContent = spec.payeeHint || '';
     const dL = $('docDetailDocDateLabel');
     if (dL) dL.textContent = spec.date || 'Doc Date';
     const amtField = $('docDetailAmountField');
@@ -144,17 +173,20 @@
         const esc = t => String(t).replace(/</g, '&lt;');
         const opt = Array.from(sel.options).find(o => o.value === String(s.crew_member_id));
         if (!opt) return;
+        const pct = Math.round((s.confidence || 0) * 100) + '%';
         if (s.confidence >= 0.9) {
           sel.value = String(s.crew_member_id);
-          box.innerHTML = '👤 Auto-matched <b>' + esc(s.name) + '</b> from the '
-            + esc(s.matched_on || 'document') + (s.on_project ? ' (on this project)' : '')
+          box.innerHTML = '<span class="doc-payee-ghost" title="Matched from the ' + esc(s.matched_on || 'document') + '">'
+            + esc(s.name) + ' <span class="pct">' + pct + '</span></span> pre-selected'
+            + (s.on_project ? ' (on this project)' : '')
             + ' — Save to confirm · <a href="#" style="color:#e0a13a">clear</a>';
           box.querySelector('a').onclick = e => { e.preventDefault(); sel.value = ''; box.style.display = 'none'; };
           if (hooks.onAutoApplied) hooks.onAutoApplied(s);
         } else {
-          box.innerHTML = '👤 Looks like <b>' + esc(s.name) + '</b>'
-            + (s.on_project ? ' (on this project)' : '')
-            + ' — <a href="#" style="color:#5fd0a0">attach</a>';
+          // Ghost chip (DocsInbox artboard): dashed outline, click to confirm.
+          box.innerHTML = 'Looks like <a href="#" class="doc-payee-ghost" title="Click to assign">'
+            + esc(s.name) + ' <span class="pct">' + pct + '</span></a>'
+            + (s.on_project ? ' (on this project)' : '');
           box.querySelector('a').onclick = e => { e.preventDefault(); sel.value = String(s.crew_member_id); box.style.display = 'none'; };
         }
         box.style.color = 'var(--text-muted)';
@@ -208,8 +240,18 @@
     }
   }
 
+  // Fill the paperwork fields from a status/update payload (both editors).
+  function setPaperwork(d) {
+    d = d || {};
+    const sv = (id, v) => { const el = $(id); if (el) el.value = (v == null ? '' : v); };
+    setSubtype(d.doc_subtype || '');
+    sv('docDetailTaxKind', d.tax_form_kind || '');
+    sv('docDetailReceivedOn', d.received_on || '');
+    sv('docDetailExpiresOn', d.expires_on || '');
+  }
+
   window.DocForm = {
-    FIELD_SPEC, applyTypeUI, vendorValue, setSubtype,
+    FIELD_SPEC, applyTypeUI, vendorValue, subtypeValue, paperworkValues, setPaperwork, setSubtype,
     crewSuggestLoad, resetSuggest,
     newCrewShow, newCrewHide, newCrewSave,
   };

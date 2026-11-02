@@ -223,7 +223,7 @@ def _crew_delete_blockers(cid):
     from models import DocUpload, Timecard, ScheduleDay, ProjectCrewMember
     checks = {
         "document":           DocUpload.query.filter(
-                                  DocUpload.crew_member_id == cid,
+                                  db.or_(DocUpload.owner_payee_id == cid, DocUpload.crew_member_id == cid),
                                   DocUpload.status != 'deleted').count(),
         "timecard":           Timecard.query.filter_by(crew_member_id=cid).count(),
         "schedule day":       ScheduleDay.query.filter_by(crew_member_id=cid).count(),
@@ -363,7 +363,7 @@ def crew_docs_json(cid):
     from models import DocUpload
     cm = CrewMember.query.get_or_404(cid)
     docs = (DocUpload.query
-            .filter(DocUpload.crew_member_id == cid,
+            .filter(db.or_(DocUpload.owner_payee_id == cid, DocUpload.crew_member_id == cid),
                     DocUpload.status.notin_(('deleted', 'duplicate')))
             .all())
     proj_names = {p.id: p.name for p in ProjectSheet.query.filter(
@@ -378,7 +378,11 @@ def crew_docs_json(cid):
             "id": d.id,
             "name": d.filed_filename or d.original_filename or f"Doc #{d.id}",
             "category": d.category or '',
-            "project": proj_names.get(d.project_id, ''),
+            "tax_form_kind": d.tax_form_kind,
+            "doc_subtype": d.doc_subtype,
+            "received_on": d.received_on.isoformat() if d.received_on else '',
+            "expires_on": d.expires_on.isoformat() if d.expires_on else '',
+            "project": proj_names.get(d.project_id, '') if d.project_id else '',
             "project_id": d.project_id,
             "amount": float(d.amount) if d.amount is not None else None,
             "date": d.doc_date.isoformat() if d.doc_date else '',
@@ -404,7 +408,7 @@ def crew_docs_sync(cid):
     from app import _copy_doc_to_crew_folder
     CrewMember.query.get_or_404(cid)
     docs = (DocUpload.query
-            .filter(DocUpload.crew_member_id == cid,
+            .filter(db.or_(DocUpload.owner_payee_id == cid, DocUpload.crew_member_id == cid),
                     DocUpload.crew_dbx_path.is_(None),
                     DocUpload.status.notin_(('deleted', 'duplicate')))
             .all())

@@ -7,6 +7,7 @@ import { Platform } from "react-native";
 
 import { DEFAULT_SERVER } from "./config";
 import {
+  ApiPayee,
   BudgetInfo,
   BudgetSummary,
   LineSavePayload,
@@ -149,6 +150,14 @@ export async function fetchRecent(projectId: number): Promise<RecentUpload[]> {
   return out.uploads;
 }
 
+/** The payee roster for the upload screen's picker: active people and
+ * vendors, this project's people first. */
+export async function fetchPayees(projectId?: number): Promise<ApiPayee[]> {
+  const q = projectId ? `?project_id=${projectId}` : "";
+  const out = await request<{ payees: ApiPayee[] }>(`/api/v1/payees${q}`);
+  return out.payees;
+}
+
 export async function fetchBudgets(projectId: number): Promise<BudgetInfo[]> {
   const out = await request<{ budgets: BudgetInfo[] }>(
     `/api/v1/projects/${projectId}/budgets`
@@ -202,7 +211,8 @@ export function uploadReceipt(
   projectId: number,
   file: PickedFile,
   onProgress: (fraction: number) => void,
-  onPhase: (phase: "uploading" | "processing") => void
+  onPhase: (phase: "uploading" | "processing") => void,
+  payeeId?: number | null
 ): Promise<UploadResponse> {
   return new Promise(async (resolve, reject) => {
     const server = await getServer();
@@ -243,6 +253,10 @@ export function uploadReceipt(
       reject(new ApiError("Timed out — the server took too long.", 0));
 
     const form = new FormData();
+    // Optional owner (Documents Phase 2): the server records owner_payee_id
+    // and runs the paperwork rules (W-9 date, per-payee duplicate, Crew
+    // Database copy) at upload time.
+    if (payeeId) form.append("payee_id", String(payeeId));
     if (Platform.OS === "web") {
       // Browser: the picker's uri is a blob:/data: URL — materialize it
       // into a real Blob (the RN {uri,name,type} shape only works native).

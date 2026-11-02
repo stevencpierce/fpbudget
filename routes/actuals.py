@@ -3328,7 +3328,7 @@ def actuals_upload_receipt_to_transaction(pid, tid):
         except Exception:
             doc_date = None
         doc_number = (vr.get("invoice_number") or vr.get("purchase_order_number")
-                      or vr.get("tax_id") or vr.get("ein") or None)
+                      or None)   # never a tax id (no TIN in FPBudget)
         if doc_number:
             doc_number = str(doc_number)[:100]
     from fp_analyzer import extract_card_last4 as _extract_card4

@@ -74,6 +74,47 @@
              background:var(--bg-input); border:1px solid var(--border); color:var(--text-muted);
              text-decoration:none; cursor:pointer; }
   .inbx-dl:hover { border-color:var(--text-muted); color:var(--text); }
+  /* Payee column (Phase 2, DocsInbox artboard): a solid chip when assigned,
+     a dashed GHOST chip for the crew-suggest match (click to confirm). */
+  .inbx-payee { flex:0 0 190px; min-width:0; display:flex; align-items:center; }
+  .inbx-payee-chip { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; padding:3px 9px; border-radius:12px;
+                     background:var(--bg-input); color:var(--text); font-weight:500; max-width:100%;
+                     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .inbx-payee-ghost { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; padding:3px 9px; border-radius:12px;
+                      border:1px dashed var(--text-muted); color:var(--text); background:transparent; cursor:pointer;
+                      max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .inbx-payee-ghost:hover { border-style:solid; border-color:#3d5da8; background:#131b2e; }
+  .inbx-payee-ghost .pct { font-size:10.5px; color:var(--text-muted); }
+  .inbx-payee-na { font-size:11.5px; color:var(--text-muted); }
+  /* Why here (server-side review reason): red = needs you, amber = check. */
+  .inbx-why { flex:0 0 150px; display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:500; white-space:nowrap; }
+  .inbx-why::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--text-muted); flex:0 0 auto; }
+  .inbx-why.red { color:#e88; } .inbx-why.red::before { background:#dc2626; }
+  .inbx-why.amber { color:#e0b84a; } .inbx-why.amber::before { background:#d97706; }
+  /* Grouped type picker: Evidence / Paperwork / Commitment with a one-line
+     description per group (the groups come from actuals.doc_class). */
+  #inbxTypeMenu { min-width:560px; max-height:none; padding:0; display:none; grid-template-columns:repeat(3, minmax(0,1fr)); }
+  #inbxTypeMenu.open { display:grid; }
+  .inbx-tg { padding:12px 14px; border-right:1px solid var(--border); }
+  .inbx-tg:last-child { border-right:none; }
+  .inbx-tg-h { font-size:10.5px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; margin-bottom:2px; }
+  .inbx-tg-h.evidence { color:#8fb4ff; } .inbx-tg-h.paperwork { color:#5fd0a0; } .inbx-tg-h.commitment { color:#e0a060; }
+  .inbx-tg-b { font-size:11px; color:var(--text-muted); margin-bottom:8px; }
+  #inbxTypeMenu .inbx-tg button { display:block; width:100%; text-align:left; font-size:12.5px; padding:6px 8px;
+                                  background:none; border:none; color:var(--text); cursor:pointer; border-radius:5px; }
+  #inbxTypeMenu .inbx-tg button:hover { background:var(--bg-input); }
+  #inbxPayeeMenu { display:none; position:absolute; bottom:100%; left:0; margin-bottom:6px; width:300px;
+                   background:var(--bg-card); border:1px solid var(--border); border-radius:8px;
+                   box-shadow:0 6px 20px rgba(0,0,0,.5); padding:8px; }
+  #inbxPayeeMenu input { width:100%; box-sizing:border-box; margin-bottom:6px; }
+  #inbxPayeeList { max-height:260px; overflow:auto; }
+  #inbxPayeeList button { display:block; width:100%; text-align:left; font-size:12.5px; padding:6px 10px;
+                          background:none; border:none; color:var(--text); cursor:pointer; border-radius:5px; }
+  #inbxPayeeList button:hover { background:var(--bg-input); }
+  #inbxPayeeList button .k { font-size:10.5px; color:var(--text-muted); margin-left:6px; }
+  /* Trash view rows */
+  .inbx-row.trashed { opacity:.85; }
+  .inbx-restore { font-size:12px; padding:5px 11px; border-radius:6px; background:#1a2540; border:1px solid #2d4070; color:#8fb4ff; cursor:pointer; white-space:nowrap; }
   #inbxSentinel { height:1px; }
   #inbxEmpty { padding:40px 12px; text-align:center; color:var(--text-muted); font-size:14px; display:none; }
   /* Sticky bulk bar */
@@ -138,7 +179,7 @@
       <span class="inbx-kbd">j</span>/<span class="inbx-kbd">k</span> move &nbsp;·&nbsp;
       <span class="inbx-kbd">x</span> select<br>
       <span class="inbx-kbd">Enter</span> open &nbsp;·&nbsp;
-      <span class="inbx-kbd">m</span> confirm match<br>
+      <span class="inbx-kbd">m</span> confirm match / code<br>
       <span class="inbx-kbd">/</span> search &nbsp;·&nbsp;
       <span class="inbx-kbd">Esc</span> clear selection
     </span>
@@ -160,8 +201,8 @@
 <div id="inbxFacets">
   <div class="inbx-facet-grp"><label>Type</label>
     <select id="inbxFacetCat" class="inbx-fld"><option value="">All types</option></select></div>
-  <div class="inbx-facet-grp"><label>Person</label>
-    <select id="inbxFacetPerson" class="inbx-fld"><option value="">Anyone</option></select></div>
+  <div class="inbx-facet-grp"><label>Payee</label>
+    <select id="inbxFacetPerson" class="inbx-fld"><option value="">All payees</option></select></div>
   <div class="inbx-facet-grp"><label>Date</label>
     <input type="date" id="inbxFacetDateMin" class="inbx-fld">
     <span style="color:var(--text-muted)">–</span>
@@ -184,9 +225,28 @@
   <button type="button" class="inbx-bulk-btn go" id="inbxBulkMatch">✓ Confirm matches</button>
   <div class="inbx-bulk-wrap">
     <button type="button" class="inbx-bulk-btn" id="inbxBulkType">🏷 Set type ▾</button>
-    <div id="inbxTypeMenu"></div>
+    {# Grouped by class — Evidence / Paperwork / Commitment — with what each
+       class does in one line. Groups come from actuals.doc_class (served
+       as type_groups by docs_inbox_page); nothing is hand-copied here. #}
+    <div id="inbxTypeMenu" role="listbox" aria-label="Document type">
+      {% for gk in ('evidence', 'paperwork', 'commitment') %}{% set g = type_groups[gk] %}
+      <div class="inbx-tg">
+        <div class="inbx-tg-h {{ gk }}">{{ g.label }}</div>
+        <div class="inbx-tg-b">{{ g.blurb }}</div>
+        {% for t in g.types %}<button type="button" data-cat="{{ t.key }}">{{ t.label }}</button>{% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="inbx-bulk-wrap">
+    <button type="button" class="inbx-bulk-btn" id="inbxBulkPayee">👤 Assign payee ▾</button>
+    <div id="inbxPayeeMenu">
+      <input type="search" id="inbxPayeeSearch" class="inbx-fld" placeholder="Search people &amp; vendors…" autocomplete="off">
+      <div id="inbxPayeeList"></div>
+    </div>
   </div>
   <button type="button" class="inbx-bulk-btn danger" id="inbxBulkNotProject">🚫 Not project</button>
+  <button type="button" class="inbx-bulk-btn danger" id="inbxBulkTrash">🗑 Trash</button>
   <span style="flex:1"></span>
   <button type="button" class="inbx-bulk-btn" id="inbxBulkClear">✕ Clear</button>
 </div>
@@ -234,8 +294,14 @@
     ['all',           'All'],
     // Confirmed duplicates: kept AVAILABLE but BURIED (user 2026-07) — their
     // own muted chip at the end, EXCLUDED from 'All' and from prev/next nav.
-    ['duplicate',     '🔁 Duplicates']
+    ['duplicate',     '🔁 Duplicates'],
+    // Trash (Phase 2): soft-deleted documents, restorable. Loaded from
+    // /docs/<pid>/trash when the chip is picked.
+    ['trash',         '🗑 Trash']
   ];
+  var WHY_LEVEL = { type_unclear: 'red', confirm_payee: 'red', expiry_missing: 'red', no_line: 'red',
+                    possible_duplicate: 'amber', low_ocr: 'amber' };
+  var PAYEES = [];        // roster from inbox.json (id, name, kind, on_project)
 
   var CHUNK = 100;
 
@@ -264,6 +330,7 @@
 
   // ── state ──────────────────────────────────────────────────────────────────
   var ALL = [];           // all docs from inbox.json
+  var TRASH = [];         // rows from /docs/<pid>/trash (Trash view)
   var COUNTS = {};        // counts{}
   var FACETS = {};        // facets{}
   var filtered = [];      // current filtered list
@@ -282,6 +349,7 @@
         ALL = d.docs || [];
         COUNTS = d.counts || {};
         FACETS = d.facets || {};
+        PAYEES = d.payees || [];
         buildChips();
         buildFacetOptions();
         if (afterFn) afterFn();
@@ -301,7 +369,7 @@
       if (key === 'duplicate' && !n) return;
       var chip = document.createElement('div');
       chip.className = 'inbx-chip' + (UI.state === key ? ' active' : '')
-        + (key === 'duplicate' ? ' dup-chip' : '');
+        + (key === 'duplicate' || key === 'trash' ? ' dup-chip' : '');
       chip.dataset.state = key;
       chip.innerHTML = esc(label) + ' <span class="cnt">' + n + '</span>';
       chip.addEventListener('click', function () {
@@ -351,26 +419,51 @@
     if (FACETS.doc_date_min) { dMin.min = FACETS.doc_date_min; dMax.min = FACETS.doc_date_min; }
     if (FACETS.doc_date_max) { dMin.max = FACETS.doc_date_max; dMax.max = FACETS.doc_date_max; }
 
-    // Bulk "set type" menu.
-    var menu = $('inbxTypeMenu'); menu.innerHTML = '';
-    CATS.forEach(function (c) {
-      var b = document.createElement('button');
-      b.type = 'button'; b.textContent = c[1]; b.dataset.cat = c[0];
-      b.addEventListener('click', function () { menu.style.display = 'none'; bulkSetType(c[0]); });
-      menu.appendChild(b);
-    });
+    // Bulk "set type" menu is server-rendered (grouped by class); wire once.
+    var menu = $('inbxTypeMenu');
+    if (!menu.dataset.wired) {
+      menu.dataset.wired = '1';
+      menu.querySelectorAll('button[data-cat]').forEach(function (b) {
+        b.addEventListener('click', function () { menu.classList.remove('open'); bulkSetType(b.dataset.cat); });
+      });
+    }
+    buildPayeeMenu('');
   }
+
+  // Bulk "assign payee" picker: the roster from inbox.json, project people
+  // first, filtered as you type. (Phase 2.)
+  function buildPayeeMenu(q) {
+    var list = $('inbxPayeeList'); if (!list) return;
+    list.innerHTML = '';
+    q = (q || '').toLowerCase();
+    var rows = PAYEES.filter(function (p) { return !q || (p.name || '').toLowerCase().indexOf(q) !== -1; });
+    var clear = document.createElement('button');
+    clear.type = 'button'; clear.textContent = '— clear payee —'; clear.style.color = 'var(--text-muted)';
+    clear.addEventListener('click', function () { closePayeeMenu(); bulkAssignPayee(null, 'cleared'); });
+    list.appendChild(clear);
+    rows.slice(0, 200).forEach(function (p) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.innerHTML = esc(p.name) + '<span class="k">' + esc(p.kind === 'vendor' ? 'vendor' : p.kind === 'loan_out' ? 'loan-out' : '') + (p.on_project ? ' · on this project' : '') + '</span>';
+      b.addEventListener('click', function () { closePayeeMenu(); bulkAssignPayee(p.id, p.name); });
+      list.appendChild(b);
+    });
+    if (!rows.length) list.innerHTML += '<div style="font-size:12px;color:var(--text-muted);padding:6px 10px">No match.</div>';
+  }
+  function closePayeeMenu() { $('inbxPayeeMenu').style.display = 'none'; }
 
   // ── filtering ──────────────────────────────────────────────────────────────
   function matchesSearch(doc, q) {
     if (!q) return true;
-    var hay = [doc.filename, doc.vendor, doc.person_name,
+    var hay = [doc.filename, doc.vendor, doc.person_name, doc.payee_name,
+               (doc.payee_suggestion && doc.payee_suggestion.name) || '',
                (doc.amount != null ? String(doc.amount) : ''),
                money(doc.amount)].join(' ').toLowerCase();
     return hay.indexOf(q) !== -1;
   }
 
   function applyFilters() {
+    if (UI.state === 'trash') { renderTrash(); return; }
     var q = ($('inbxSearch').value || '').trim().toLowerCase();
     UI.search = $('inbxSearch').value || '';
     var cat = $('inbxFacetCat').value;
@@ -469,6 +562,23 @@
       '<div class="inbx-meta">' + (metaBits.join(' · ') || '—') + '</div>';
     row.appendChild(main);
 
+    // Payee column (Phase 2): assigned chip, ghost suggestion, or n/a.
+    var pay = document.createElement('div');
+    pay.className = 'inbx-payee';
+    fillPayee(pay, doc);
+    row.appendChild(pay);
+
+    // Why here (server-side review reason).
+    var why = document.createElement('div');
+    if (doc.why_here) {
+      why.className = 'inbx-why ' + (WHY_LEVEL[doc.why_here] || '');
+      why.textContent = doc.why_label || doc.why_here;
+      why.title = 'Why this document needs attention';
+    } else {
+      why.className = 'inbx-why'; why.style.visibility = 'hidden';
+    }
+    row.appendChild(why);
+
     // state-specific zone
     var zone = document.createElement('div');
     zone.className = 'inbx-zone';
@@ -556,6 +666,56 @@
     }
   }
 
+  function fillPayee(cell, doc) {
+    cell.innerHTML = '';
+    if (doc.payee_name) {
+      var chip = document.createElement('span');
+      chip.className = 'inbx-payee-chip'; chip.textContent = doc.payee_name; chip.title = 'Payee: ' + doc.payee_name;
+      cell.appendChild(chip);
+      return;
+    }
+    var s = doc.payee_suggestion;
+    if (s && s.crew_member_id) {
+      var g = document.createElement('button');
+      g.type = 'button'; g.className = 'inbx-payee-ghost';
+      g.innerHTML = esc(s.name) + ' <span class="pct">' + Math.round((s.confidence || 0) * 100) + '%</span>';
+      g.title = 'Looks like ' + s.name + ' (matched from the ' + (s.matched_on || 'document') + ') — click to confirm';
+      g.addEventListener('click', function (e) { e.stopPropagation(); confirmPayee(doc.id, s.crew_member_id, s.name); });
+      cell.appendChild(g);
+      return;
+    }
+    var na = document.createElement('span');
+    na.className = 'inbx-payee-na';
+    na.textContent = (doc.category === 'receipt') ? 'Not needed for receipts' : '—';
+    cell.appendChild(na);
+  }
+
+  // Confirm a ghost chip: ONE row, same batch action as the bulk bar, then
+  // patch the row in place (chip solidifies, Why-here clears).
+  function confirmPayee(id, payeeId, name) {
+    postBatch('assign_payee', [id], null, payeeId).then(function (res) {
+      if (res.ok && res.d && res.d.ok && res.d.done) {
+        var doc = ALL.filter(function (x) { return x.id === id; })[0];
+        if (doc) {
+          doc.payee_name = name; doc.person_name = name; doc.owner_payee_id = payeeId; doc.crew_member_id = payeeId;
+          doc.payee_suggestion = null;
+          if (doc.why_here === 'confirm_payee') { doc.why_here = null; doc.why_label = null; }
+        }
+        var el = rowEl(id);
+        if (el && doc) {
+          el.classList.add('flash-ok');
+          var pc = el.querySelector('.inbx-payee'); if (pc) fillPayee(pc, doc);
+          var wc = el.querySelector('.inbx-why');
+          if (wc) { if (doc.why_here) { wc.className = 'inbx-why ' + (WHY_LEVEL[doc.why_here] || ''); wc.textContent = doc.why_label || doc.why_here; } else { wc.style.visibility = 'hidden'; } }
+          setTimeout(function () { if (el) el.classList.remove('flash-ok'); }, 900);
+        }
+        toast('Assigned to ' + name, 'ok');
+      } else {
+        toast((res.d && (res.d.error || (res.d.skipped && res.d.skipped[0] && res.d.skipped[0].reason))) || 'Could not assign payee.', 'err');
+      }
+    }).catch(function () { toast('Network error assigning payee.', 'err'); });
+  }
+
   function rowEl(id) { return $('inbxList').querySelector('.inbx-row[data-id="' + id + '"]'); }
 
   // ── selection + bulk bar ───────────────────────────────────────────────────
@@ -577,9 +737,10 @@
   }
 
   // ── actions (batch endpoint) ───────────────────────────────────────────────
-  function postBatch(action, ids, category) {
+  function postBatch(action, ids, category, payeeId) {
     var body = { action: action, ids: ids };
     if (category) body.category = category;
+    if (action === 'assign_payee') body.payee_id = payeeId;
     return fetch('/projects/' + PID + '/docs/batch', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -646,10 +807,10 @@
 
   function bumpCount(key, delta) { COUNTS[key] = Math.max(0, (COUNTS[key] || 0) + delta); }
 
-  function bulkAction(action, category, label) {
+  function bulkAction(action, category, label, payeeId) {
     var ids = selectedIds();
     if (!ids.length) return;
-    postBatch(action, ids, category).then(function (res) {
+    postBatch(action, ids, category, payeeId).then(function (res) {
       if (!res.ok || !res.d) { toast('Bulk action failed.', 'err'); return; }
       var d = res.d;
       var skipped = (d.skipped || []).length;
@@ -661,6 +822,76 @@
   }
 
   function bulkSetType(cat) { bulkAction('set_category', cat, 'Type → ' + (CAT_LABEL[cat] || cat)); }
+  function bulkAssignPayee(payeeId, name) { bulkAction('assign_payee', null, 'Payee → ' + name, payeeId); }
+
+  // Bulk Trash: the existing soft-delete endpoint (restorable from the
+  // Trash chip; matched bank charges are unlinked, never deleted).
+  function bulkTrash() {
+    var ids = selectedIds();
+    if (!ids.length) return;
+    if (!confirm('Move ' + ids.length + ' document' + (ids.length !== 1 ? 's' : '') + ' to the Trash?\n\nRestorable from the 🗑 Trash view. A matched bank charge is unlinked, not deleted.')) return;
+    fetch('/docs/' + PID + '/bulk-delete', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ids })
+    }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { toast((res.d && res.d.error) || 'Could not move to Trash.', 'err'); return; }
+        toast((res.d.deleted || 0) + ' moved to Trash' + (res.d.skipped ? ', ' + res.d.skipped + ' skipped' : ''), 'ok');
+        clearSelection();
+        loadInbox();
+      }).catch(function () { toast('Network error.', 'err'); });
+  }
+
+  // ── Trash view ─────────────────────────────────────────────────────────────
+  function renderTrash() {
+    var list = $('inbxList'); list.innerHTML = '';
+    rendered = 0; cursorId = null;
+    if (io) io.disconnect();
+    $('inbxCountLine').textContent = 'Loading Trash…';
+    fetch('/docs/' + PID + '/trash', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        TRASH = d.trash || [];
+        $('inbxEmpty').style.display = TRASH.length ? 'none' : 'block';
+        $('inbxEmpty').textContent = TRASH.length ? '' : 'The Trash is empty.';
+        $('inbxCountLine').textContent = TRASH.length ? (TRASH.length + ' in the Trash · Dropbox copies purge after 30 days') : '';
+        var frag = document.createDocumentFragment();
+        TRASH.forEach(function (t) { frag.appendChild(buildTrashRow(t)); });
+        list.appendChild(frag);
+      })
+      .catch(function () { toast('Could not load the Trash.', 'err'); });
+  }
+  function buildTrashRow(t) {
+    var row = document.createElement('div');
+    row.className = 'inbx-row trashed'; row.dataset.id = t.id; row.style.cursor = 'default';
+    var main = document.createElement('div'); main.className = 'inbx-main';
+    var bits = [];
+    if (t.vendor) bits.push(esc(t.vendor));
+    if (t.amount != null) bits.push(money(t.amount));
+    if (t.doc_date) bits.push(esc(t.doc_date));
+    if (t.payee_name) bits.push(esc(t.payee_name));
+    if (t.superseded_by_id) bits.push('replaced by #' + t.superseded_by_id);
+    if (t.deleted_at) bits.push('trashed ' + esc(String(t.deleted_at).slice(0, 10)));
+    main.innerHTML = '<div class="inbx-fn">' + esc(t.filename || 'Untitled') + '</div><div class="inbx-meta">' + (bits.join(' · ') || '—') + '</div>';
+    row.appendChild(main);
+    var cat = document.createElement('div'); cat.className = 'inbx-cat';
+    cat.textContent = t.category ? (CAT_LABEL[t.category] || t.category).toLowerCase() : '—';
+    row.appendChild(cat);
+    var btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'inbx-restore'; btn.textContent = '↶ Restore';
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation(); btn.disabled = true; btn.textContent = 'Restoring…';
+      fetch('/docs/upload/' + t.id + '/restore', { method: 'POST', credentials: 'same-origin' })
+        .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (res) {
+          if (!res.ok) { toast((res.d && res.d.error) || 'Restore failed.', 'err'); btn.disabled = false; btn.textContent = '↶ Restore'; return; }
+          toast('Restored.', 'ok'); row.remove();
+          loadInbox(function () { if (UI.state === 'trash') renderTrash(); });
+        }).catch(function () { toast('Network error.', 'err'); btn.disabled = false; btn.textContent = '↶ Restore'; });
+    });
+    row.appendChild(btn);
+    return row;
+  }
 
   // ── open editor with state stashed ─────────────────────────────────────────
   function stashState() {
@@ -763,7 +994,7 @@
       if (cb) cb.checked = on;
     }
     else if (e.key === 'Enter') {
-      if (cursorId != null) { e.preventDefault(); openDoc(cursorId); }
+      if (cursorId != null && UI.state !== 'trash') { e.preventDefault(); openDoc(cursorId); }
     }
     else if (e.key === 'm') {
       var d = cursorDoc();
@@ -796,14 +1027,25 @@
 
   $('inbxBulkMatch').addEventListener('click', function () { bulkAction('confirm_match', null, 'Matched'); });
   $('inbxBulkNotProject').addEventListener('click', function () { bulkAction('not_project', null, 'Not project'); });
+  $('inbxBulkTrash').addEventListener('click', bulkTrash);
   $('inbxBulkClear').addEventListener('click', clearSelection);
   $('inbxBulkType').addEventListener('click', function (e) {
     e.stopPropagation();
-    var m = $('inbxTypeMenu');
-    m.style.display = (m.style.display === 'block') ? 'none' : 'block';
+    closePayeeMenu();
+    $('inbxTypeMenu').classList.toggle('open');
   });
+  $('inbxBulkPayee').addEventListener('click', function (e) {
+    e.stopPropagation();
+    $('inbxTypeMenu').classList.remove('open');
+    var m = $('inbxPayeeMenu');
+    var open = m.style.display === 'block';
+    m.style.display = open ? 'none' : 'block';
+    if (!open) { buildPayeeMenu(''); var si = $('inbxPayeeSearch'); si.value = ''; si.focus(); }
+  });
+  $('inbxPayeeSearch').addEventListener('input', function () { buildPayeeMenu(this.value); });
+  $('inbxPayeeMenu').addEventListener('click', function (e) { e.stopPropagation(); });
   document.addEventListener('click', function (e) {
-    if (!e.target.closest('.inbx-bulk-wrap')) $('inbxTypeMenu').style.display = 'none';
+    if (!e.target.closest('.inbx-bulk-wrap')) { $('inbxTypeMenu').classList.remove('open'); closePayeeMenu(); }
   });
 
   // ── upload (picker + full-page drag-drop) ──────────────────────────────────
