@@ -1290,13 +1290,18 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
     }
 
 
-def section_for_code(code):
+def section_for_code(code, default=None):
     """Return the COA section start for an account code — the greatest
     section code ≤ the account code (sections are NOT thousands buckets:
     2900 Control Room Equipment, 3400 Transportation, 3500 Travel are
-    their own sections). Single source of truth for both the top sheet
-    and the mobile API's line grouping."""
-    best = None
+    their own sections). THE one rule (Cleanup D): app._section_for_code,
+    the top sheet, the PDF builders and the mobile API all call this.
+
+    A code below the first section (legacy / malformed) returns `default`
+    (None). A caller that must always have a bucket to file the line under
+    (the budget grid) passes default=FP_COA_SECTIONS[0][0] explicitly —
+    app.py's old copy did that silently, so the two disagreed."""
+    best = default
     for start, _ in FP_COA_SECTIONS:
         if code >= start:
             best = start

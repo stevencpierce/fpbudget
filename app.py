@@ -111,7 +111,8 @@ from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
                          calc_days_ot_status, _run_payroll_calc, calc_line_detail,
                          sync_schedule_driven_lines, SCHEDULE_LINE_DEFS, get_role_group,
-                         _float as _bc_float)
+                         _float as _bc_float, section_for_code as _bc_section_for_code,
+                         FP_COA_NAMES)
 try:
     import anthropic as _anthropic_sdk
     _HAS_ANTHROPIC = True
@@ -4777,13 +4778,8 @@ def _render_project_budget_pdfs(p):
                             ln, sched, fringe_cfgs, profile, pw_start)
                     else:
                         line_results[ln.id] = calc_line(ln, fringe_cfgs)
-                from budget_calc import FP_COA_SECTIONS as _SECS
-                def _sec(code):
-                    best = None
-                    for start, _ in _SECS:
-                        if code >= start: best = start
-                        else: break
-                    return best
+                _SECS = FP_COA_SECTIONS
+                _sec = _section_for_code      # ONE rule (budget_calc.section_for_code)
                 sec_map = dict(_SECS)
                 secs_detail = {}
                 for ln in b_lines:
@@ -8174,7 +8170,9 @@ def budget_view(pid, bid):
     sections = []
     seen = {}
     for ln in lines:
-        sec_key = _section_for_code(ln.account_code)
+        # Every line needs a section bucket on the grid: a code below the
+        # first section (legacy) files under the first one, explicitly.
+        sec_key = _section_for_code(ln.account_code, _FIRST_SECTION)
         if sec_key not in seen:
             seen[sec_key] = {"code": sec_key, "name": _section_name(sec_key), "lines": []}
             sections.append(seen[sec_key])
@@ -8701,7 +8699,7 @@ def budget_view(pid, bid):
     if current_working_bid and current_working_bid == budget.id:
         # (a) Viewing Working — line_results is live for this budget.
         for ln in lines:
-            sec_key = _section_for_code(ln.account_code)
+            sec_key = _section_for_code(ln.account_code, _FIRST_SECTION)
             r = line_results.get(ln.id) or {}
             wt = float(r.get('est_total', 0) or 0)
             working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
@@ -8719,7 +8717,7 @@ def budget_view(pid, bid):
             _wres = working_line_results.get(_wln.id)
             if not _wres:
                 continue  # calc raised; skip the line, column shows —
-            sec_key = _section_for_code(_wln.account_code)
+            sec_key = _section_for_code(_wln.account_code, _FIRST_SECTION)
             wt = float(_wres.get('est_total', 0) or 0)
             working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
             if _wln.is_labor:
@@ -8732,7 +8730,7 @@ def budget_view(pid, bid):
         # (c) No Working budget yet — mirror Estimated. Same loop the
         #     legacy code used; only kept for this no-sister case.
         for ln in lines:
-            sec_key = _section_for_code(ln.account_code)
+            sec_key = _section_for_code(ln.account_code, _FIRST_SECTION)
             wt = (float(ln.working_total) if ln.working_total is not None
                   else line_results[ln.id]['est_total'])
             working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
@@ -8836,7 +8834,7 @@ def budget_view(pid, bid):
                 _amt = float(_w_shares.get(_l.id, 0) or 0)
                 if not _amt:
                     continue
-                _sk = _section_for_code(_l.account_code)
+                _sk = _section_for_code(_l.account_code, _FIRST_SECTION)
                 working_by_section[_sk] = round(working_by_section.get(_sk, 0.0) + _amt, 2)
                 _fee_total += _amt
             _wpseudo = [(round(working_gross_labor * _wc_pct, 2), COA_CODE_INSURANCE),
@@ -9471,7 +9469,7 @@ def budget_view(pid, bid):
                         continue
                     if _is_hdr and not _desc:
                         continue
-                    _seccode = _section_for_code(_sl.account_code)
+                    _seccode = _section_for_code(_sl.account_code, _FIRST_SECTION)
                     sister_orphans.setdefault(_seccode, []).append({
                         'description': _desc or '(unnamed line)',
                         'total': _tot,
@@ -13530,16 +13528,7 @@ def export_pdf(pid, bid):
         else:
             line_results[ln.id] = calc_line(ln, fringe_cfgs)
 
-    # Group lines into sections
-    from budget_calc import FP_COA_SECTIONS
-    def _section_for_code(code):
-        best = None
-        for start, _ in FP_COA_SECTIONS:
-            if code >= start:
-                best = start
-            else:
-                break
-        return best
+    # Group lines into sections (ONE rule: budget_calc.section_for_code)
     section_name_map = dict(FP_COA_SECTIONS)
     sections_detail = {}
     for ln in lines:
@@ -16542,15 +16531,7 @@ def _compute_gantt_section_totals(labor_lines, days, fringe_cfgs, profile, pw_st
     Returns list of {code, name, st, ot, dt, total}.
     """
     _section_name_map = dict(FP_COA_SECTIONS)
-
-    def section_for_code(code):
-        best = None
-        for start, _ in FP_COA_SECTIONS:
-            if code >= start:
-                best = start
-            else:
-                break
-        return best
+    section_for_code = _section_for_code   # ONE rule (budget_calc.section_for_code)
 
     # Group days by line_id
     days_by_line = {}
@@ -24563,7 +24544,7 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
 
     crew_rows = []  # {section_code, section_name, role, name, day_type, phone, email}
     for ln in lines_today:
-        sec_code = _section_for_code(ln.account_code)
+        sec_code = _section_for_code(ln.account_code, _FIRST_SECTION)
         sec_name = _section_name(sec_code)
         line_assignments = [a for a in assignments if a.budget_line_id == ln.id]
         if line_assignments:
@@ -25735,21 +25716,22 @@ def _order_lines_with_children(lines):
     return result
 
 
-def _section_for_code(code):
-    best = FP_COA_SECTIONS[0][0]
-    for start, _ in FP_COA_SECTIONS:
-        if code >= start:
-            best = start
-        else:
-            break
-    return best
+def _section_for_code(code, default=None):
+    """Thin alias of budget_calc.section_for_code — the ONE rule (Cleanup D).
+    This copy used to fall back to the FIRST section for codes under 1000
+    while budget_calc's returned None; callers that need the fallback pass
+    default=FP_COA_SECTIONS[0][0] (see _FIRST_SECTION) explicitly."""
+    return _bc_section_for_code(code, default)
+
+
+# The first COA section — the explicit "file it somewhere" default for the
+# budget grid's section grouping (never a silent fallback inside the rule).
+_FIRST_SECTION = FP_COA_SECTIONS[0][0]
 
 
 def _section_name(code):
-    for start, name in FP_COA_SECTIONS:
-        if start == code:
-            return name
-    return str(code)
+    """Section name for a section code — budget_calc.FP_COA_NAMES (Cleanup D)."""
+    return FP_COA_NAMES.get(code, str(code))
 
 
 # ── Template filters ──────────────────────────────────────────────────────────
