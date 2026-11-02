@@ -1336,9 +1336,7 @@ async function loadWaypoints(force) {
     menu.innerHTML = '<p class="muted" style="padding:.7rem;font-size:.78rem">Could not load waypoints.</p>';
   }
 }
-function _wpEsc(s) {
-  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+function _wpEsc(s) { return FP.esc(s); }   // shared rule (static/fp-utils.js)
 async function restoreWaypoint(wid, when) {
   if (!confirm(`Restore the schedule to how it was at ${when}?\n\n` +
                'Everything scheduled since then is replaced. The current state is ' +

@@ -22,17 +22,8 @@
   let _filter = 'all';    // active exception chip
   let _sel = -1;          // selected row index within the FILTERED view
 
-  function _esc(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-  function _money(n) {
-    if (n == null || isNaN(n)) return '—';
-    const neg = n < 0;
-    return (neg ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US',
-      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
+  const _esc = FP.esc;                 // shared rule (fp-utils.js)
+  const _money = n => FP.money(n);
 
   // Which rows pass the active exception filter.
   function _passes(r) {

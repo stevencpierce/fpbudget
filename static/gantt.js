@@ -1521,7 +1521,7 @@ async function fetchTotals() {
 }
 
 function updateGanttFloatBar(data) {
-  const fmt = v => '$' + parseFloat(v || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fmt = v => FP.money(v || 0);   // shared rule (fp-utils.js)
   const subEl   = document.getElementById('float-subtotal');
   const feeEl   = document.getElementById('float-fee');
   const grandEl = document.getElementById('float-grand');
@@ -2033,10 +2033,7 @@ function togglePaintMode() {
 document.addEventListener('mouseup', () => { _paintDragging = false; });
 
 // ── 📅 Day View (2026-07-22): click a date header ────────────────────────────
-function _dvEsc(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g,
-    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
+function _dvEsc(s) { return FP.esc(s); }   // shared rule (fp-utils.js)
 function openDayView(dateStr) {
   const panel = document.getElementById('day-view-panel');
   const body = document.getElementById('day-view-body');

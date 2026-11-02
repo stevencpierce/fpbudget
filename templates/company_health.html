@@ -368,11 +368,7 @@
     });
   }
 
-  function escapeHtml(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
+  function escapeHtml(s) { return FP.esc(s); }   // shared rule (static/fp-utils.js)
 
   // ── wiring ───────────────────────────────────────────────────────────
   document.querySelectorAll('#ch-table thead th').forEach(function (th) {

@@ -3538,10 +3538,7 @@ function refreshQuote() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
-function escHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
+function escHtml(s) { return s ? FP.esc(s) : ''; }   // shared rule (static/fp-utils.js)
 
 function normalizePhone(v) {
   if (!v || !v.trim()) return v;
@@ -3834,7 +3831,7 @@ function csMsgRenderPanes() {
       ? saved.body : (isDefault ? CS_MSG_DEFAULT_BODY : '');
     const subjPh = isDefault ? '' : 'Uses the Default message unless you write something here.';
     const bodyPh = isDefault ? '' : 'Uses the Default message unless you write something here.';
-    const esc = s => (s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'));
+    const esc = FP.esc;   // shared rule (static/fp-utils.js)
     return `<div class="cs-msg-pane" data-view="${v}" style="display:${v===_csMsgTab?'block':'none'}">
       <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-bottom:2px">Subject</label>
       <input type="text" id="cs-msg-subject-${v}" value="${esc(subjVal)}" placeholder="${subjPh}"
@@ -4049,10 +4046,7 @@ function csDistBuildRecipientList() {
 // Escape a value for an HTML double-quoted attribute.
 function csEscAttr(s) { return (s == null ? '' : String(s)).replace(/"/g, '&quot;'); }
 // Escape a value for HTML text content.
-function csEscHtml(s) {
-  return (s == null ? '' : String(s))
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
+function csEscHtml(s) { return FP.esc(s); }   // shared rule (static/fp-utils.js)
 
 // Build the two never-pre-checked recipient groups (⚖ Union, 🤝 Representation)
 // as HTML appended below the crew list. Rows ride the same .cs-dist-recip-cb
@@ -4286,7 +4280,7 @@ function csSendCallSheet() {
     // returns immediately and per-recipient status lands in Send History as
     // the worker progresses. Poll the history a few times so statuses appear
     // without a manual refresh.
-    const money = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const money = v => FP.money(v || 0);   // shared rule (static/fp-utils.js)
     if (statusEl) {
       statusEl.innerHTML = '✉ Sending to <b>' + (d.queued || 0) + '</b> recipient'
         + ((d.queued || 0) !== 1 ? 's' : '') + ' in the background — statuses appear in Send History below as they go out.';

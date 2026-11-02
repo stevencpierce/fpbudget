@@ -180,7 +180,7 @@
         if (st) { st.style.color = '#e0a13a'; st.textContent = 'No per-person rows found in this document.'; }
         return;
       }
-      const money = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      const money = v => FP.money(v);   // shared rule (fp-utils.js)
       j.rows.forEach(row => {
         _itemAddRow(row.desc, row.amount, row.line_id || '', row.crew_member_id);
         // Tie-out delta (Phase 4): the parts did not sum to the person's

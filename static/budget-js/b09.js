@@ -184,8 +184,7 @@ async function loadSupportContacts(crewId) {
   }
   // Escape all data-derived strings (XSS — this list previously interpolated
   // name/company/phone/email raw into innerHTML; review CR-5, 2026-06-04).
-  const _repEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
-      c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const _repEsc = FP.esc;   // shared rule (fp-utils.js)
   window._repContactsById = {};
   list.innerHTML = contacts.map(sc => {
     window._repContactsById[sc.id] = sc;
@@ -1343,11 +1342,7 @@ function renderQeGlobalSearch(q) {
   });
 }
 
-function _qeHtmlEscape(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
+function _qeHtmlEscape(s) { return FP.esc(s); }   // shared rule (fp-utils.js)
 
 // Convert 0 → A, 1 → B, ..., 25 → Z, 26 → AA, 27 → AB, ...
 function _seqSuffix(n) {

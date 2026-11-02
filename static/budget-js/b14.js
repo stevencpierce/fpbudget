@@ -20,10 +20,8 @@
   let _cateringData = null;
   let _detailContext = null;  // { sd_id, kind, current_detail }
 
-  const _esc = s => String(s == null ? '' : s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  const _fmt = n => '$' + parseFloat(n || 0).toLocaleString('en-US',
-    {minimumFractionDigits:2, maximumFractionDigits:2});
+  const _esc = FP.esc;                 // shared rule (fp-utils.js)
+  const _fmt = n => FP.money(n || 0);
 
   // ── Travel grid ────────────────────────────────────────────────────────
   async function loadTravelGrid() {
@@ -1339,8 +1337,8 @@
   // renamed-to filename, vendor, amount, date, code, linked receipt. (User 2026-06-17.)
   function _activityDetail(d) {
     if (!d) return '';
-    const esc = s => (s == null ? '' : ('' + s)).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
-    const money = a => a == null ? '' : ('$' + Math.abs(a).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}));
+    const esc = FP.esc;                // shared rule (fp-utils.js; this copy skipped quotes)
+    const money = a => FP.money(a, {empty: '', abs: true});
     const bits = [];
     if (d.kind === 'receipt') {
       if (d.filed && d.filed !== d.original) bits.push('renamed → <span style="color:var(--text)">' + esc(d.filed) + '</span>');

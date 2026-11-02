@@ -305,17 +305,8 @@
 
   // ── tiny helpers ───────────────────────────────────────────────────────────
   function $(id) { return document.getElementById(id); }
-  function esc(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-  function money(v) {
-    if (v == null || v === '') return '';
-    var n = Number(v);
-    if (!isFinite(n)) return '';
-    return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
+  function esc(s) { return FP.esc(s); }               // shared rule (static/fp-utils.js)
+  function money(v) { return FP.money(v, { empty: '' }); }
   var _toastT = null;
   function toast(msg, kind) {
     var el = $('inbxToast'); if (!el) return;

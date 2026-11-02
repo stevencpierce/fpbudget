@@ -170,7 +170,7 @@
         const s = d && d.suggestion;
         if (!s || sel.value) return;
         if (hooks.uidStillCurrent && !hooks.uidStillCurrent(uid)) return;
-        const esc = t => String(t).replace(/</g, '&lt;');
+        const esc = FP.esc;   // shared rule (fp-utils.js; this copy escaped only '<')
         const opt = Array.from(sel.options).find(o => o.value === String(s.crew_member_id));
         if (!opt) return;
         const pct = Math.round((s.confidence || 0) * 100) + '%';

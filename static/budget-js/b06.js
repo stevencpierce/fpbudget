@@ -158,7 +158,7 @@
     const sub = window._agentFeeSubtotal || 0;
     if (pct > 0 && sub > 0) {
       const amt = sub * pct / 100;
-      const money = n => '$' + n.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      const money = n => FP.money(n);   // shared rule (fp-utils.js)
       el.textContent = `${pct}% of ${money(sub)} = ${money(amt)}`;
     } else {
       el.textContent = '';

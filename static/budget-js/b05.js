@@ -81,10 +81,8 @@ function renderScheduleDetail(d) {
   document.getElementById('calc-detail-title').textContent =
     `${d.label} — Schedule Detail`;
 
-  const fmt = v => v == null ? '—' : '$' + parseFloat(v).toLocaleString('en-US',
-    {minimumFractionDigits:2, maximumFractionDigits:2});
-  const _esc = s => String(s == null ? '' : s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const fmt = v => FP.money(v);        // shared rule (fp-utils.js)
+  const _esc = FP.esc;
   const _dayBadge = dt => {
     const colors = {
       work:'#22c55e', travel:'#3498db', hold:'#a78bfa',
