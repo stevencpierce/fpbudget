@@ -268,7 +268,7 @@
     <button type="button" id="btn-wipe-docs"
             style="font-size:11px;padding:4px 10px;border-radius:6px;
                    background:#2a1414;color:#ef4444;border:1px solid #4a2020;cursor:pointer"
-            title="Super admin only: delete every DocUpload row for this project and move its filed Dropbox files to /_TRASH/. Use for clean-start testing.">
+            title="Super admin only: delete every document row for this project (and the documents' own receipt-born ledger rows), unlink bank/manual charges, then move the filed Dropbox files to /_TRASH/. Use for clean-start testing.">
       🗑 Wipe all receipts (test)
     </button>
     {% endif %}
@@ -447,11 +447,13 @@ function _startRename(span) {
 const _wipeBtn = document.getElementById('btn-wipe-docs');
 if (_wipeBtn) {
   _wipeBtn.addEventListener('click', async () => {
-    if (!confirm("Delete EVERY receipt/doc on this project?\n\n" +
-                 "• All DocUpload rows removed from the database\n" +
-                 "• Filed Dropbox files moved to /_TRASH/\n\n" +
+    if (!confirm("Wipe EVERY document on this project?\n\n" +
+                 "• Every document row is removed from the database\n" +
+                 "• The documents' OWN ledger rows (receipt-born, source=doc_upload) are deleted\n" +
+                 "• Bank / QuickBooks / CSV / manual charges are KEPT — they are unlinked from their receipts and their coding stays\n" +
+                 "• Filed Dropbox files are moved to /_TRASH/ after the database commit\n\n" +
                  "This is a testing tool. Proceed?")) return;
-    if (!confirm("Really sure? This affects only THIS project's docs.")) return;
+    if (!confirm("Really sure? This affects only THIS project's documents.")) return;
 
     _wipeBtn.disabled = true;
     _wipeBtn.textContent = 'Wiping…';
@@ -463,7 +465,9 @@ if (_wipeBtn) {
       const d = await r.json();
       if (!r.ok) { alert('Wipe failed: ' + (d.error || 'unknown')); return; }
       let msg = `Wipe complete.\n\n`;
-      msg += `• DocUpload rows deleted: ${d.deleted_count}\n`;
+      msg += `• Document rows deleted: ${d.deleted_count}\n`;
+      msg += `• Receipt-born ledger rows deleted: ${d.txn_deleted || 0}\n`;
+      msg += `• Bank/manual charges unlinked (kept): ${d.txn_unlinked || 0}\n`;
       msg += `• Dropbox files moved to trash: ${d.moved_count}\n`;
       if (d.error_count) {
         msg += `\nErrors: ${d.error_count}`;

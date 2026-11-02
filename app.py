@@ -762,12 +762,16 @@ def _csrf_protect():
     from flask import session as _s
     expected = _s.get("_csrf")
     if not expected:
-        # Transition path: sessions minted before this deploy carry no token
-        # yet. Seed one now; the next page load embeds it. (Blocking here
-        # would 403 every logged-in user mid-session at rollout.)
+        # No token in the session means no page of ours rendered it, so
+        # this mutation didn't come from our UI. The rollout-era
+        # "seed and allow" transition path (2026-07-20) is gone — it let any
+        # cross-site POST through for a session that had never loaded a page
+        # (Cleanup A #15, 2026-11-02). Seed a token so the next page load
+        # works, and refuse this request.
         import secrets as _sec
         _s["_csrf"] = _sec.token_urlsafe(32)
-        return
+        return jsonify({"error": "Session expired — reload the page and try "
+                                 "again."}), 403
     sent = (request.headers.get("X-CSRFToken")
             or request.form.get("csrf_token")
             or ((request.get_json(silent=True) or {}).get("csrf_token")
@@ -786,7 +790,7 @@ def _csrf_protect():
 # Enforced via before_request on the endpoints below so every guarded route
 # gets identical behavior without per-handler edits.
 _BUDGET_WRITE_ENDPOINTS = {
-    'upsert_line', 'add_kit_fee', 'line_insert', 'line_duplicate',
+    'upsert_line', 'delete_line', 'add_kit_fee', 'line_insert', 'line_duplicate',
     'line_reorder', 'line_set_group', 'remove_schedule_instance',
     'schedule_purge_tag', 'schedule_purge_all', 'travel_apply_doc',
     'toggle_sync_omit', 'import_csv_apply', 'budget_from_template',
@@ -795,7 +799,26 @@ _BUDGET_WRITE_ENDPOINTS = {
     'expand_gantt', 'set_schedule_label',
     'schedule_waypoint_restore', 'schedule_waypoint_copy_version',
     'budget_fee_disperse_total',
+    # Mobile API (routes/api_v1.py) — these call upsert_line / delete_line
+    # directly, so they are gated here AND inside those handlers
+    # (Cleanup A #10, 2026-11-02).
+    'api_budget_line_save', 'api_budget_line_delete',
 }
+
+
+def _budget_lock_error(budget):
+    """The lock rule for one budget: its own `locked` flag, or its version's
+    Estimated anchor's. Returns the error text or None. Pure rule in
+    actuals.budget_lock_denial; this resolves the anchor."""
+    if budget is None:
+        return None
+    from actuals import budget_lock_denial as _lock_rule
+    _anchor = None
+    if not getattr(budget, 'locked', False) and budget.version_number is not None:
+        _anchor = Budget.query.filter_by(project_id=budget.project_id,
+                                         version_number=budget.version_number,
+                                         budget_mode='estimated').first()
+    return _lock_rule(budget, _anchor)
 
 
 @app.before_request
@@ -810,15 +833,9 @@ def _budget_write_gate():
     budget = Budget.query.get(_bid)
     if budget is None:
         return   # the handler's own 404 will fire
-    _locked = bool(getattr(budget, 'locked', False))
-    if not _locked and budget.version_number is not None:
-        _anchor = Budget.query.filter_by(project_id=budget.project_id,
-                                         version_number=budget.version_number,
-                                         budget_mode='estimated').first()
-        _locked = bool(_anchor is not None and getattr(_anchor, 'locked', False))
-    if _locked:
-        return jsonify({"error": "This version is locked (read-only). "
-                                 "Unlock it via ✎ in the version menu first."}), 403
+    _lock_err = _budget_lock_error(budget)
+    if _lock_err:
+        return jsonify({"error": _lock_err}), 403
     if budget.budget_mode == 'estimated' and not budget.is_actual:
         from flask_login import current_user as _cu
         if getattr(_cu, 'role', None) in ('super_admin', 'admin'):
@@ -1647,19 +1664,109 @@ def admin_docs_wipe_project(pid):
     do clean-start iteration while the Analyzer pipeline is still
     being refined. Dropbox files are MOVED (not deleted) so there's a
     recovery window if we trash something we shouldn't have.
+
+    Cleanup A #2 (2026-11-02): the wipe used to delete EVERY Transaction on
+    the project — bank charges included — and moved Dropbox files before the
+    DB commit, so a failed commit left files in /_TRASH with live rows still
+    pointing at them. Now: only the documents' own ledger rows
+    (source='doc_upload') are deleted; bank / manual rows are UNLINKED
+    (doc_upload_id=None, coding kept); every DB change is committed BEFORE a
+    single Dropbox move.
     """
     if not current_user.is_authenticated or getattr(current_user, 'role', None) != 'super_admin':
         return jsonify({"error": "super admin only"}), 403
 
     project = ProjectSheet.query.get_or_404(pid)
     uploads = DocUpload.query.filter_by(project_id=pid).all()
+    # Snapshot the Dropbox paths now — the rows are gone by the time we move.
+    _paths_to_trash = [(up.id, up.filed_dropbox_path, up.source_archive_path) for up in uploads]
 
     deleted_count = 0
     moved_count   = 0
     errors        = []
     trash_root    = None
 
-    # Only bother with Dropbox if we have credentials.
+    # ── Phase 1: database, committed before anything touches Dropbox ──
+    # Step 0: the documents' OWN ledger rows go; everything else is unlinked.
+    # Evidence rows and splits point at the doomed rows with no FK cascade,
+    # so they are cleared first (same order as project_delete).
+    try:
+        _doomed_ids = [r[0] for r in db.session.query(Transaction.id)
+                       .filter(Transaction.project_id == pid,
+                               Transaction.source == 'doc_upload').all()]
+        _unlinked = (Transaction.query
+                     .filter(Transaction.project_id == pid,
+                             Transaction.source != 'doc_upload',
+                             Transaction.doc_upload_id.isnot(None))
+                     .update({"doc_upload_id": None,
+                              "match_status": "unmatched",
+                              "match_confidence": None},
+                             synchronize_session=False))
+        if _doomed_ids:
+            Transaction.query.filter(Transaction.parent_transaction_id.in_(_doomed_ids)).update(
+                {"parent_transaction_id": None}, synchronize_session=False)
+            Transaction.query.filter(Transaction.backup_of_txn_id.in_(_doomed_ids)).update(
+                {"backup_of_txn_id": None}, synchronize_session=False)
+            _delete_evidence_for_txns(_doomed_ids)
+            TransactionSplit.query.filter(TransactionSplit.transaction_id.in_(_doomed_ids))\
+                .delete(synchronize_session=False)
+            db.session.flush()
+            _txn_count = (Transaction.query
+                          .filter(Transaction.id.in_(_doomed_ids))
+                          .delete(synchronize_session=False))
+            logging.info(f"[DOCS WIPE] deleted {_txn_count} doc-born Transaction rows "
+                         f"for project {pid}; unlinked {_unlinked} bank/manual rows")
+        # Evidence rows that point at the documents themselves.
+        try:
+            from models import ExpenseEvidence as _EE_wipe
+            _doc_ids = [u.id for u in uploads]
+            if _doc_ids:
+                _EE_wipe.query.filter(_EE_wipe.doc_upload_id.in_(_doc_ids))\
+                    .delete(synchronize_session=False)
+        except Exception as _eee:
+            errors.append(f"evidence cleanup failed: {_eee}")
+    except Exception as _txe:
+        db.session.rollback()
+        return jsonify({"error": f"Transaction cleanup failed, nothing changed: {_txe}",
+                        "deleted_count": 0, "moved_count": 0, "errors": [str(_txe)]}), 500
+
+    # Self dup-ref first (doc_upload.duplicate_of_id → doc_upload), as in
+    # project_delete, so the per-row deletes can't trip on each other.
+    try:
+        DocUpload.query.filter_by(project_id=pid).update(
+            {"duplicate_of_id": None}, synchronize_session=False)
+        db.session.flush()
+    except Exception as _dre:
+        errors.append(f"duplicate_of clear failed: {_dre}")
+    for up in uploads:
+        try:
+            db.session.delete(up)
+            deleted_count += 1
+        except Exception as _re:
+            errors.append(f"upload {up.id}: db delete failed: {_re}")
+
+    # COMMIT THE DB WORK NOW. Nothing has moved in Dropbox yet, so a failed
+    # commit leaves the project exactly as it was.
+    try:
+        db.session.commit()
+    except Exception as _ce:
+        db.session.rollback()
+        return jsonify({
+            "error": f"Commit failed, nothing changed: {_ce}",
+            "deleted_count": 0,
+            "moved_count": 0,
+            "errors": [str(_ce)],
+        }), 500
+    try:
+        _log_activity(action='delete', entity_type='doc_upload_bulk', entity_id=pid,
+                      entity_label=f'Wiped {deleted_count} docs', project_id=pid,
+                      before={'doc_count': deleted_count},
+                      note=f'Super-admin docs wipe: {deleted_count} document(s) and '
+                           f'their own ledger rows removed; bank charges unlinked')
+    except Exception:
+        pass
+
+    # ── Phase 2: Dropbox (best-effort, after the commit) ──────────────
     dbx = None
     has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
     if has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN'):
@@ -1669,15 +1776,13 @@ def admin_docs_wipe_project(pid):
             logging.warning(f"[DOCS WIPE] dropbox client init failed: {_de}")
             dbx = None
 
-    if dbx and uploads:
+    if dbx and _paths_to_trash:
         # Build a dated trash folder specific to this wipe so we can find
         # the files again if a mistake was made.
         from datetime import datetime as _dt
         _stamp = _dt.utcnow().strftime("%Y-%m-%d_%H%M%S")
         _slug  = project.dropbox_folder or f"project-{pid}"
         trash_root = f"/_TRASH/{_stamp}_{_slug}"
-        # Ensure trash folder exists (Dropbox auto-creates parent folders
-        # on move, so this is best-effort).
         try:
             dbx.files_create_folder_v2(trash_root, autorename=False)
         except Exception:
@@ -1731,56 +1836,15 @@ def admin_docs_wipe_project(pid):
                 errors.append(f"{label_id} ({original_src}): {err1}")
         return False
 
-    # Step 0: delete every Transaction row for this project FIRST.
-    # The 2026-04-30 doc-upload→Transaction auto-create wire means
-    # every DocUpload now has a Transaction with doc_upload_id FK
-    # pointing at it. Deleting the upload without first dropping the
-    # txn raises ForeignKeyViolation. We clear all project txns at
-    # once (faster than per-row) — for the wipe-test path that's the
-    # right semantics anyway: Doc rows go, txn rows go, fresh slate.
-    try:
-        _txn_count = (db.session.query(Transaction)
-                      .filter_by(project_id=pid)
-                      .delete(synchronize_session=False))
-        if _txn_count:
-            logging.info(f"[DOCS WIPE] deleted {_txn_count} Transaction rows for project {pid}")
-    except Exception as _txe:
-        errors.append(f"transaction wipe failed: {_txe}")
-
-    for up in uploads:
-        # Step 1: move the filed (processed) Dropbox copy to trash.
-        if _move_to_trash(up.filed_dropbox_path, f"upload {up.id} filed"):
+    for _uid, _filed, _archive in _paths_to_trash:
+        # Move the filed (processed) Dropbox copy to trash, then the
+        # source-archive copy if it's a different path. (For status='review'
+        # rows, filed_=archive_path so we don't double-move.)
+        if _move_to_trash(_filed, f"upload {_uid} filed"):
             moved_count += 1
-        # Step 1b: also move the source-archive copy to trash, but only
-        # if it's a different path. (For status='review' rows, filed_=
-        # archive_path so we don't double-move.)
-        if (up.source_archive_path
-                and up.source_archive_path != up.filed_dropbox_path):
-            if _move_to_trash(up.source_archive_path, f"upload {up.id} archive"):
+        if _archive and _archive != _filed:
+            if _move_to_trash(_archive, f"upload {_uid} archive"):
                 moved_count += 1
-        # Step 2: delete the DB row regardless of Dropbox outcome.
-        try:
-            db.session.delete(up)
-            deleted_count += 1
-        except Exception as _re:
-            errors.append(f"upload {up.id}: db delete failed: {_re}")
-
-    # Step 2.5: COMMIT THE DB DELETES NOW. Critical ordering — without
-    # this, any subsequent exception in the folder-cleanup phase could
-    # roll back the deletes, leaving orphan DocUpload rows even after
-    # Dropbox has been wiped (the "I have rows in software pointing at
-    # files Dropbox no longer has" symptom).
-    try:
-        db.session.commit()
-    except Exception as _ce:
-        db.session.rollback()
-        errors.append(f"commit failed: {_ce}")
-        return jsonify({
-            "error": f"Commit failed, wipe partial: {_ce}",
-            "deleted_count": 0,
-            "moved_count": moved_count,
-            "errors": errors[:20],
-        }), 500
 
     # Step 3: nuke the project's PROCESSED DOCUMENTS + source-archive
     # subtrees so an empty-folder skeleton doesn't sit around between
@@ -1814,6 +1878,8 @@ def admin_docs_wipe_project(pid):
     return jsonify({
         "ok":            True,
         "deleted_count": deleted_count,
+        "txn_deleted":   len(_doomed_ids),
+        "txn_unlinked":  int(_unlinked or 0),
         "moved_count":   moved_count,
         "trash_folder":  trash_root,
         "error_count":   len(errors),
@@ -3958,6 +4024,24 @@ If you didn't request this, ignore this email — your password won't change.
     return render_template("forgot_password.html")
 
 
+def _revoke_api_tokens(user_id, reason="password changed"):
+    """Mark every live mobile-API bearer token of a user revoked. Called on
+    every password change (self-service, reset link, admin reset) so a
+    stolen phone token dies with the old password (Cleanup A #15,
+    2026-11-02). Does NOT commit — the caller's commit carries it. Tokens
+    have no expiry column yet; that is a later schema change."""
+    try:
+        n = (ApiToken.query
+             .filter(ApiToken.user_id == user_id, ApiToken.revoked_at.is_(None))
+             .update({"revoked_at": datetime.utcnow()}, synchronize_session=False))
+        if n:
+            logging.info(f"[api-token] revoked {n} token(s) for user {user_id}: {reason}")
+        return int(n or 0)
+    except Exception as _e:
+        logging.warning(f"[api-token] revoke failed for user {user_id}: {_e}")
+        return 0
+
+
 @app.route("/reset-password/<token>", methods=["GET", "POST"])
 def reset_password(token):
     if current_user.is_authenticated:
@@ -3979,6 +4063,7 @@ def reset_password(token):
         user.reset_token = None
         user.reset_token_expires = None
         user.must_change_password = False
+        _revoke_api_tokens(user.id, "reset link")
         db.session.commit()
         flash("Password updated. You can now log in.", "success")
         return redirect(url_for("login"))
@@ -4667,12 +4752,88 @@ def project_new():
     return redirect(url_for("budget_view", pid=p.id, bid=b.id) + "?tab=working&setup=1")
 
 
-def _archive_project_dropbox(p):
-    """Before deleting a project: move Dropbox folder to _ARCHIVED and upload budget PDFs."""
+def _render_project_budget_pdfs(p):
+    """Render every budget version of a project to PDF bytes — READ-ONLY.
+    Returns [(filename, pdf_bytes), ...]. Split out of
+    _archive_project_dropbox (Cleanup A #6, 2026-11-02) so a delete can
+    render first, delete + commit second, and only then move the Dropbox
+    folder: a failed DB delete no longer leaves the folder in _ARCHIVED
+    with the project still live."""
+    out = []
+    try:
+        from datetime import date as _date
+        budgets = Budget.query.filter_by(project_id=p.id).all()
+        if not budgets:
+            return out
+        fringe_cfgs = get_fringe_configs(db.session, p.id)
+        for b in budgets:
+            try:
+                b_lines = BudgetLine.query.filter_by(budget_id=b.id).order_by(
+                    BudgetLine.account_code, BudgetLine.sort_order).all()
+                profile  = b.payroll_profile
+                pw_start = b.payroll_week_start if b.payroll_week_start is not None else (
+                    profile.payroll_week_start if profile else 6)
+                top_sheet = calc_top_sheet(b, b_lines, fringe_cfgs, {}, profile, pw_start)
+                sched_mode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
+                line_results = {}
+                for ln in b_lines:
+                    if ln.use_schedule:
+                        sched = ScheduleDay.query.filter_by(
+                            budget_line_id=ln.id, schedule_mode=sched_mode).all()
+                        line_results[ln.id] = calc_line_from_schedule(
+                            ln, sched, fringe_cfgs, profile, pw_start)
+                    else:
+                        line_results[ln.id] = calc_line(ln, fringe_cfgs)
+                from budget_calc import FP_COA_SECTIONS as _SECS
+                def _sec(code):
+                    best = None
+                    for start, _ in _SECS:
+                        if code >= start: best = start
+                        else: break
+                    return best
+                sec_map = dict(_SECS)
+                secs_detail = {}
+                for ln in b_lines:
+                    sk = _sec(ln.account_code)
+                    if sk not in secs_detail:
+                        secs_detail[sk] = {"code": sk, "name": sec_map.get(sk, ""), "lines": []}
+                    secs_detail[sk]["lines"].append(ln)
+                secs_ordered = [secs_detail[sk] for sk, _ in _SECS if sk in secs_detail]
+                company_settings = CompanySettings.query.get(1) or CompanySettings()
+                dispersed = bool(b.company_fee_dispersed)
+                fee_m = (1 + float(b.company_fee_pct)) if dispersed else 1.0
+                html_str = render_template("budget_pdf.html",
+                    project=p, budget=b, top_sheet=top_sheet,
+                    coa_sections=FP_COA_SECTIONS,
+                    detail_mode=False, dispersed=dispersed,
+                    company_settings=company_settings,
+                    is_working_view=b.budget_mode in ('working', 'actual'),
+                    sections_ordered=secs_ordered,
+                    line_results=line_results, fee_m=fee_m, today=_date.today(),
+                )
+                pdf_bytes = WeasyprintHTML(string=html_str, base_url="http://localhost").write_pdf()
+                safe_name = re.sub(r"[^\w\-.]", "_", b.name)
+                mode_lbl  = "Working" if b.budget_mode in ('working','actual') else "Estimated"
+                out.append((f"{safe_name}_{mode_lbl}.pdf", pdf_bytes))
+            except Exception as e:
+                logging.warning(f"Budget PDF render failed for budget {b.id}: {e}")
+    except Exception as e:
+        logging.error(f"_render_project_budget_pdfs failed: {e}")
+    return out
+
+
+def _archive_project_dropbox(p, pdfs=None):
+    """Move a project's Dropbox folder to _ARCHIVED and upload its budget
+    PDFs. `p` only needs .id / .name / .dropbox_folder (a SimpleNamespace
+    snapshot is fine — the ProjectSheet row may already be gone). `pdfs` is
+    the output of _render_project_budget_pdfs; when None they are rendered
+    here (so the project must still exist)."""
     try:
         has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
         if not has_refresh and not os.getenv('DROPBOX_ACCESS_TOKEN'):
             return
+        if pdfs is None:
+            pdfs = _render_project_budget_pdfs(p)
         dbx = _dbx_client()
         archive_root = _DBX_ARCHIVE_ROOT
         from datetime import date as _date
@@ -4693,65 +4854,106 @@ def _archive_project_dropbox(p):
         else:
             dest = f"{archive_root}/{stamp}_{p.name}"
 
-        # Export each budget version as a PDF and upload to archive
-        budgets = Budget.query.filter_by(project_id=p.id).all()
-        if budgets:
-            fringe_cfgs = get_fringe_configs(db.session, p.id)
-            for b in budgets:
-                try:
-                    b_lines = BudgetLine.query.filter_by(budget_id=b.id).order_by(
-                        BudgetLine.account_code, BudgetLine.sort_order).all()
-                    profile  = b.payroll_profile
-                    pw_start = b.payroll_week_start if b.payroll_week_start is not None else (
-                        profile.payroll_week_start if profile else 6)
-                    top_sheet = calc_top_sheet(b, b_lines, fringe_cfgs, {}, profile, pw_start)
-                    sched_mode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
-                    line_results = {}
-                    for ln in b_lines:
-                        if ln.use_schedule:
-                            sched = ScheduleDay.query.filter_by(
-                                budget_line_id=ln.id, schedule_mode=sched_mode).all()
-                            line_results[ln.id] = calc_line_from_schedule(
-                                ln, sched, fringe_cfgs, profile, pw_start)
-                        else:
-                            line_results[ln.id] = calc_line(ln, fringe_cfgs)
-                    from budget_calc import FP_COA_SECTIONS as _SECS
-                    def _sec(code):
-                        best = None
-                        for start, _ in _SECS:
-                            if code >= start: best = start
-                            else: break
-                        return best
-                    sec_map = dict(_SECS)
-                    secs_detail = {}
-                    for ln in b_lines:
-                        sk = _sec(ln.account_code)
-                        if sk not in secs_detail:
-                            secs_detail[sk] = {"code": sk, "name": sec_map.get(sk, ""), "lines": []}
-                        secs_detail[sk]["lines"].append(ln)
-                    secs_ordered = [secs_detail[sk] for sk, _ in _SECS if sk in secs_detail]
-                    company_settings = CompanySettings.query.get(1) or CompanySettings()
-                    dispersed = bool(b.company_fee_dispersed)
-                    fee_m = (1 + float(b.company_fee_pct)) if dispersed else 1.0
-                    html_str = render_template("budget_pdf.html",
-                        project=p, budget=b, top_sheet=top_sheet,
-                        coa_sections=FP_COA_SECTIONS,
-                        detail_mode=False, dispersed=dispersed,
-                        company_settings=company_settings,
-                        is_working_view=b.budget_mode in ('working', 'actual'),
-                        sections_ordered=secs_ordered,
-                        line_results=line_results, fee_m=fee_m, today=_date.today(),
-                    )
-                    pdf_bytes = WeasyprintHTML(string=html_str, base_url="http://localhost").write_pdf()
-                    safe_name = re.sub(r"[^\w\-.]", "_", b.name)
-                    mode_lbl  = "Working" if b.budget_mode in ('working','actual') else "Estimated"
-                    pdf_key   = f"{dest}/01_ADMIN/BUDGET ESTIMATES/{safe_name}_{mode_lbl}.pdf"
-                    dbx.files_upload(pdf_bytes, pdf_key, autorename=True)
-                    logging.info(f"Uploaded budget PDF to archive: {pdf_key}")
-                except Exception as e:
-                    logging.warning(f"Budget PDF archive failed for budget {b.id}: {e}")
+        for fname, pdf_bytes in pdfs or []:
+            try:
+                pdf_key = f"{dest}/01_ADMIN/BUDGET ESTIMATES/{fname}"
+                dbx.files_upload(pdf_bytes, pdf_key, autorename=True)
+                logging.info(f"Uploaded budget PDF to archive: {pdf_key}")
+            except Exception as e:
+                logging.warning(f"Budget PDF archive upload failed ({fname}): {e}")
     except Exception as e:
         logging.error(f"_archive_project_dropbox failed: {e}")
+
+
+def _delete_project_rows(pid):
+    """FK-safe deletion of EVERYTHING that belongs to one project — the
+    single ordering used by project_delete AND projects_bulk_delete (Cleanup
+    A #6 / #22, 2026-11-02; the bulk path used to skip transactions, splits,
+    evidence, estimate shares, sub-budgets and POs and 500 on the first FK).
+    Does NOT commit. Deletes the ProjectSheet row itself last."""
+    from models import (Location, EstimateShare, SubBudget, PurchaseOrder,
+                        MatchRejection, TransactionDupDismissal, ActivityLog,
+                        AiEvent, AnomalyFlag, VendorAlias, BudgetComment,
+                        ScheduleWaypoint)
+    p = ProjectSheet.query.get(pid)
+    if p is None:
+        return False
+    # Anything that points at budget.id (EstimateShare, SubBudget — both NOT
+    # NULL) MUST go before the budgets are deleted, or the delete 500s the
+    # moment a project has an estimate share / sub-budget. (Bug fix
+    # 2026-06-22.)
+
+    # 1. budget-referencing project tables (sub_budget_line cascades via ondelete)
+    EstimateShare.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    SubBudget.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    # budget_comment / schedule_waypoint carry project_id NOT NULL FKs (#22).
+    BudgetComment.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    ScheduleWaypoint.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+    # 2. Cross-project dup claims pointing AT this project → null the back-ref
+    Transaction.query.filter(Transaction.claimed_by_project_id == pid).update(
+        {"claimed_by_project_id": None}, synchronize_session=False)
+
+    # 3. This project's transactions — null self parent-ref, then delete BEFORE
+    #    DocUpload (transaction.doc_upload_id → doc_upload).
+    _txn_ids = [r[0] for r in db.session.query(Transaction.id)
+                .filter_by(project_id=pid).all()]
+    if _txn_ids:
+        Transaction.query.filter(Transaction.parent_transaction_id.in_(_txn_ids)).update(
+            {"parent_transaction_id": None}, synchronize_session=False)
+        Transaction.query.filter(Transaction.backup_of_txn_id.in_(_txn_ids)).update(
+            {"backup_of_txn_id": None}, synchronize_session=False)
+        db.session.flush()
+        _delete_evidence_for_txns(_txn_ids)
+        # transaction_split (Phase 2) has no cascade either — drop the
+        # project's allocations before their parents go. (Found by the
+        # Phase 3 E2E run: orphan splits re-attached to a reused id.)
+        TransactionSplit.query.filter(db.or_(TransactionSplit.project_id == pid,
+                                             TransactionSplit.transaction_id.in_(_txn_ids)))\
+            .delete(synchronize_session=False)
+        Transaction.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+    # 4. Null parent_budget_id self-refs, then cascade-delete each budget.
+    Budget.query.filter_by(project_id=pid).update(
+        {"parent_budget_id": None}, synchronize_session=False)
+    db.session.flush()
+    for b in Budget.query.filter_by(project_id=pid).all():
+        _delete_budget_cascade(b.id)
+
+    # 5. Purchase orders (po_doc_attachment cascades via ondelete).
+    PurchaseOrder.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+    # 6. Documents — null self dup-ref first, then delete (before Location:
+    #    doc_upload.location_id → location). Evidence rows that point at the
+    #    documents go too (no cascade).
+    DocUpload.query.filter_by(project_id=pid).update(
+        {"duplicate_of_id": None}, synchronize_session=False)
+    db.session.flush()
+    try:
+        from models import ExpenseEvidence as _EE_pd
+        _doc_ids = [r[0] for r in db.session.query(DocUpload.id).filter_by(project_id=pid).all()]
+        if _doc_ids:
+            _EE_pd.query.filter(_EE_pd.doc_upload_id.in_(_doc_ids)).delete(synchronize_session=False)
+    except Exception:
+        pass
+    DocUpload.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+    # 7. Remaining project-scoped FK tables.
+    Location.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    ProjectAccess.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    ProjectUnion.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    ProjectClient.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    MatchRejection.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    TransactionDupDismissal.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    ActivityLog.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+    # 8. Plain-int project_id columns (no DB FK, but avoid orphan rows).
+    AiEvent.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    AnomalyFlag.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    VendorAlias.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+    db.session.delete(p)
+    return True
 
 
 @app.route("/projects/<int:pid>/delete", methods=["POST"])
@@ -4763,81 +4965,21 @@ def project_delete(pid):
         return redirect(url_for("dashboard"))
     p = ProjectSheet.query.get_or_404(pid)
     pname = p.name
-    # Archive to Dropbox before any DB deletion
-    _archive_project_dropbox(p)
-
-    from models import (Location, EstimateShare, SubBudget, PurchaseOrder,
-                        MatchRejection, TransactionDupDismissal, ActivityLog,
-                        AiEvent, AnomalyFlag, VendorAlias)
+    # Cleanup A #6 (2026-11-02): render the archive PDFs (read-only), delete
+    # + COMMIT, and only then touch Dropbox — a failed delete used to leave
+    # the folder already moved to _ARCHIVED with the project still live.
+    from types import SimpleNamespace as _NS
+    _p_snap = _NS(id=p.id, name=p.name, dropbox_folder=p.dropbox_folder)
+    _pdfs = _render_project_budget_pdfs(p)
     try:
-        # FK-safe deletion order. Anything that points at budget.id (EstimateShare,
-        # SubBudget — both NOT NULL) MUST go before the budgets are deleted, or the
-        # delete 500s the moment a project has an estimate share / sub-budget.
-        # (Bug fix 2026-06-22.)
-
-        # 1. budget-referencing project tables (sub_budget_line cascades via ondelete)
-        EstimateShare.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        SubBudget.query.filter_by(project_id=pid).delete(synchronize_session=False)
-
-        # 2. Cross-project dup claims pointing AT this project → null the back-ref
-        Transaction.query.filter(Transaction.claimed_by_project_id == pid).update(
-            {"claimed_by_project_id": None}, synchronize_session=False)
-
-        # 3. This project's transactions — null self parent-ref, then delete BEFORE
-        #    DocUpload (transaction.doc_upload_id → doc_upload).
-        _txn_ids = [r[0] for r in db.session.query(Transaction.id)
-                    .filter_by(project_id=pid).all()]
-        if _txn_ids:
-            Transaction.query.filter(Transaction.parent_transaction_id.in_(_txn_ids)).update(
-                {"parent_transaction_id": None}, synchronize_session=False)
-            db.session.flush()
-            _delete_evidence_for_txns(_txn_ids)
-            # transaction_split (Phase 2) has no cascade either — drop the
-            # project's allocations before their parents go. (Found by the
-            # Phase 3 E2E run: orphan splits re-attached to a reused id.)
-            from models import TransactionSplit as _TS_del
-            _TS_del.query.filter(db.or_(_TS_del.project_id == pid,
-                                        _TS_del.transaction_id.in_(_txn_ids))).delete(synchronize_session=False)
-            Transaction.query.filter_by(project_id=pid).delete(synchronize_session=False)
-
-        # 4. Null parent_budget_id self-refs, then cascade-delete each budget.
-        Budget.query.filter_by(project_id=pid).update(
-            {"parent_budget_id": None}, synchronize_session=False)
-        db.session.flush()
-        for b in Budget.query.filter_by(project_id=pid).all():
-            _delete_budget_cascade(b.id)
-
-        # 5. Purchase orders (po_doc_attachment cascades via ondelete).
-        PurchaseOrder.query.filter_by(project_id=pid).delete(synchronize_session=False)
-
-        # 6. Documents — null self dup-ref first, then delete (before Location:
-        #    doc_upload.location_id → location).
-        DocUpload.query.filter_by(project_id=pid).update(
-            {"duplicate_of_id": None}, synchronize_session=False)
-        db.session.flush()
-        DocUpload.query.filter_by(project_id=pid).delete(synchronize_session=False)
-
-        # 7. Remaining project-scoped FK tables.
-        Location.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        ProjectAccess.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        ProjectUnion.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        ProjectClient.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        MatchRejection.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        TransactionDupDismissal.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        ActivityLog.query.filter_by(project_id=pid).delete(synchronize_session=False)
-
-        # 8. Plain-int project_id columns (no DB FK, but avoid orphan rows).
-        AiEvent.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        AnomalyFlag.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        VendorAlias.query.filter_by(project_id=pid).delete(synchronize_session=False)
-
-        db.session.delete(p)
+        _delete_project_rows(pid)
         db.session.commit()
     except Exception as e:
         db.session.rollback()
         logging.exception("project_delete failed for pid=%s", pid)
         flash(f"Could not delete project — {type(e).__name__}: {e}", "error")
         return redirect(url_for("dashboard"))
+    _archive_project_dropbox(_p_snap, pdfs=_pdfs)
     flash(f"Project '{pname}' deleted.", "success")
     return redirect(url_for("dashboard"))
 
@@ -5368,8 +5510,13 @@ def _build_wrap_book_data(pid):
         _ev_by_txn = {}
     docs = {d.id: d for d in DocUpload.query.filter(DocUpload.id.in_(doc_ids)).all()} if doc_ids else {}
 
+    # Signed-amount rule (actuals.signed_amount_value): a credit / refund
+    # nets against its line. The export used to count credits as $0, so a
+    # refunded line showed its gross spend (Cleanup A #17, 2026-11-02).
+    from actuals import signed_amount_value as _signed_amount_value_wb
+
     def _amt(t):
-        return float(t.amount or 0) * (1 if t.is_expense else 0)
+        return _signed_amount_value_wb(t.amount, t.is_expense)
 
     # Group expenses by line / section-only.
     by_line, sec_only = {}, {}
@@ -5613,6 +5760,9 @@ def project_wrap(pid):
 @login_required
 def project_archive(pid):
     p = ProjectSheet.query.get_or_404(pid)
+    # Archiving moves the Dropbox folder — owner (LP) or admin only
+    # (Cleanup A #14, 2026-11-02; any editor could before).
+    _require_project_role(pid, 'owner')
     if p.dropbox_folder:
         try:
             dbx = _dbx_client()
@@ -5645,12 +5795,18 @@ def projects_bulk_delete():
     if getattr(current_user, 'role', None) != 'super_admin':
         flash("Only a super admin can permanently delete projects.", "error")
         return redirect(url_for("dashboard"))
-    from models import Location
     ids = request.form.getlist("project_ids")
     if not ids:
         flash("No projects selected.", "warning")
         return redirect(url_for("dashboard"))
+    # Cleanup A #6 (2026-11-02): same per-project order as project_delete —
+    # render PDFs, delete every child table (_delete_project_rows), COMMIT,
+    # then move the Dropbox folder. The old loop moved the folder first and
+    # skipped transactions / splits / shares / POs, so it 500'd on the first
+    # FK with the folders already in _ARCHIVED.
+    from types import SimpleNamespace as _NS
     deleted_names = []
+    failed = []
     for raw in ids:
         try:
             pid = int(raw)
@@ -5659,26 +5815,25 @@ def projects_bulk_delete():
         p = ProjectSheet.query.get(pid)
         if not p:
             continue
+        _p_snap = _NS(id=p.id, name=p.name, dropbox_folder=p.dropbox_folder)
+        _pdfs = _render_project_budget_pdfs(p)
         try:
-            _archive_project_dropbox(p)
+            _delete_project_rows(pid)
+            db.session.commit()
         except Exception as e:
-            logging.warning(f"Dropbox archive on bulk delete failed for {p.name}: {e}")
-        # Null out self-referencing parent_budget_id so Postgres allows deletion
-        Budget.query.filter_by(project_id=pid).update(
-            {"parent_budget_id": None}, synchronize_session=False)
-        db.session.flush()
-        for b in Budget.query.filter_by(project_id=pid).all():
-            _delete_budget_cascade(b.id)
-        DocUpload.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        Location.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        ProjectAccess.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        ProjectUnion.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        ProjectClient.query.filter_by(project_id=pid).delete(synchronize_session=False)
-        deleted_names.append(p.name)
-        db.session.delete(p)
-    db.session.commit()
+            db.session.rollback()
+            logging.exception("projects_bulk_delete failed for pid=%s", pid)
+            failed.append(f"{_p_snap.name}: {type(e).__name__}")
+            continue
+        deleted_names.append(_p_snap.name)
+        try:
+            _archive_project_dropbox(_p_snap, pdfs=_pdfs)
+        except Exception as e:
+            logging.warning(f"Dropbox archive on bulk delete failed for {_p_snap.name}: {e}")
     n = len(deleted_names)
     flash(f"Deleted {n} project{'s' if n != 1 else ''}.", "success")
+    if failed:
+        flash("Could not delete: " + "; ".join(failed), "error")
     return redirect(url_for("dashboard"))
 
 
@@ -5691,6 +5846,7 @@ def projects_bulk_archive():
         flash("No projects selected.", "warning")
         return redirect(url_for("dashboard"))
     archived = 0
+    skipped = 0
     for raw in ids:
         try:
             pid = int(raw)
@@ -5698,6 +5854,10 @@ def projects_bulk_archive():
             continue
         p = ProjectSheet.query.get(pid)
         if not p:
+            continue
+        # Owner / admin only, per project (Cleanup A #14).
+        if _user_project_role(pid) != 'owner':
+            skipped += 1
             continue
         if p.dropbox_folder:
             try:
@@ -5713,6 +5873,9 @@ def projects_bulk_archive():
         archived += 1
     db.session.commit()
     flash(f"Archived {archived} project{'s' if archived != 1 else ''}.", "success")
+    if skipped:
+        flash(f"Skipped {skipped} project{'s' if skipped != 1 else ''} — only the "
+              f"project owner or an admin can archive.", "warning")
     return redirect(url_for("dashboard"))
 
 
@@ -6522,6 +6685,20 @@ def _delete_budget_cascade(bid):
         # Delete children of budget_lines
         ScheduleDay.query.filter(ScheduleDay.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
         CrewAssignment.query.filter(CrewAssignment.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
+        # Cleanup A #18 (2026-11-02): three more tables point at budget_line
+        # with no DB cascade and used to 500 the delete on the FK —
+        # transaction_split (the allocation survives uncoded, like a
+        # transaction), budget_comment (thread moves to budget level, then
+        # goes with the budget below) and sub_budget_line (junction row).
+        TransactionSplit.query.filter(TransactionSplit.budget_line_id.in_(line_ids)).update(
+            {"budget_line_id": None}, synchronize_session=False)
+        try:
+            from models import BudgetComment as _BC_l, SubBudgetLine as _SBL_l
+            _BC_l.query.filter(_BC_l.budget_line_id.in_(line_ids)).update(
+                {"budget_line_id": None}, synchronize_session=False)
+            _SBL_l.query.filter(_SBL_l.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
+        except Exception as _lce:
+            logging.warning(f"[budget-cascade] line child cleanup failed: {_lce}")
 
     # Drop any remaining TravelDetail rows attached to budget-level
     # ScheduleDays (rows with no budget_line_id) before nuking the
@@ -6554,6 +6731,20 @@ def _delete_budget_cascade(bid):
     except Exception:
         # Table may not exist on older deploys; harmless to skip.
         pass
+    # Budget-level tables with NOT NULL budget FKs and no ORM cascade (#18):
+    # comments, estimate shares, schedule waypoints, levers. SubBudget pins
+    # to a budget through a nullable FK → unpin, keep the sub-budget.
+    try:
+        from models import (BudgetComment as _BC_b, EstimateShare as _ES_b,
+                            ScheduleWaypoint as _SW_b, BudgetLever as _BL_b,
+                            SubBudget as _SB_b)
+        _BC_b.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+        _ES_b.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+        _SW_b.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+        _BL_b.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+        _SB_b.query.filter_by(budget_id=bid).update({"budget_id": None}, synchronize_session=False)
+    except Exception as _bce:
+        logging.warning(f"[budget-cascade] budget child cleanup failed: {_bce}")
     BudgetLine.query.filter_by(budget_id=bid).delete(synchronize_session=False)
 
     # ── Cross-row Budget back-references (2026-05-26) ─────────────────
@@ -6991,6 +7182,9 @@ def delete_budget(pid, bid):
     Deleting a Working budget while an Estimated exists is always allowed.
     """
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    # Cleanup A #5 (2026-11-02): a permanent delete is for the project owner
+    # (LP) or an admin — any project editor could do it before.
+    _require_project_role(pid, 'owner')
 
     # Locked versions can't be deleted — the version's Estimated anchor
     # carries the lock and it covers the whole version pair. (Owner
@@ -7004,6 +7198,36 @@ def delete_budget(pid, bid):
     if _anchor_locked:
         return jsonify({"error": "This version is locked — unlock it (✎ in the "
                                  "version menu) before deleting."}), 403
+
+    # Coded spend on this version: deleting the lines un-codes every
+    # transaction / split pointing at them (they survive, uncoded). Refuse
+    # unless the caller explicitly forces it, so a Working budget with real
+    # actuals can't be dropped by a single click.
+    _line_ids_del = [r[0] for r in db.session.query(BudgetLine.id).filter_by(budget_id=bid).all()]
+    _coded_n = 0
+    if _line_ids_del:
+        _coded_n = (db.session.query(Transaction.id)
+                    .filter(Transaction.budget_line_id.in_(_line_ids_del)).count())
+        try:
+            _coded_n += (db.session.query(TransactionSplit.transaction_id)
+                         .filter(TransactionSplit.budget_line_id.in_(_line_ids_del))
+                         .distinct().count())
+        except Exception:
+            pass
+    _force = (request.args.get('force') == '1'
+              or bool((request.get_json(silent=True) or {}).get('force')))
+    if _coded_n and not _force:
+        return jsonify({
+            "error": (f"{_coded_n} transaction{'s are' if _coded_n != 1 else ' is'} coded "
+                      f"to lines on this version. Deleting it un-codes them (the "
+                      f"charges themselves are kept). Confirm to continue."),
+            "needs_force": True, "coded_count": _coded_n,
+        }), 409
+    _snapshot = {"name": budget.name, "budget_mode": budget.budget_mode,
+                 "version_number": budget.version_number,
+                 "version_status": budget.version_status,
+                 "line_count": len(_line_ids_del), "coded_transactions": _coded_n,
+                 "forced": bool(_force)}
 
     # Guard: never delete the last estimated budget
     if _budget_type(budget.budget_mode) == 'estimated':
@@ -7028,6 +7252,16 @@ def delete_budget(pid, bid):
 
     _delete_budget_cascade(bid)
     db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='budget', entity_id=bid,
+                      entity_label=_snapshot["name"], project_id=pid,
+                      before=_snapshot, after=None,
+                      note=(f'Deleted budget version "{_snapshot["name"]}" '
+                            f'({_snapshot["budget_mode"]}, v{_snapshot["version_number"]}; '
+                            f'{_snapshot["line_count"]} lines, '
+                            f'{_coded_n} coded transaction(s) un-coded)'))
+    except Exception:
+        pass
 
     if remaining:
         return jsonify({"ok": True, "redirect": url_for("budget_view", pid=pid, bid=remaining.id)})
@@ -9752,7 +9986,9 @@ def budget_view(pid, bid):
         b = _code_buckets.setdefault(sec, {"items": [], "total": 0.0})
         b["items"].append(t)
         try:
-            b["total"] += float(t.amount or 0)
+            # Credits subtract (actuals.signed_amount_value) — these bucket
+            # totals used to add a refund as if it were spend (Cleanup A #17).
+            b["total"] += _signed_amount_value(t.amount, t.is_expense)
         except (TypeError, ValueError):
             pass
     _sec_order = {code: i for i, (code, _) in enumerate(FP_COA_SECTIONS)}
@@ -10059,6 +10295,11 @@ def budget_view(pid, bid):
 def upsert_line(pid, bid):
     """AJAX: create or update a budget line. Returns updated line totals."""
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    # Locked versions are read-only from every door — the mobile API calls
+    # this handler directly, bypassing the before_request gate (#10).
+    _lock_err = _budget_lock_error(budget)
+    if _lock_err:
+        return jsonify({"error": _lock_err}), 403
     data   = request.get_json(force=True)
     lid    = data.get("id")
 
@@ -11208,6 +11449,13 @@ def schedule_purge_all(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>", methods=["DELETE"])
 @login_required
 def delete_line(pid, bid, lid):
+    # The budget must belong to the project in the URL (Cleanup A #9) and
+    # the version must not be locked (#10 — the API calls this directly,
+    # bypassing the before_request gate).
+    _b_del = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _lock_err = _budget_lock_error(_b_del)
+    if _lock_err:
+        return jsonify({"error": _lock_err}), 403
     ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     # Snapshot for activity log + undo before any cascade.
     _act_before = _budget_line_snapshot(ln)
@@ -11306,6 +11554,14 @@ def delete_line(pid, bid, lid):
         except Exception:
             # Location.budget_line_id may not exist on every install
             pass
+        # 5. (Cleanup A #18) transaction_split / budget_comment keep their
+        #    row but lose the line pointer; sub_budget_line junction rows go.
+        TransactionSplit.query.filter_by(budget_line_id=lid)\
+            .update({TransactionSplit.budget_line_id: None}, synchronize_session=False)
+        from models import BudgetComment as _BC_dl, SubBudgetLine as _SBL_dl
+        _BC_dl.query.filter_by(budget_line_id=lid)\
+            .update({_BC_dl.budget_line_id: None}, synchronize_session=False)
+        _SBL_dl.query.filter_by(budget_line_id=lid).delete(synchronize_session=False)
     except Exception as _fe:
         db.session.rollback()
         logging.exception(f"[delete_line] FK cleanup failed for line {lid}: {_fe}")
@@ -13091,6 +13347,9 @@ def anomaly_resolve(pid, fid):
     _require_project_role(pid, 'editor')
     from models import AnomalyFlag
     import json as _j
+    from actuals import (review_resolve_allowed as _resolve_ok,
+                         anomaly_flag_txn_ids as _flag_tids,
+                         doc_edit_writes_through_to as _doc_writes_to)
     f = AnomalyFlag.query.filter_by(id=fid, project_id=pid).first_or_404()
     body = request.get_json(silent=True) or {}
     action = (body.get('action') or '').strip()
@@ -13099,6 +13358,19 @@ def anomaly_resolve(pid, fid):
         payload = _j.loads(f.payload_json) if f.payload_json else {}
     except Exception:
         payload = {}
+    # Cleanup A #4 (2026-11-02): a resolve may only touch a transaction the
+    # flag is ABOUT, and delete_txn is refused for bank-sourced rows — the
+    # old code deleted any charge id the client sent. Rule in actuals.py.
+    _flag_txn_ids = _flag_tids(f, payload)
+    if action in ('uncode', 'mark_not_project', 'delete_txn') and tid:
+        try:
+            _tid_int = int(tid)
+        except (TypeError, ValueError):
+            return jsonify({"error": "transaction_id must be an integer"}), 400
+        _chk_tx = Transaction.query.filter_by(id=_tid_int, project_id=pid).first()
+        _ok, _why = _resolve_ok(action, _chk_tx, _flag_txn_ids)
+        if not _ok:
+            return jsonify({"error": _why}), 400
     applied = None
     try:
         if action == 'apply_vendor' and f.doc_upload_id:
@@ -13107,8 +13379,10 @@ def anomaly_resolve(pid, fid):
             if suggested and doc:
                 raw = doc.vendor or ''
                 doc.vendor = suggested[:200]
+                # Only the doc's own row — a bank charge keeps the bank's name.
                 for tx in Transaction.query.filter_by(doc_upload_id=doc.id).all():
-                    tx.vendor = suggested[:300]
+                    if _doc_writes_to(tx):
+                        tx.vendor = suggested[:300]
                 from actuals import record_vendor_alias
                 record_vendor_alias(pid, raw, suggested)
                 applied = f'vendor → {suggested}'
@@ -13140,15 +13414,42 @@ def anomaly_resolve(pid, fid):
             amt = body.get('value', payload.get('suggested_amount'))
             doc = db.session.get(DocUpload, f.doc_upload_id)
             if amt is not None and doc:
+                try:
+                    amt = round(float(amt), 2)
+                except (TypeError, ValueError):
+                    return jsonify({"error": "amount must be a number"}), 400
                 doc.amount = amt
+                # Only the doc's own row — a matched bank charge's amount is
+                # what the bank says it is (Cleanup A #4).
                 for tx in Transaction.query.filter_by(doc_upload_id=doc.id).all():
-                    tx.amount = amt
+                    if _doc_writes_to(tx):
+                        tx.amount = amt
                 applied = f'amount → {amt}'
         elif action in ('uncode', 'mark_not_project', 'delete_txn') and tid:
             tx = Transaction.query.filter_by(id=int(tid), project_id=pid).first()
             if tx:
                 if action == 'delete_txn':
+                    _before_del = {"source": tx.source, "vendor": tx.vendor,
+                                   "amount": float(tx.amount) if tx.amount is not None else None,
+                                   "txn_date": tx.txn_date, "doc_upload_id": tx.doc_upload_id,
+                                   "budget_line_id": tx.budget_line_id,
+                                   "account_code": tx.account_code}
+                    Transaction.query.filter_by(parent_transaction_id=tx.id).update(
+                        {"parent_transaction_id": None}, synchronize_session=False)
+                    Transaction.query.filter_by(backup_of_txn_id=tx.id).update(
+                        {"backup_of_txn_id": None}, synchronize_session=False)
+                    _delete_evidence_for_txns([tx.id])
+                    TransactionSplit.query.filter_by(transaction_id=tx.id)\
+                        .delete(synchronize_session=False)
                     db.session.delete(tx)
+                    try:
+                        _log_activity(action='delete', entity_type='transaction',
+                                      entity_id=tx.id, entity_label=(tx.vendor or f'Txn #{tx.id}')[:80],
+                                      project_id=pid, before=_before_del,
+                                      dollar_delta=-float(tx.amount or 0),
+                                      note=f'Review queue: deleted doc-born row #{tx.id}')
+                    except Exception:
+                        pass
                     applied = f'deleted charge #{tid}'
                 else:
                     tx.account_code = None
@@ -13438,6 +13739,7 @@ def qbo_oauth_disconnect():
 @login_required
 def toggle_sync_omit(pid, bid, lid):
     """Toggle sync_omit on a schedule-driven line. When True the line is excluded from auto-recalc."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     ln.sync_omit = not bool(ln.sync_omit)
     if ln.sync_omit:
@@ -16469,6 +16771,7 @@ def budget_lever_save(pid, bid):
 @login_required
 def budget_lever_delete(pid, bid, lid):
     _require_project_role(pid, 'editor')
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     lv = BudgetLever.query.filter_by(id=lid, budget_id=bid).first_or_404()
     db.session.delete(lv)
     db.session.commit()
@@ -16743,6 +17046,7 @@ def upsert_tax_credit(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/tax-credit/<int:tcid>", methods=["DELETE"])
 @login_required
 def delete_tax_credit(pid, bid, tcid):
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     tc = TaxCredit.query.filter_by(id=tcid, budget_id=bid).first_or_404()
     _name = tc.name
     db.session.delete(tc)
@@ -18203,7 +18507,7 @@ def gantt_totals(pid, bid):
 @login_required
 def set_schedule_label(pid, bid, lid):
     """Set or clear a custom display label for one instance of a schedule row."""
-    BudgetLine.query.filter_by(budget_id=bid).first()  # verify budget access
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     data     = request.get_json(force=True)
     instance = str(data.get("instance", 1))
@@ -22539,6 +22843,7 @@ def assign_crew(pid, bid, lid):
     can show one combined prompt and the user opts in. Auto-applying
     silently was overwriting line-level overrides without warning.
     """
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     data   = request.get_json(force=True)
     cid    = data.get("crew_id")
@@ -22713,7 +23018,11 @@ def _require_global_editor():
 @login_required
 def set_role_number(pid, bid, caid):
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
-    ca = CrewAssignment.query.get_or_404(caid)
+    # The assignment must sit on a line of THIS budget (Cleanup A #9).
+    ca = (CrewAssignment.query
+          .join(BudgetLine, BudgetLine.id == CrewAssignment.budget_line_id)
+          .filter(CrewAssignment.id == caid, BudgetLine.budget_id == bid)
+          .first_or_404())
     data = request.get_json(force=True)
     ca.role_number = data.get("role_number", "").strip() or None
     db.session.commit()
@@ -22775,6 +23084,7 @@ def direct_contact_add(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/direct-contacts/<int:dcid>/delete", methods=["POST"])
 @login_required
 def direct_contact_delete(pid, bid, dcid):
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     dc = BudgetDirectContact.query.filter_by(id=dcid, budget_id=bid).first_or_404()
     db.session.delete(dc)
     db.session.commit()
@@ -26397,17 +26707,24 @@ def admin_docs_reprocess_unpaired(pid):
 def cron_reprocess_unpaired():
     """Unattended trigger for the reprocess job (no browser session needed) —
     for a scheduled 4pm-ET kick-off. The worker re-OCRs unpaired receipts, then
-    runs AI cleanup + the double-coded scan. Auth: a secret token (env CRON_TOKEN)
-    via ?token=, an X-Cron-Token header, or JSON body. DISABLED unless CRON_TOKEN
-    is set on the server. Target with ?pid= or ?project=<name substring>.
+    runs AI cleanup + the double-coded scan. Auth: the secret token (env
+    CRON_TOKEN) in the X-Cron-Token header ONLY — a ?token= URL parameter
+    lands in access logs, browser history and referrers, so it is no longer
+    accepted (Cleanup A #15, 2026-11-02). DISABLED unless CRON_TOKEN is set
+    on the server. Target with ?pid= or ?project=<name substring>.
     (User 2026-06-18.)"""
     expected = os.getenv("CRON_TOKEN")
     body = request.get_json(silent=True) or {}
-    token = (request.args.get("token") or request.headers.get("X-Cron-Token")
-             or body.get("token"))
+    token = request.headers.get("X-Cron-Token")
     import hmac as _cron_hmac
-    if not expected or not token or not _cron_hmac.compare_digest(str(token), str(expected)):
-        return jsonify({"error": "forbidden"}), 403
+    if not expected:
+        return jsonify({"error": "cron disabled — CRON_TOKEN is not set"}), 401
+    if not token:
+        return jsonify({"error": "unauthorized — send the token in the "
+                                 "X-Cron-Token header (the ?token= URL "
+                                 "parameter is no longer accepted)"}), 401
+    if not _cron_hmac.compare_digest(str(token), str(expected)):
+        return jsonify({"error": "unauthorized — bad X-Cron-Token"}), 401
     # Resolve the target project by id or by name substring.
     proj = None
     pid_raw = request.args.get("pid") or body.get("pid")
@@ -27001,6 +27318,7 @@ def admin_user_reset_password(uid):
     temp_pw = secrets.token_urlsafe(8)
     u.set_password(temp_pw)
     u.must_change_password = True
+    _revoke_api_tokens(u.id, "admin reset")
     db.session.commit()
     sent = _send_email(
         u.email,
@@ -28415,6 +28733,7 @@ def profile():
                 return redirect(url_for("profile"))
             current_user.set_password(new_pw)
             current_user.must_change_password = False
+            _revoke_api_tokens(current_user.id, "self-service change")
             db.session.commit()
             flash("Password updated successfully.", "success")
             if current_user.is_admin:
@@ -29397,6 +29716,18 @@ def _web_worker_essential_columns():
                    )""",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_split_transaction_id "
                 "  ON transaction_split (transaction_id)",
+                # analyzer_batch (audit H7, alembic 0002) was only ever created
+                # by db.create_all() in preDeploy — which ran against sqlite —
+                # so a worker that rehydrates a doc batch after a recycle
+                # could hit UndefinedTable. Mirrors models.AnalyzerBatch.
+                # (Cleanup A #19, 2026-11-02.)
+                """CREATE TABLE IF NOT EXISTS analyzer_batch (
+                     batch_token  VARCHAR(64) PRIMARY KEY,
+                     raw_json     TEXT,
+                     pending_json TEXT,
+                     created_at   TIMESTAMP,
+                     updated_at   TIMESTAMP
+                   )""",
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_transaction_qbo "
                 "  ON transaction (project_id, qbo_txn_id, qbo_txn_type) "
                 "  WHERE qbo_txn_id IS NOT NULL",
@@ -35195,11 +35526,19 @@ def docs_upload_rename(uid):
 #   * /update       → save edits to vendor / amount / doc_date / category /
 #                     note from the detail modal
 
-def _docs_check_row_access(upload):
-    """Return None if current user may see/edit this upload, else a Flask
-    response ready to be returned. Mirrors the pattern in upload_post.
-    A document with no project (Payee-page paperwork, Phase 2) is reachable
-    by admins only — the Payee pages are admin-only by decision."""
+def _docs_check_row_access(upload, require_editor=False):
+    """Return None if current user may see (or, with require_editor, edit)
+    this upload, else a Flask response ready to be returned. Mirrors the
+    pattern in upload_post. A document with no project (Payee-page
+    paperwork, Phase 2) is reachable by admins only — the Payee pages are
+    admin-only by decision.
+
+    require_editor (Cleanup A #11, 2026-11-02): the mutating doc routes
+    (/update, /reocr, /parse-people, attach/detach-backup) pass True so a
+    project VIEWER can read a document but not rewrite its vendor / amount
+    / type or itemize it — the central enforce_project_access gate exempts
+    docs endpoints for viewers (uploads are allowed), so this is the only
+    editor check they get."""
     if current_user.role in ('super_admin', 'admin'):
         return None
     if upload.project_id is None:
@@ -35208,6 +35547,11 @@ def _docs_check_row_access(upload):
         project_id=upload.project_id, user_id=current_user.id).first()
     if not access:
         return jsonify({"error": "Forbidden"}), 403
+    if require_editor:
+        _role = 'editor' if access.role == 'collaborator' else (access.role or '')
+        if _role not in ('editor', 'owner'):
+            return jsonify({"error": "Viewers can't edit documents — ask a project "
+                                     "editor or admin."}), 403
     return None
 
 
@@ -35496,7 +35840,7 @@ def docs_parse_people(uid):
     rows come back with an empty line picker."""
     import re as _re_pp
     upload = DocUpload.query.get_or_404(uid)
-    deny = _docs_check_row_access(upload)
+    deny = _docs_check_row_access(upload, require_editor=True)
     if deny:
         return deny
     pid = upload.project_id
@@ -36299,6 +36643,9 @@ def crew_profile_json(cid):
     couple of cross-project queries build lookup maps, then a small per-project
     loop (a person is usually on <10 shows) fills engagement rows — NO per-doc
     or per-line N+1. (User 2026-07 — global person profile on Crew DB.)"""
+    # Crew PII is global — same guard as the sibling /crew routes
+    # (security audit C1; Cleanup A #12, 2026-11-02).
+    _require_global_editor()
     cm = CrewMember.query.get_or_404(cid)
     from actuals import get_current_working_budget, get_current_estimated_budget
 
@@ -37022,7 +37369,7 @@ def docs_upload_attach_backup(uid):
     tagged. Otherwise the doc is attached as evidence only. Body:
     {doc_id, target_txn_id}. (2026-07-22.)"""
     upload = DocUpload.query.get_or_404(uid)
-    deny = _docs_check_row_access(upload)
+    deny = _docs_check_row_access(upload, require_editor=True)
     if deny:
         return deny
     _require_project_role(upload.project_id, 'editor')
@@ -37067,7 +37414,7 @@ def docs_upload_detach_backup(uid):
     the backing doc's own charge was absorbed (backup_of_txn_id → this
     target), restore it to the queue. Body: {doc_id, target_txn_id}. (2026-07-22.)"""
     upload = DocUpload.query.get_or_404(uid)
-    deny = _docs_check_row_access(upload)
+    deny = _docs_check_row_access(upload, require_editor=True)
     if deny:
         return deny
     _require_project_role(upload.project_id, 'editor')
@@ -39554,7 +39901,7 @@ def docs_upload_reocr(uid):
     so the user can review and Save. Lets you re-read a receipt OCR got wrong
     (e.g. a foreign transaction that wasn't recognized). (User 2026-06-17.)"""
     upload = DocUpload.query.get_or_404(uid)
-    deny = _docs_check_row_access(upload)
+    deny = _docs_check_row_access(upload, require_editor=True)
     if deny:
         return deny
     from datetime import datetime as _dt
@@ -39616,7 +39963,7 @@ def docs_upload_update(uid):
     without disturbing the filed file's path.
     """
     upload = DocUpload.query.get_or_404(uid)
-    deny = _docs_check_row_access(upload)
+    deny = _docs_check_row_access(upload, require_editor=True)
     if deny:
         return deny
     # `_dt` is used below (filed_at, txn updated_at) but was never defined in
@@ -39942,7 +40289,8 @@ def docs_upload_update(uid):
     # every linked Transaction, bank rows included, so retyping a matched
     # invoice as a contract silently destroyed the bank charge. Mirrors the
     # single-delete path (docs_upload_delete). 2026-10-30.
-    from actuals import is_non_ledger_category as _is_non_ledger
+    from actuals import (is_non_ledger_category as _is_non_ledger,
+                         doc_edit_writes_through_to as _doc_edit_writes_through_to)
     try:
         if _is_non_ledger(upload.category):
             _doomed_ids = [r[0] for r in db.session.query(Transaction.id)
@@ -39980,11 +40328,21 @@ def docs_upload_update(uid):
             # overwrote every itemized line with the full invoice total on any
             # doc Save (user 2026-07-20: "it doesn't hold the value of that
             # line and replaces it with the total value for the invoice").
+            #
+            # And ONLY onto the doc's OWN row(s) — source='doc_upload'. A
+            # matched bank charge (qbo_sync / csv_import / reconciled /
+            # manual) carries the BANK's vendor, amount and date; a receipt
+            # edit must never rewrite those, and a blank doc date used to
+            # wipe the bank date outright. (Cleanup A #1, 2026-11-02.) The
+            # pure rule lives in _doc_edit_writes_through_to() so it is
+            # unit-tested.
             linked_txns = (Transaction.query
                            .filter(Transaction.doc_upload_id == upload.id,
                                    Transaction.source != 'invoice_split')
                            .all())
             for _t in linked_txns:
+                if not _doc_edit_writes_through_to(_t):
+                    continue
                 _t.vendor   = upload.vendor
                 _t.amount   = upload.amount
                 _t.txn_date = upload.doc_date.isoformat() if upload.doc_date else None

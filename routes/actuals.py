@@ -1650,12 +1650,23 @@ def actuals_edit_transaction(pid, tid):
     if "amount" in data:
         a = data.get("amount")
         if a in (None, "", "null"):
-            txn.amount = None
+            _new_amt = None
         else:
             try:
-                txn.amount = round(float(a), 2)
+                _new_amt = round(float(a), 2)
             except (TypeError, ValueError):
                 return jsonify({"error": "amount must be a number"}), 400
+        # Cleanup A #16 (2026-11-02): a bank-sourced amount is what the bank
+        # says it is, and a split row's amount must keep matching its split
+        # sum — the old code changed either silently. Rule in
+        # actuals.amount_edit_allowed (unit-tested).
+        from actuals import amount_edit_allowed as _amt_ok
+        _split_amts = [sp.amount for sp in
+                       TransactionSplit.query.filter_by(transaction_id=txn.id).all()]
+        _ok, _why = _amt_ok(txn, _new_amt if _new_amt is not None else 0, _split_amts)
+        if not _ok:
+            return jsonify({"error": _why}), 409
+        txn.amount = _new_amt
     if "txn_date" in data:
         d = (data.get("txn_date") or "").strip()
         if not d:
@@ -2397,6 +2408,29 @@ def actuals_delete_duplicate_txn(pid, tid):
     elif t.doc_upload_id:
         return jsonify({"error": "This charge is linked to a receipt — unmatch it first "
                         "instead of deleting it here."}), 400
+    else:
+        # Cleanup A #7 (2026-11-02): an unlinked bank / manual row is only a
+        # "duplicate" when a twin SURVIVES — same |amount|, same date, same
+        # vendor or card, different id (actuals.is_duplicate_twin). Without
+        # one this click simply erased a charge from the ledger.
+        from actuals import is_duplicate_twin as _is_twin
+        _cands = (Transaction.query
+                  .filter(Transaction.project_id == pid,
+                          Transaction.id != tid,
+                          Transaction.txn_date == t.txn_date,
+                          Transaction.source != 'invoice_split')
+                  .all())
+        _twin = next((c for c in _cands if _is_twin(t, c)), None)
+        if _twin is None:
+            return jsonify({"error": "No matching charge found to keep — this row has no "
+                                     "twin (same amount, date and vendor or card), so it "
+                                     "isn't a duplicate. If it isn't a project expense, "
+                                     "mark it Not project instead."}), 409
+        # Keep the coding on the survivor if only the doomed row carried it.
+        if (t.account_code or t.budget_line_id) and not (_twin.account_code or _twin.budget_line_id):
+            _twin.account_code      = t.account_code
+            _twin.account_code_name = t.account_code_name
+            _twin.budget_line_id    = t.budget_line_id
     before = {"source": t.source, "vendor": t.vendor,
               "amount": float(t.amount) if t.amount is not None else None,
               "txn_date": t.txn_date, "card_last4": t.card_last4,
@@ -2405,7 +2439,13 @@ def actuals_delete_duplicate_txn(pid, tid):
               "match_status": t.match_status}
     Transaction.query.filter_by(parent_transaction_id=tid).update(
         {"parent_transaction_id": None}, synchronize_session=False)
+    Transaction.query.filter_by(backup_of_txn_id=tid).update(
+        {"backup_of_txn_id": None}, synchronize_session=False)
     _delete_evidence_for_txns([tid])
+    # Splits point at the row with no cascade (#7).
+    before["splits"] = [{"budget_line_id": sp.budget_line_id, "amount": float(sp.amount or 0)}
+                        for sp in TransactionSplit.query.filter_by(transaction_id=tid).all()]
+    TransactionSplit.query.filter_by(transaction_id=tid).delete(synchronize_session=False)
     _label = (t.vendor or f'Txn #{tid}')[:80]
     _amt = float(t.amount or 0)
     db.session.delete(t)
@@ -3438,7 +3478,12 @@ def actuals_qbo_accounts_list(pid):
 @login_required
 def actuals_qbo_accounts_save(pid):
     """Save the project's QBO account selection. Body:
-    {"account_ids": ["1","42",...]}"""
+    {"account_ids": ["1","42",...]}. Admin only (Cleanup A #13, 2026-11-02):
+    which bank accounts feed a project is a company setting, not a project
+    editor's call."""
+    if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+        return jsonify({"error": "Only an admin can change the QuickBooks accounts "
+                                 "for a project."}), 403
     project = ProjectSheet.query.get_or_404(pid)
     data = request.get_json(force=True) or {}
     ids  = data.get("account_ids") or []

@@ -227,3 +227,69 @@ from it (cash/reimbursement/accrual) — and every expense gets coded + backed.
   document editor today); mirroring a QuickBooks value that was EMPTIED (an
   empty value never blanks the local copy); QuickBooks "Deleted" CDC entries
   are skipped, not unlinked.
+
+## 🧹 Cleanup A — safety (2026-11-02, branch `cleanup/a-safety`)
+From the read-only audit of 2026-11-02: data-loss paths, cross-project
+access and money rules. Pure rules live in `actuals.py` ("Safety rules"
+banner) with `tests/unit/test_safety_rules.py`; the routes are walked end to
+end in `tests/unit/test_safety_app.py`.
+
+**Data loss**
+- [x] A1 — Receipt edits write through ONLY to the doc's own ledger row
+  (`source='doc_upload'`, `actuals.doc_edit_writes_through_to`); a matched
+  bank charge keeps the bank's vendor / amount / date (a blank doc date used
+  to wipe it).
+- [x] A2 — Docs wipe deletes only doc-born rows, unlinks bank / manual rows
+  (coding kept), commits BEFORE any Dropbox move, logs to Activity; the
+  confirm text in `b03.js` / `docs_upload.html` says exactly that. Super-admin
+  only (unchanged).
+- [x] A3 — `/admin/cleanup-estimate-txns` deletes doc-born rows only, unlinks
+  bank rows, clears evidence + splits; the page shows delete vs unlink per row.
+- [x] A4 — Review-queue resolve: the transaction must belong to the flag
+  (`actuals.anomaly_flag_txn_ids`), `delete_txn` refused (400) for non-doc
+  sources, `accept_amount` / `apply_vendor` write to the doc's own row only.
+- [x] A5 — Deleting a budget version: owner / admin only; 409 `needs_force`
+  when transactions or splits are coded to it, `?force=1` + explicit UI
+  confirm (budget.html, gantt.html); activity-logged with a snapshot.
+- [x] A6 / A22 — `project_delete` and `projects_bulk_delete` share
+  `_delete_project_rows` (FK-safe order, now including `budget_comment`,
+  `schedule_waypoint` and doc evidence); render archive PDFs → delete →
+  commit → THEN move the Dropbox folder.
+- [x] A7 — delete-duplicate needs a surviving twin (`actuals.is_duplicate_twin`:
+  same |amount|, date, vendor or card) or 409; survivor inherits coding;
+  splits / evidence / backup refs cleared.
+- [x] A8 — QuickBooks purge: super_admin only, `project=<id>` required
+  ('all' refused), releases only claims tied to deleted `(qbo_txn_id,
+  qbo_txn_type)` pairs, clears evidence + splits, activity-logged.
+
+**Access**
+- [x] A9 — Budget-in-project check (`Budget.query.filter_by(id=bid,
+  project_id=pid).first_or_404()`) added to `delete_line`, `toggle_sync_omit`,
+  `budget_lever_delete`, `set_schedule_label`, `assign_crew`,
+  `direct_contact_delete`, plus `delete_tax_credit` and `set_role_number`
+  (assignment joined to a line of the budget) found by the sweep.
+- [x] A10 — Version lock: `_budget_lock_error` (pure core
+  `actuals.budget_lock_denial`) runs in the before_request gate AND inside
+  `upsert_line` / `delete_line`; `delete_line`, `api_budget_line_save`,
+  `api_budget_line_delete` added to `_BUDGET_WRITE_ENDPOINTS`.
+- [x] A11 — `_docs_check_row_access(require_editor=True)` on /update, /reocr,
+  /parse-people, attach-backup, detach-backup — viewers get 403.
+- [x] A12 — `/crew/<cid>/profile.json` requires `_require_global_editor`.
+- [x] A13 — POST `/actuals/qbo-accounts` is admin only.
+- [x] A14 — `/projects/<pid>/archive` and bulk-archive: owner / admin only.
+- [x] A15 — Cron token accepted ONLY in `X-Cron-Token` (401 otherwise); API
+  tokens revoked on every password change (`_revoke_api_tokens`); CSRF
+  "transition" seed-and-allow path removed.
+  - [ ] A15b — `api_token.expires_at` (schema change; left for a later phase).
+
+**Money**
+- [x] A16 — Amount edits: refused on bank-sourced rows; a split row's new
+  amount must equal its split sum (`actuals.amount_edit_allowed`).
+- [x] A17 — Wrap-book export and the "Code expenses" bucket totals use
+  `signed_amount_value` (credits net; they counted $0 / positive before).
+
+**Hygiene**
+- [x] A18 — `_delete_budget_cascade` and `delete_line` clear
+  `transaction_split`, `budget_comment`, `sub_budget_line`, `estimate_share`,
+  `schedule_waypoint`, `budget_lever` and unpin `sub_budget`.
+- [x] A19 — `analyzer_batch` created in `_web_worker_essential_columns`.
