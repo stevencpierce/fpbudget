@@ -1221,10 +1221,11 @@ def match_vendor_to_payee(f, by_vendor_id, by_name):
     Returns (payee, how) with how in 'id' | 'name', or (None, None): a
     DisplayName that two unlinked Payees share is ambiguous and is left
     for the Link screen; nothing is ever fuzzy."""
+    from actuals import payee_name_key
     cm = by_vendor_id.get(f["qbo_vendor_id"])
     if cm is not None:
         return cm, 'id'
-    key = (f.get("display_name") or '').strip().lower()
+    key = payee_name_key(f.get("display_name"))   # the ONE exact-name key (Cleanup D)
     if key:
         hits = by_name.get(key) or []
         uniq = {id(x): x for x in hits}
@@ -1295,6 +1296,7 @@ def sync_vendors(conn, db, fetch=None):
     mode = 'cdc' if since else 'full'
     raw, server_time = (fetch or fetch_vendors)(conn, db, since)
 
+    from actuals import payee_name_key
     members = CrewMember.query.all()
     by_vendor_id = {str(m.qbo_vendor_id): m for m in members if m.qbo_vendor_id}
     by_name = {}
@@ -1304,7 +1306,7 @@ def sync_vendors(conn, db, fetch=None):
         if m.qbo_vendor_id or getattr(m, 'is_w2_employee', False):
             continue
         for raw_name in (m.name, m.legal_name):
-            k = (raw_name or '').strip().lower()
+            k = payee_name_key(raw_name)   # same key match_vendor_to_payee looks up
             if k and m not in by_name.setdefault(k, []):
                 by_name[k].append(m)
 
@@ -1326,7 +1328,7 @@ def sync_vendors(conn, db, fetch=None):
 
         cm, how = match_vendor_to_payee(f, by_vendor_id, by_name)
         if cm is None:
-            key = (f.get("display_name") or '').strip().lower()
+            key = payee_name_key(f.get("display_name"))
             if key and len(by_name.get(key) or []) > 1:
                 ambiguous += 1
                 log.info(f"[qbo-vendors] '{f.get('display_name')}' matches "
@@ -1337,7 +1339,7 @@ def sync_vendors(conn, db, fetch=None):
             cm.qbo_vendor_id = f["qbo_vendor_id"]
             by_vendor_id[f["qbo_vendor_id"]] = cm
             for raw_name in (cm.name, cm.legal_name):
-                k = (raw_name or '').strip().lower()
+                k = payee_name_key(raw_name)
                 if k and cm in (by_name.get(k) or []):
                     by_name[k].remove(cm)
             linked += 1

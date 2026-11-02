@@ -62,7 +62,7 @@ function allInRecalc() {
 
   _allInComputedRate = Math.round(computedRate * 100) / 100;
 
-  const fmt = n => '$' + n.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fmt = n => FP.money(n);   // shared rule (fp-utils.js)
   const otLabel = _OT_LABELS[rateType] || rateType;
 
   document.getElementById('all-in-rate-display').textContent = fmt(_allInComputedRate);

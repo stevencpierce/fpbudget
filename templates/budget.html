@@ -1,8 +1,5 @@
 {% extends "base.html" %}
-{% set MODE_META = {
-  'estimated':       {'label': 'ESTIMATED', 'short': 'Est',  'desc': 'Baseline — revise only when scope changes',          'cls': 'mode-estimated'},
-  'working':         {'label': 'WORKING',   'short': 'Work', 'desc': 'Current forecast — your live evolving projection',   'cls': 'mode-working'},
-} %}
+{# MODE_META is budget_calc.MODE_META, served by app.inject_globals (Cleanup D). #}
 {% set cur_mode = MODE_META.get(budget.budget_mode, MODE_META['estimated']) %}
 {# A live Working exists somewhere in the project (it may be an OLDER version
    than the Estimated on screen) — drives the Working / variance columns. #}
@@ -337,7 +334,7 @@
         var EST_DEFAULT_SUBJECT = "{{ project.name|e }} — Estimate for your review";
         var _estLoaded = false;
 
-        function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+        function esc(s){ return FP.esc(s); }   // shared rule (static/fp-utils.js)
         function estPid(){
           // Derive pid from the URL — do NOT assume a global PROJ_ID exists.
           var m = location.pathname.match(/\/projects\/(\d+)\//);
@@ -541,7 +538,7 @@
           body.innerHTML=rows;
         }catch(err){ body.innerHTML='<div style="padding:24px;color:#e05555">Could not load: '+err.message+'</div>'; }
       }
-      function _esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+      function _esc(s){ return FP.esc(s); }   // shared rule (static/fp-utils.js)
       function _estCopy(btn, token){ var link=location.origin+'/e/'+token; (navigator.clipboard?navigator.clipboard.writeText(link):Promise.reject()).then(function(){ btn.textContent='Copied'; setTimeout(function(){btn.textContent='Copy';},1200); }).catch(function(){ var inp=btn.previousElementSibling; if(inp){inp.select(); try{document.execCommand('copy');btn.textContent='Copied';setTimeout(function(){btn.textContent='Copy';},1200);}catch(_){}}}); }
       async function _estRevoke(sid){ if(!confirm('Revoke this estimate link? The client will no longer be able to open it.')) return;
         try{ var r=await fetch('/estimate/share/'+sid+'/revoke',{method:'POST'}); if(r.ok) _loadEstimateManager(); else alert('Revoke failed'); }catch(e){ alert('Revoke error: '+e.message); } }
@@ -5219,7 +5216,7 @@ function _renderProjectFringes(fringes) {
     el.innerHTML = '<div class="muted" style="font-size:.8rem;font-style:italic;padding:8px">No fringes yet.</div>';
     return;
   }
-  const _esc = s => String(s||'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  const _esc = FP.esc;   // shared rule (static/fp-utils.js)
   el.innerHTML = fringes.map(f => {
     const isProj = !f.is_global;
     const dim = f.overridden ? 'opacity:.45' : '';
@@ -5406,7 +5403,7 @@ function _renderLinePoList(query) {
     </div>`;
     return;
   }
-  const _esc = s => String(s||'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  const _esc = FP.esc;   // shared rule (static/fp-utils.js)
   list.innerHTML = matches.map(p => `
     <div class="line-po-pick-row" data-poid="${p.id}"
          onclick="pickLinePo(${p.id})"
@@ -5501,7 +5498,7 @@ function _renderLineSbList(sbs) {
     </div>`;
     return;
   }
-  const _esc = s => String(s||'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  const _esc = FP.esc;   // shared rule (static/fp-utils.js)
   list.innerHTML = active.map(s => {
     const checked = _lineSbStartMembership.has(s.id) ? 'checked' : '';
     return `
@@ -6039,17 +6036,8 @@ window.saveInlinePo = async function() {
   const _lineCache = {};      // { lineId: txns[] }  — fetch once per expand
   const _sectionCache = {};   // { code: txns[] }
 
-  function _esc(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-  function _fmtMoney(n) {
-    if (n == null || isNaN(n)) return '—';
-    const neg = n < 0;
-    return (neg ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US',
-      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
+  function _esc(s) { return FP.esc(s); }   // shared rule (static/fp-utils.js)
+  function _fmtMoney(n) { return FP.money(n); }   // shared rule (static/fp-utils.js)
 
   // Render the subrow table for a set of transactions into a body container.
   // scope = 'line' | 'section' — controls which uncode endpoint runs.
@@ -6405,8 +6393,7 @@ window.saveInlinePo = async function() {
   // another tab shows up here the moment you come back. Section-only rows
   // update their amount in place. Fail-quiet.
   let _lastRefresh = 0;
-  const _money = n => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US',
-    { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const _money = n => FP.money(n);   // shared rule (static/fp-utils.js)
   async function refreshActualCells(quiet) {
     // NEVER on a frozen (superseded) version — the ❄ snapshots are immutable
     // history; live totals would overwrite them with moved spend. (2026-07.)
@@ -7219,7 +7206,7 @@ function _lineSaveToast(msg) {
   t._hideT = setTimeout(() => { t.style.display = 'none'; }, 6000);
 }
 
-const fmtCurrency = v => '$' + parseFloat(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+const fmtCurrency = v => FP.money(v);   // shared rule (static/fp-utils.js)
 // feeMult() is now ONLY for cross-view columns (frozen Estimated snapshots,
 // sister-Working comparisons). The viewed budget's own totals use explicit
 // per-line dollar shares — see feeLineAmt() below. (2026-09-04.)
@@ -7318,8 +7305,7 @@ async function saveAssumptions() {
 // ── ⚖ Levers (owner 2026-09-10) ──────────────────────────────────────────
 const _LEVER_STATUS_LBL = {open: '', taken: '✅ Taken', kept: '⏸ Kept', later: '🕐 Later'};
 function _leverRowHtml(lv) {
-  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
-    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const esc = FP.esc;   // shared rule (static/fp-utils.js)
   const st = _LEVER_STATUS_LBL[lv.status] || '';
   return `
   <div class="lever-row" data-id="${lv.id || ''}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card)">
@@ -7347,8 +7333,7 @@ function _leverRowHtml(lv) {
   </div>`;
 }
 function _leverSuggestionHtml(s) {
-  const esc = t => String(t == null ? '' : t).replace(/[&<>"']/g,
-    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const esc = FP.esc;   // shared rule (static/fp-utils.js)
   const amt = Number(s.amount || 0);
   return `
   <div class="lever-suggestion" style="border:1px dashed rgba(251,191,36,.5);border-radius:8px;padding:8px 12px;
@@ -8714,8 +8699,7 @@ document.addEventListener('click', e => {
 const COMMENTS_URL = '{{ url_for("budget_comments_list", pid=project.id, bid=budget.id) }}';
 const COMMENT_DEL_TMPL = '{{ url_for("budget_comments_delete", pid=project.id, cid=999999999) }}';
 let _cmLineId = null;
-function _cmEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g,
-  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function _cmEsc(s){ return FP.esc(s); }   // shared rule (static/fp-utils.js)
 async function _cmLoad() {
   const list = document.getElementById('comments-list');
   list.innerHTML = '<div style="color:var(--text-muted)">Loading…</div>';
@@ -8808,7 +8792,7 @@ document.addEventListener('click', e => {
 });
 
 // ── Pull-in from another version (2026-07-22) ────────────────────────────
-const _pEsc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const _pEsc = FP.esc;   // shared rule (static/fp-utils.js)
 const PULL_CAND_URL = '{{ url_for("pull_budget_candidates", pid=project.id, bid=budget.id) }}';
 const PULL_APPLY_URL = '{{ url_for("pull_budget_lines", pid=project.id, bid=budget.id) }}';
 function openPullModal(event) {
@@ -9055,7 +9039,7 @@ async function _saveSettingsInner() {
 // ── Auto-calc displays (Workers' Comp / Payroll Fee in Settings) ──────────
 (function() {
   const grossLaborWages = {{ top_sheet.gross_labor_wages | default(0) }};
-  const fmtCur = v => '$' + parseFloat(v||0).toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2});
+  const fmtCur = v => FP.money(v || 0);   // shared rule (static/fp-utils.js)
   function updateAutoCalcDisplays() {
     const wc = parseFloat(document.getElementById('set-workers-comp').value) || 0;
     const pf = parseFloat(document.getElementById('set-payroll-fee').value)  || 0;
@@ -9880,8 +9864,7 @@ function validateContactSheetEmails() {
 // client-side from the Docs-tab rows (data-crew-member-id). Screen-only, so
 // the exported/printed contact sheet stays clean. (User 2026-06-01: drop the
 // top alert; combine badges into the contact sheet.)
-function _pesc(s){ return String(s==null?'':s)
-  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function _pesc(s){ return FP.esc(s); }   // shared rule (static/fp-utils.js)
 window._packetOpenDoc = function(uid){
   if (typeof openDocDetail === 'function') openDocDetail(parseInt(uid), null);
 };
@@ -10004,10 +9987,8 @@ window._buildPeopleSummary = async function(){
   } catch (e) { return; }   // fail-open: no decoration rather than a broken row
   const people = window._peopleSummaryCache || {};
   // Local escape fallback so this block stays self-contained (matches _pesc).
-  const _esc = (typeof _pesc === 'function') ? _pesc
-    : (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
-        c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const _money = (n) => '$' + Number(n || 0).toLocaleString(undefined, {maximumFractionDigits: 0});
+  const _esc = FP.esc;   // shared rule (static/fp-utils.js)
+  const _money = (n) => FP.money(n || 0, {decimals: 0});
   const _EMP = {loan_out:'Loan-out', employee:'Employee', vendor:'Vendor'};
   const _UNI = {union:'Union', non_union:'Non-Union'};
   blocks.forEach(block => {

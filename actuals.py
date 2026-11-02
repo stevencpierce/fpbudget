@@ -543,6 +543,13 @@ def budget_lock_denial(budget, anchor):
 # line-totals.json refresh) call so they never disagree about splits.
 
 PAYMENT_METHODS = ('company_card', 'cash', 'personal_card', 'check', 'ach', 'other')
+# The ONE label map (Cleanup D): served to templates / JS as
+# PAYMENT_METHOD_LABELS / window.__FP_PAYMENT_METHODS — the Actuals screen's
+# "How was it paid?" radios and the table's card cell both read it (the
+# radios used to lack ACH; a01.js had its own shorter map).
+PAYMENT_METHOD_LABELS = {'company_card': 'Company card', 'cash': 'Cash',
+                         'personal_card': 'Personal card', 'check': 'Check',
+                         'ach': 'ACH', 'other': 'Other'}
 
 # log-expense reason_kind → payment_method, for callers that still send the
 # older shape (reason_kind cash / check / other_card / other).
@@ -984,17 +991,74 @@ def admin_pool_csv(rows):
     return buf.getvalue()
 
 
-# ── Learned vendor → COA mapping (2026-06-18 AI auto-coding) ──────────────
+# ── Vendor names: the ONE set of cleaning rules (Cleanup D, 2026-11-02) ──
+# Three questions, three functions — never a private copy:
+#   canon_vendor(v)       the STORAGE key for VendorAlias.raw_canonical and
+#                         VendorCategoryMap.vendor_canonical. Its output is
+#                         pinned by the rows already in the database, so it
+#                         must not change shape (no prefix stripping here).
+#   vendor_match_key(v)   the FUZZY-match form: processor prefix off, the
+#                         " *ride-id" tail off, trailing reference tails off,
+#                         then canon_vendor. app._normalize_vendor is an
+#                         alias of this; _vendor_similarity builds on it.
+#   payee_name_key(v)     the EXACT-name key (strip + lower) that
+#                         payee_name_index and qbo_sync.match_vendor_to_payee
+#                         index a payee's name / legal name / company under.
+
+# Prefixes card processors and banks prepend to the merchant. ONE list
+# (merged from app._normalize_vendor's and the '*' rule in _vendor_similarity);
+# longest first so 'amazon mktpl*' wins over 'amazon mktp '.
+PROCESSOR_PREFIXES = (
+    'remote online deposit ', 'amazon mktpl*', 'amazon mktpl ', 'amazon mktp ',
+    'amzn mktp* ', 'amzn mktp ', 'pos debit ', 'paypal *', 'paypal*', 'tst* ',
+    'tst*', 'sq *', 'sq*', 'in *', 'in*', 'pp*',
+)
+
+
+def strip_processor_prefix(v):
+    """Drop ONE leading payment-processor / bank prefix ('SQ *CASA VIDEO' →
+    'CASA VIDEO', 'TST* TACO' → 'TACO', 'PAYPAL *SOUTHWESTAI' →
+    'SOUTHWESTAI'). Case-insensitive; the rest of the string keeps its case.
+    Strings with no known prefix come back unchanged (whitespace-trimmed)."""
+    s = (v or '').strip()
+    low = s.lower()
+    for p in PROCESSOR_PREFIXES:
+        if low.startswith(p):
+            return s[len(p):].strip()
+    return s
+
+
 def canon_vendor(v):
     """Normalize a vendor string into the learned-mapping key: lowercase,
     drop store/terminal numbers + punctuation, collapse whitespace. Keeps
-    'AMAZON MKTPLACE #1234' and 'amazon mktplace' on the same key."""
+    'AMAZON MKTPLACE #1234' and 'amazon mktplace' on the same key.
+    STORAGE KEY — see the note above; do not add prefix stripping here."""
     s = (v or '').lower()
     s = _re.sub(r'[#*]+\s*\d+', ' ', s)        # store / terminal numbers
     s = _re.sub(r'\b\d{3,}\b', ' ', s)          # long digit runs
     s = _re.sub(r'[^a-z0-9 ]+', ' ', s)         # punctuation
     s = _re.sub(r'\s+', ' ', s).strip()
     return s[:200]
+
+
+def vendor_match_key(v):
+    """The fuzzy-match form of a vendor string: 'LYFT *RIDE MON 8AM' and
+    'Lyft' both come out 'lyft'; 'SQ *CASA VIDEO #12' → 'casa video'.
+    Processor prefix off (strip_processor_prefix), the ' *…' tail off, a
+    trailing reference tail ('… 8AM', '… 2026-05-01') off, then
+    canon_vendor's rules."""
+    if not v:
+        return ''
+    s = strip_processor_prefix(str(v))
+    s = _re.split(r'\s+\*', s, maxsplit=1)[0]          # " *ride id" tails
+    s = _re.sub(r'\s+\d[\w\-: ]*$', '', s).strip()      # trailing refs / dates
+    return canon_vendor(s)
+
+
+def payee_name_key(v):
+    """The exact-name key a payee's name / legal name / company is indexed
+    under (and a vendor string is looked up by): trimmed, lower-cased."""
+    return (v or '').strip().lower()
 
 
 def record_vendor_category(project_id, vendor, account_code, budget_line_id=None):
@@ -1899,17 +1963,22 @@ def _vendor_similarity(a, b):
     So we also try the merchant part AFTER the "*" and take the best score, so
     those land at full strength instead of being diluted by the prefix token.
     (User 2026-06-02.) Anything below 0.45 is treated as no-match by the caller."""
-    import re as _re
     if not a or not b:
         return 0.0
-    norm = lambda s: _re.sub(r'\s+', ' ', _re.sub(r'[^a-z0-9 ]', ' ', (s or '').lower())).strip()
+    # ONE cleaning rule (Cleanup D): canon_vendor for the base form,
+    # vendor_match_key for the processor-prefix-free form. (This used to
+    # carry its own lowercase/punctuation normaliser.)
+    norm = canon_vendor
 
     def _variants(raw):
         vs = set()
         base = norm(raw)
         if base:
             vs.add(base)
-        if '*' in (raw or ''):                 # merchant after the processor mark
+        mk = vendor_match_key(raw)
+        if mk:
+            vs.add(mk)
+        if '*' in (raw or ''):                 # merchant after an unlisted processor mark
             tail = norm((raw or '').split('*')[-1])
             if tail:
                 vs.add(tail)
@@ -3164,7 +3233,7 @@ def payee_name_index(members):
     for m in members:
         for raw in (getattr(m, 'name', None), getattr(m, 'legal_name', None),
                     getattr(m, 'company', None)):
-            k = (raw or '').strip().lower()
+            k = payee_name_key(raw)   # the ONE exact-name key (Cleanup D)
             if not k:
                 continue
             if k in idx and idx[k] != m.id:
@@ -3211,7 +3280,7 @@ def resolve_payee_candidates(txn, doc_owner_by_id, line_owners_by_id,
             if a:
                 cands.append(('alias', int(a)))
         if name_index:
-            n = name_index.get(vendor.strip().lower())
+            n = name_index.get(payee_name_key(vendor))
             if n:
                 cands.append(('alias', int(n)))
     ids = {c[1] for c in cands}

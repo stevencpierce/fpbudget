@@ -16,13 +16,8 @@
   let DATA = null;
   let TAB = 'summary';
 
-  const fmtMoney = (n) => {
-    const v = Number(n || 0);
-    return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US',
-      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  };
-  const esc = (s) => String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const fmtMoney = (n) => FP.money(n || 0);   // shared rule (fp-utils.js)
+  const esc = FP.esc;
   const within = (d, tol) => Math.abs(Number(d || 0)) < (tol || 0.01);
 
   function open() {

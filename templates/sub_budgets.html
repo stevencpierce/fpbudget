@@ -541,9 +541,7 @@ function _sbPickerUpdateCount() {
   const n = document.querySelectorAll('.sb-picker-cb:checked:not(:disabled)').length;
   document.getElementById('sb-picker-count').textContent = `${n} selected to add`;
 }
-function _esc(s) {
-  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
+function _esc(s) { return FP.esc(s); }   // shared rule (static/fp-utils.js)
 
 async function saveSubBudgetLines() {
   if (!_sbPickerSbId) return;

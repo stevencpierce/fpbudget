@@ -19,16 +19,10 @@
   AW.BID = AJ.bid;
 
   // ── Utilities ────────────────────────────────────────────────────────
-  const esc = s => String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  const money = v => {
-    const n = Number(v || 0);
-    return (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  };
-  const whole = v => {
-    const n = Math.round(Number(v || 0));
-    return (n < 0 ? '-' : '') + Math.abs(n).toLocaleString('en-US');
-  };
+  // Shared rules (static/fp-utils.js, loaded by base.html) under the local names.
+  const esc = FP.esc;
+  const money = v => FP.money(v || 0);
+  const whole = FP.whole;
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const shortDate = iso => {
     if (!iso) return '—';
@@ -202,7 +196,7 @@
   function cardCell(t) {
     if (t.card_last4) return '••' + esc(t.card_last4);
     const pm = t.payment_method;
-    if (pm) return ({ cash: 'Cash', personal_card: 'Personal', check: 'Check', ach: 'ACH', company_card: 'Card', other: 'Other' })[pm] || esc(pm);
+    if (pm) return esc((window.__FP_PAYMENT_METHODS || {})[pm] || pm);   // the ONE label map (Cleanup D)
     if ((t.qbo_txn_type || '') === 'BillPayment') return 'ACH';
     return '';
   }

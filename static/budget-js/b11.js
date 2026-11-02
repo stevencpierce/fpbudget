@@ -11,8 +11,7 @@ function _showConflictToast(field, winnerName) {
   toast.className = 'conflict-toast';
   // winnerName is another collaborator's USER-SETTABLE display name — escape it
   // (stored-XSS sink, security audit C3 2026-07-20).
-  const _ctEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
-    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const _ctEsc = FP.esc;   // shared rule (fp-utils.js)
   const label = _ctEsc((field || '').replace(/_/g, ' '));
   toast.innerHTML = `Your change to <strong>${label}</strong> was overridden by <strong>${_ctEsc(winnerName)}</strong>.`
     + `<button onclick="this.parentElement.remove()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:8px;font-size:.85rem">✕</button>`;

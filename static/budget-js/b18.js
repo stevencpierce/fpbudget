@@ -4,7 +4,7 @@
 
 (function(){
   const PIDm = window.__BJ["b18_PIDm"];
-  const fmt = v => '$' + Number(v||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
+  const fmt = v => FP.money(v || 0, {decimals: 0});   // shared rule (fp-utils.js)
   async function loadMismatches(){
     try{
       const d = await fetch('/projects/'+PIDm+'/budget/'+BIDm+'/mismatches',{credentials:'same-origin'}).then(r=>r.json());

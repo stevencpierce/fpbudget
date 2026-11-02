@@ -2,14 +2,8 @@
 // Jinja values arrive via window.__BJ (set by the inline preamble before this
 // script tag). Classic script, document order — semantics identical to inline.
 
-  function _epFmtUSD(n) {
-    if (n == null || isNaN(n)) return '';
-    return '$' + Number(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-  }
-  function _epEscape(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
+  function _epFmtUSD(n) { return FP.money(n, {empty: ''}); }   // shared rule (fp-utils.js)
+  function _epEscape(s) { return FP.esc(s); }   // shared rule (fp-utils.js)
   // ── Export Options modal ─────────────────────────────────────────────
   // Caller passes (event, format, variant) where:
   //   format   : 'pdf' | 'csv' | 'mmb' | 'showbiz'

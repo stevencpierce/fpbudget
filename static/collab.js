@@ -9,9 +9,7 @@
   // ── Top Sheet live refresh ──────────────────────────────────────────────────
   // Sums line totals from Budget tab DOM, updates Top Sheet section rows + footer
   function _refreshTopSheet() {
-    var fmt = function(v) {
-      return '$' + parseFloat(v || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-    };
+    var fmt = function(v) { return FP.money(v || 0); };   // shared rule (fp-utils.js)
     // Collect totals by section code from budget line rows
     var sectionTotals = {};
     document.querySelectorAll('tr[data-code]').forEach(function(row) {
@@ -177,9 +175,7 @@
 
     // Direct DOM update as fallback (or supplement)
     var d = data.data;
-    var fmt = function(v) {
-      return '$' + parseFloat(v || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-    };
+    var fmt = function(v) { return FP.money(v || 0); };   // shared rule (fp-utils.js)
 
     // Subtotal cell
     var subEl = row.querySelector('.line-subtotal');

@@ -2,10 +2,7 @@
 {% block title %}Schedule — {{ budget.name }}{% endblock %}
 
 {% block content %}
-{% set MODE_META = {
-  'estimated': {'label':'ESTIMATED', 'short':'Est',  'cls':'mode-estimated'},
-  'working':   {'label':'WORKING',   'short':'Work', 'cls':'mode-working'},
-} %}
+{# MODE_META is budget_calc.MODE_META, served by app.inject_globals (Cleanup D). #}
 {% set cur_mode = MODE_META.get(budget.budget_mode, MODE_META['estimated']) %}
 
 <div class="page-header budget-header">
@@ -1336,9 +1333,7 @@ async function loadWaypoints(force) {
     menu.innerHTML = '<p class="muted" style="padding:.7rem;font-size:.78rem">Could not load waypoints.</p>';
   }
 }
-function _wpEsc(s) {
-  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+function _wpEsc(s) { return FP.esc(s); }   // shared rule (static/fp-utils.js)
 async function restoreWaypoint(wid, when) {
   if (!confirm(`Restore the schedule to how it was at ${when}?\n\n` +
                'Everything scheduled since then is replaced. The current state is ' +
@@ -1375,8 +1370,7 @@ async function previewWaypoint(wid, when) {
       'onclick="document.getElementById(\'wp-preview-overlay\').remove()">Close</button></div></div>';
     return;
   }
-  const fmt = n => (n == null ? '—' : '$' + Number(n).toLocaleString('en-US',
-    { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const fmt = n => FP.money(n);   // shared rule (static/fp-utils.js)
   const stBadge = {
     added:   '<span style="color:#4ade80;font-size:.68rem">added since</span>',
     removed: '<span style="color:#f87171;font-size:.68rem">removed since</span>',

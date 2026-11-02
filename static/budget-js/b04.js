@@ -92,9 +92,8 @@
         const j = await r.json();
         cands = (j && j.candidates) || [];
       } catch (e) {}
-      const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
-        c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-      const money = v => v == null ? '—' : '$' + Number(v).toLocaleString('en-US',{minimumFractionDigits:2});
+      const esc = FP.esc;                 // shared rule (fp-utils.js)
+      const money = v => FP.money(v);
       let dlg = document.getElementById('backupChooserDlg');
       if (dlg) dlg.remove();
       dlg = document.createElement('div');
@@ -252,7 +251,7 @@
     };
 
     // ── Dashboard / Action Center (review queue) — 2026-06-18 ──────────
-    function _dashEsc(s) { return (s || '').toString().replace(/</g, '&lt;'); }
+    function _dashEsc(s) { return FP.esc(s); }   // shared rule (fp-utils.js; this copy escaped only '<')
     window.dashLoadAnomalies = async function () {
       const host = document.getElementById('dash-action-center');
       if (!host) return;
@@ -724,8 +723,8 @@
     };
     window.rcRender = function (d) {
       const body = document.getElementById('rc-body');
-      const esc = s => (s || '').toString().replace(/</g, '&lt;');
-      const money = a => a == null ? '$?' : ('$' + Number(Math.abs(a)).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}));
+      const esc = FP.esc;                 // shared rule (fp-utils.js; this copy escaped only '<')
+      const money = a => FP.money(a, {empty: '$?', abs: true});
       const clusters = d.clusters || [];
       document.getElementById('rc-count').textContent = clusters.length ? `${clusters.length} spend${clusters.length !== 1 ? 's' : ''} to reconcile` : '';
       if (!clusters.length) { body.innerHTML = '<div class="muted" style="padding:28px;text-align:center">✓ Nothing to reconcile — no duplicate receipts or charges found.</div>'; return; }

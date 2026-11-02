@@ -32,10 +32,8 @@
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
-  const esc = s => String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  const money = v => '$' + Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const esc = FP.esc;                        // shared rule (fp-utils.js)
+  const money = v => FP.money(v || 0);
   function fmtMoney(v) {
     if (v === '' || v == null) return '';
     const n = parseFloat(String(v).replace(/,/g, ''));
@@ -918,7 +916,7 @@
   }
   function renderTxns() {
     const host = $('docDetailTxnResults'), cands = E._txnCands || [], doc = E._txnDoc || {};
-    const moneyAbs = a => '$' + Math.abs(Number(a)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const moneyAbs = a => FP.money(a, {abs: true});   // shared rule (fp-utils.js)
     const signTag = a => { const n = Number(a); if (!isFinite(n)) return '<span style="color:var(--text-muted)">$?</span>';
       return n < 0 ? '<span style="color:#5fd0a0;font-weight:600">+' + moneyAbs(n) + '</span> <span style="color:#5fd0a0">refund</span>' : '<span style="font-weight:600">−' + moneyAbs(n) + '</span> <span style="color:var(--text-muted)">charge</span>'; };
     if (!cands.length) { host.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">No candidate charges' + (($('docDetailInclMatched') || {}).checked ? '' : ' — try “include already-matched”') + '.</div>'; return; }

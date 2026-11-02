@@ -11,8 +11,8 @@
     if(!t) return; t.textContent = msg; t.style.background = color || '#16a34a';
     t.style.display='block'; clearTimeout(t._h); t._h = setTimeout(()=>{t.style.display='none';}, 3200);
   }
-  const esc = s => String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
-  const money = v => (v==null?'':'$'+Number(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
+  const esc = FP.esc;                              // shared rule (fp-utils.js)
+  const money = v => FP.money(v, {empty: ''});
   const SRC_LABEL = {reconciled:'QBO ✓', qbo_sync:'QBO', csv_import:'CSV', doc_upload:'Receipt', manual_entry:'Manual'};
 
   window.openReconcileLine = async function(lid){

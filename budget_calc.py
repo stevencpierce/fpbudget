@@ -53,6 +53,39 @@ FP_COA_SECTIONS = [
 # Convenience dict: new_code → new_name.
 FP_COA_NAMES = dict(FP_COA_SECTIONS)
 
+# ── Budget-mode labels — the ONE table (Cleanup D, 2026-11-02) ───────────────
+# budget.html, callsheet.html and gantt.html used to each `{% set MODE_META %}`
+# their own copy (gantt's lacked a key, callsheet's kept 'actual') and
+# routes/api_v1.py had a fourth label dict. app.inject_globals serves this one
+# to every template; mode_label() is what the API returns.
+MODE_META = {
+    'estimated': {'label': 'ESTIMATED', 'short': 'Est',  'title': 'Estimated',
+                  'desc': 'Baseline — revise only when scope changes',
+                  'cls': 'mode-estimated'},
+    'working':   {'label': 'WORKING',   'short': 'Work', 'title': 'Working',
+                  'desc': 'Current forecast — your live evolving projection',
+                  'cls': 'mode-working'},
+}
+# Legacy budget_mode values still found on old rows, for the API's label only.
+MODE_LEGACY_TITLES = {'schedule': 'Working', 'hybrid': 'Hybrid', 'actual': 'Actual'}
+
+
+def mode_meta(mode):
+    """The MODE_META row for a budget_mode; unknown / NULL modes read as
+    Estimated (the templates' `MODE_META.get(mode, MODE_META['estimated'])`)."""
+    return MODE_META.get(mode, MODE_META['estimated'])
+
+
+def mode_label(mode, is_actual=False):
+    """Title-case label for the API: 'Estimated' / 'Working'; an is_actual
+    budget is 'Actual'; a legacy value falls back to its own spelling."""
+    if is_actual:
+        return 'Actual'
+    row = MODE_META.get(mode)
+    if row:
+        return row['title']
+    return MODE_LEGACY_TITLES.get(mode, mode)
+
 # ── COA legacy mapping (2026-04 renumber) ─────────────────────────────────────
 # old_code → new_code. Used by the boot-time migration to rewrite every
 # budget_line / budget_template_line / catalog_item / users.dept_code row.
@@ -1290,13 +1323,18 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
     }
 
 
-def section_for_code(code):
+def section_for_code(code, default=None):
     """Return the COA section start for an account code — the greatest
     section code ≤ the account code (sections are NOT thousands buckets:
     2900 Control Room Equipment, 3400 Transportation, 3500 Travel are
-    their own sections). Single source of truth for both the top sheet
-    and the mobile API's line grouping."""
-    best = None
+    their own sections). THE one rule (Cleanup D): app._section_for_code,
+    the top sheet, the PDF builders and the mobile API all call this.
+
+    A code below the first section (legacy / malformed) returns `default`
+    (None). A caller that must always have a bucket to file the line under
+    (the budget grid) passes default=FP_COA_SECTIONS[0][0] explicitly —
+    app.py's old copy did that silently, so the two disagreed."""
+    best = default
     for start, _ in FP_COA_SECTIONS:
         if code >= start:
             best = start
@@ -2433,7 +2471,9 @@ def seed_catalog(db_session):
         try:
             db_session.add(CatalogItem(
                 category_code=code,
-                category_name=cname,
+                # The section name is FP_COA_NAMES' — the tuple's copy is
+                # only a reading aid (Cleanup D; a test pins they agree).
+                category_name=FP_COA_NAMES.get(code, cname),
                 label=label,
                 group_name=group,
                 is_labor=is_labor,

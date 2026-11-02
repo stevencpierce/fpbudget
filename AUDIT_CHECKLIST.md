@@ -427,3 +427,55 @@ regrouped Settings. Route snapshot: 12 removals, 0 additions.
   the live Estimated for `pick_current`; the budget grid still overflows
   horizontally below ~1500px (pre-existing — the row actions are sticky now so
   they stay reachable); `gantt.js` 404 on `/projects/undefined/...` (B11).
+
+## 🧹 Cleanup D — one rule per decision (2026-11-02, branch `cleanup/d-one-rule`)
+Each decision below had several drifted copies; each now has ONE
+implementation and every former copy routes through it. No new routes, no
+schema change; route snapshot IDENTICAL to main (430 routes).
+Tests: `tests/unit/test_one_rule.py` (37: pure + app-booting, self-skipping).
+
+- [x] D1 — Current budget: the last hand queries (`budget_new` source,
+  `line_assign_po` / `assign_crew` canonical Working, the PO and sub-budget
+  pages' return target) read `actuals.get_current_*` / `get_live_budget`.
+- [x] D2 — Spend: `actuals.counts_as_spend` (+ `split_sums_by_line`) is the
+  filter under the PO billed total and its detail list, the sub-budget billed
+  total, the mismatch scan's line pass, the per-line ledger's `coded_total`,
+  person profile / people summary / `budget_mismatches`, the section-coded
+  listing, the wrap book and `has_line_actuals`. The dead per-code Compare
+  rollup in `budget_view` is gone.
+- [x] D3 — Vendor names: `actuals.strip_processor_prefix` (ONE prefix list),
+  `vendor_match_key` (fuzzy form; `app._normalize_vendor` is an alias),
+  `payee_name_key` (exact-name key for `payee_name_index` and
+  `qbo_sync.match_vendor_to_payee`). `canon_vendor` keeps its exact output —
+  it is the storage key under `VendorAlias` / `VendorCategoryMap` rows.
+- [x] D4 — `budget_calc.section_for_code(code, default=None)` is the rule;
+  `app._section_for_code` is an alias and the local re-definitions in
+  `export_pdf`, `_compute_gantt_section_totals` and the archive renderer are
+  gone. Grid callers pass `default=_FIRST_SECTION` explicitly.
+- [x] D5 — `_budget_pdf_context(pid, bid, basis, opts)` builds
+  `budget_pdf.html`'s context for both the Export button and the Dropbox
+  archive on project delete.
+- [ ] D6 — Call-sheet PDF fallback (`_generate_callsheet_pdf` /
+  `_render_callsheet_pdf_html`) KEPT: the repo history starts 2026-10-30, so
+  the fallback's last fix and the real render's stability since 2026-07-09
+  cannot be verified from git. Remove once a few sends have been confirmed to
+  log no "[CALLSHEET PDF] … falling back" warning.
+- [x] D7 — `static/fp-utils.js` (`window.FP = {esc, money, whole}`) loads
+  from base.html; the ~40 private `esc` / `money` copies alias it (five
+  escaped only `<` or skipped quotes). M3 closed.
+- [x] D8 — `fp_analyzer.DOC_TYPE_LABELS` / `DOC_TYPE_ALIASES` served by
+  `inject_globals` as `DOC_TYPE_LABELS` / `window.__FP_DOC_TYPES`: Docs inbox,
+  document editor select, phone upload page (it lacked Timecard and
+  Employee/Vendor Doc), `docs_inbox_page` picker, set-type validator. The
+  Expo app in `mobile/` still carries its own list — not rebuilt here.
+- [x] D9 — `actuals.PAYMENT_METHOD_LABELS` served as `PAYMENT_METHOD_LABELS` /
+  `window.__FP_PAYMENT_METHODS`: the Actuals radios (ACH was missing) and
+  a01.js's card cell.
+- [x] D10 — `budget_calc.MODE_META` / `mode_label` served as `MODE_META`;
+  budget / callsheet / gantt templates and `routes/api_v1.py` read it.
+- [x] D11 — `FP_COA_SECTIONS` served as `window.__FP_COA_SECTIONS`; b09.js's
+  350-line Quick Entry fallback (out of order, no 6800) replaced by the served
+  section list; seed catalogs name sections via `FP_COA_NAMES`.
+- [x] D12 — Credits: the mismatch scan (added credits as positive), the ledger
+  `coded_total` and person `total_paid` (ignored credits), the not-project
+  listing and the PO detail amounts go through `signed_amount_value`.

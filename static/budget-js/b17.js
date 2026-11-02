@@ -5,8 +5,8 @@
 (function(){
   const PIDp = window.__BJ["b17_PIDp"];
   let _pp = null, _ppBusy = false;
-  const esc = s => String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
-  const money = v => (v==null?'—':'$'+Number(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
+  const esc = FP.esc;                              // shared rule (fp-utils.js)
+  const money = v => FP.money(v);
   const RT = {day_10:'10hr day',day_8:'8hr day',day_12:'12hr day',flat_day:'flat/day',flat_project:'flat',hourly:'hr',custom:'custom'};
 
   window.openPersonProfile = async function(cmid){

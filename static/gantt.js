@@ -1521,7 +1521,7 @@ async function fetchTotals() {
 }
 
 function updateGanttFloatBar(data) {
-  const fmt = v => '$' + parseFloat(v || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fmt = v => FP.money(v || 0);   // shared rule (fp-utils.js)
   const subEl   = document.getElementById('float-subtotal');
   const feeEl   = document.getElementById('float-fee');
   const grandEl = document.getElementById('float-grand');
@@ -1533,8 +1533,7 @@ function updateGanttFloatBar(data) {
 function renderTotals(sections, otCells) {
   const tbody = document.getElementById('gantt-totals-tbody');
   if (!tbody) return;
-  const fmt = v => '$' + parseFloat(v||0).toLocaleString('en-US',
-    {minimumFractionDigits:0, maximumFractionDigits:0});
+  const fmt = v => FP.money(v || 0, {decimals: 0});   // shared rule (fp-utils.js)
   tbody.innerHTML = '';
   if (!sections || sections.length === 0) {
     tbody.innerHTML = '<tr><td colspan="5" class="muted" style="padding:.4rem .5rem;font-size:.8rem">No schedule data yet.</td></tr>';
@@ -2033,10 +2032,7 @@ function togglePaintMode() {
 document.addEventListener('mouseup', () => { _paintDragging = false; });
 
 // ── 📅 Day View (2026-07-22): click a date header ────────────────────────────
-function _dvEsc(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g,
-    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
+function _dvEsc(s) { return FP.esc(s); }   // shared rule (fp-utils.js)
 function openDayView(dateStr) {
   const panel = document.getElementById('day-view-panel');
   const body = document.getElementById('day-view-body');
