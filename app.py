@@ -5510,8 +5510,13 @@ def _build_wrap_book_data(pid):
         _ev_by_txn = {}
     docs = {d.id: d for d in DocUpload.query.filter(DocUpload.id.in_(doc_ids)).all()} if doc_ids else {}
 
+    # Signed-amount rule (actuals.signed_amount_value): a credit / refund
+    # nets against its line. The export used to count credits as $0, so a
+    # refunded line showed its gross spend (Cleanup A #17, 2026-11-02).
+    from actuals import signed_amount_value as _signed_amount_value_wb
+
     def _amt(t):
-        return float(t.amount or 0) * (1 if t.is_expense else 0)
+        return _signed_amount_value_wb(t.amount, t.is_expense)
 
     # Group expenses by line / section-only.
     by_line, sec_only = {}, {}
@@ -9981,7 +9986,9 @@ def budget_view(pid, bid):
         b = _code_buckets.setdefault(sec, {"items": [], "total": 0.0})
         b["items"].append(t)
         try:
-            b["total"] += float(t.amount or 0)
+            # Credits subtract (actuals.signed_amount_value) — these bucket
+            # totals used to add a refund as if it were spend (Cleanup A #17).
+            b["total"] += _signed_amount_value(t.amount, t.is_expense)
         except (TypeError, ValueError):
             pass
     _sec_order = {code: i for i, (code, _) in enumerate(FP_COA_SECTIONS)}
