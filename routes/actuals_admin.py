@@ -282,15 +282,22 @@ def qbo_imports_purge(pid=None):
       • detach any child transaction whose parent is being deleted
         (parent_transaction_id → NULL) so no split is orphaned.
     Linked DocUploads are left intact (the link lives on the txn side).
-    Admin only. (User 2026-06-01.)"""
-    if current_user.role not in ('super_admin', 'admin'):
-        return jsonify({"error": "Forbidden — admin only"}), 403
+    Super-admin only, ONE project at a time (Cleanup A #8, 2026-11-02 — the
+    'all projects' scope and the admin role are gone: this erases the bank
+    ledger). (User 2026-06-01.)"""
+    if current_user.role != 'super_admin':
+        return jsonify({"error": "Forbidden — super admin only"}), 403
     apply = (request.args.get('apply') == '1')
     scope_pid = request.args.get('project')
+    if scope_pid in (None, '', 'all'):
+        return jsonify({"error": "project=<id> is required — the purge runs on one "
+                                 "project at a time ('all' is not accepted)."}), 400
     try:
-        scope_pid = int(scope_pid) if scope_pid not in (None, '', 'all') else None
+        scope_pid = int(scope_pid)
     except (TypeError, ValueError):
-        return jsonify({"error": "project must be an integer or 'all'"}), 400
+        return jsonify({"error": "project must be an integer"}), 400
+    if ProjectSheet.query.get(scope_pid) is None:
+        return jsonify({"error": f"project {scope_pid} not found"}), 404
 
     # Defense-in-depth: never delete a qbo_sync row that is matched to a receipt
     # (doc_upload_id set). Confirming a match now flips source→'reconciled', but
@@ -362,19 +369,49 @@ def qbo_imports_purge(pid=None):
                 if c.id not in idset:        # don't bother for rows also dying
                     c.parent_transaction_id = None
                     detached += 1
-            # 2) release cross-project claims pointing at affected projects
-            affected_projects = set(by_proj.keys())
-            released = (Transaction.query
-                        .filter(Transaction.claimed_by_project_id.in_(affected_projects))
-                        .filter(~Transaction.id.in_(idset))
-                        .update({"claimed_by_project_id": None},
-                                synchronize_session=False))
+            # 2) release cross-project claims held BY the rows being deleted:
+            #    only siblings that share a deleted row's (qbo_txn_id,
+            #    qbo_txn_type) and are claimed by this project. Claims this
+            #    project holds through rows that survive (receipts, manual
+            #    entries) stay. (#8 — the old code cleared every claim that
+            #    pointed at the project.)
+            _qbo_keys = {(t.qbo_txn_id, t.qbo_txn_type) for t in rows if t.qbo_txn_id}
+            released = 0
+            if _qbo_keys:
+                _sibs = (Transaction.query
+                         .filter(Transaction.claimed_by_project_id == scope_pid)
+                         .filter(~Transaction.id.in_(idset))
+                         .filter(Transaction.qbo_txn_id.in_({k[0] for k in _qbo_keys}))
+                         .all())
+                for sb in _sibs:
+                    if (sb.qbo_txn_id, sb.qbo_txn_type) not in _qbo_keys:
+                        continue
+                    sb.claimed_by_project_id = None
+                    # Mirror _sync_claim_state's release: a sibling we hid
+                    # solely by claiming it comes back into its own pile.
+                    if sb.not_project_expense and not (sb.budget_line_id or sb.account_code):
+                        sb.not_project_expense = False
+                    released += 1
             db.session.flush()
-            # 3) delete the qbo_sync rows
+            # 3) evidence + splits point at the doomed rows with no cascade
+            _delete_evidence_for_txns(list(idset))
+            TransactionSplit.query.filter(TransactionSplit.transaction_id.in_(idset))\
+                .delete(synchronize_session=False)
+            Transaction.query.filter(Transaction.backup_of_txn_id.in_(idset)).update(
+                {"backup_of_txn_id": None}, synchronize_session=False)
+            # 4) delete the qbo_sync rows
             deleted = (Transaction.query
                        .filter(Transaction.id.in_(idset))
                        .delete(synchronize_session=False))
             db.session.commit()
+            try:
+                _log_activity(action='delete', entity_type='transaction', entity_id=0,
+                              entity_label=f'QBO purge ({int(deleted)} rows)',
+                              project_id=scope_pid, before={'deleted_ids': sorted(idset)[:500]},
+                              note=f'Purged {int(deleted)} QuickBooks-imported row(s); '
+                                   f'released {released} cross-project claim(s)')
+            except Exception:
+                pass
             report["deleted"] = int(deleted)
             report["children_detached"] = detached
             report["claims_released"] = int(released or 0)
