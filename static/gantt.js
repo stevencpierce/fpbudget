@@ -1533,8 +1533,7 @@ function updateGanttFloatBar(data) {
 function renderTotals(sections, otCells) {
   const tbody = document.getElementById('gantt-totals-tbody');
   if (!tbody) return;
-  const fmt = v => '$' + parseFloat(v||0).toLocaleString('en-US',
-    {minimumFractionDigits:0, maximumFractionDigits:0});
+  const fmt = v => FP.money(v || 0, {decimals: 0});   // shared rule (fp-utils.js)
   tbody.innerHTML = '';
   if (!sections || sections.length === 0) {
     tbody.innerHTML = '<tr><td colspan="5" class="muted" style="padding:.4rem .5rem;font-size:.8rem">No schedule data yet.</td></tr>';

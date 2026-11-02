@@ -1377,8 +1377,8 @@
         // actuals/qbo events. Fall back to `summary` for legacy budget
         // rows that don't carry a note.
         const rawText   = (it.note && it.note.trim()) ? it.note : (it.summary || '');
-        const summaryEsc = rawText.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
-        const whoEsc    = (it.who || '—').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+        const summaryEsc = FP.esc(rawText);          // shared rule (fp-utils.js)
+        const whoEsc    = FP.esc(it.who || '—');
         const bucket    = _activityBucket(it.entity_type);
         const style     = _BUCKET_STYLE[bucket] || _BUCKET_STYLE.other;
         const stripe    = `border-left:3px solid ${style.color}`;

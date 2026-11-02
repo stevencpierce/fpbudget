@@ -1370,8 +1370,7 @@ async function previewWaypoint(wid, when) {
       'onclick="document.getElementById(\'wp-preview-overlay\').remove()">Close</button></div></div>';
     return;
   }
-  const fmt = n => (n == null ? '—' : '$' + Number(n).toLocaleString('en-US',
-    { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const fmt = n => FP.money(n);   // shared rule (static/fp-utils.js)
   const stBadge = {
     added:   '<span style="color:#4ade80;font-size:.68rem">added since</span>',
     removed: '<span style="color:#f87171;font-size:.68rem">removed since</span>',

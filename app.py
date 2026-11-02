@@ -20903,9 +20903,10 @@ def po_list_page(pid):
     if return_bid_arg:
         return_budget = Budget.query.filter_by(id=return_bid_arg, project_id=pid).first()
     if not return_budget:
-        return_budget = (Budget.query
-                         .filter_by(project_id=pid, version_status='current')
-                         .order_by(Budget.id.desc()).first())
+        # The live budget — ONE rule (actuals.get_live_budget, Cleanup D):
+        # the current Working, else the current Estimated.
+        from actuals import get_live_budget as _glb_rb
+        return_budget = _glb_rb(pid)
 
     # ── Budget-view mirror: every PO-assigned line, grouped by COA section.
     # Lets the user see PO commitments through the lens of the chart of
@@ -21008,9 +21009,10 @@ def sub_budgets_page(pid):
     if return_bid_arg:
         return_budget = Budget.query.filter_by(id=return_bid_arg, project_id=pid).first()
     if not return_budget:
-        return_budget = (Budget.query
-                         .filter_by(project_id=pid, version_status='current')
-                         .order_by(Budget.id.desc()).first())
+        # The live budget — ONE rule (actuals.get_live_budget, Cleanup D):
+        # the current Working, else the current Estimated.
+        from actuals import get_live_budget as _glb_rb
+        return_budget = _glb_rb(pid)
 
     # Per-ROW fail-open (2026-07-22): the old page-wide try/except meant one
     # sub-budget whose rollup raised blanked EVERY sub-budget with only a

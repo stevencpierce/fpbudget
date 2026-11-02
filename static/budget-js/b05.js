@@ -225,11 +225,9 @@ function renderCalcDetail(d) {
   document.getElementById('calc-detail-title').textContent =
     `${d.label} — Payroll Calc`;
 
-  const fmt  = v => v == null ? '—' : '$' + parseFloat(v).toLocaleString('en-US',
-    {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fmt  = v => FP.money(v);                                  // shared rule (fp-utils.js)
   const fmtH = v => v == null ? '—' : parseFloat(v).toFixed(1) + 'h';
-  const fmtR = v => v == null ? null : '$' + parseFloat(v).toLocaleString('en-US',
-    {minimumFractionDigits:2, maximumFractionDigits:2}) + '/hr';
+  const fmtR = v => v == null ? null : FP.money(v) + '/hr';
   const hasHours = d.total_st_hours > 0 || d.total_ot_hours > 0 || d.total_dt_hours > 0;
 
   const hourlyRates = d.st_hourly != null
