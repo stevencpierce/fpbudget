@@ -2397,6 +2397,29 @@ def actuals_delete_duplicate_txn(pid, tid):
     elif t.doc_upload_id:
         return jsonify({"error": "This charge is linked to a receipt — unmatch it first "
                         "instead of deleting it here."}), 400
+    else:
+        # Cleanup A #7 (2026-11-02): an unlinked bank / manual row is only a
+        # "duplicate" when a twin SURVIVES — same |amount|, same date, same
+        # vendor or card, different id (actuals.is_duplicate_twin). Without
+        # one this click simply erased a charge from the ledger.
+        from actuals import is_duplicate_twin as _is_twin
+        _cands = (Transaction.query
+                  .filter(Transaction.project_id == pid,
+                          Transaction.id != tid,
+                          Transaction.txn_date == t.txn_date,
+                          Transaction.source != 'invoice_split')
+                  .all())
+        _twin = next((c for c in _cands if _is_twin(t, c)), None)
+        if _twin is None:
+            return jsonify({"error": "No matching charge found to keep — this row has no "
+                                     "twin (same amount, date and vendor or card), so it "
+                                     "isn't a duplicate. If it isn't a project expense, "
+                                     "mark it Not project instead."}), 409
+        # Keep the coding on the survivor if only the doomed row carried it.
+        if (t.account_code or t.budget_line_id) and not (_twin.account_code or _twin.budget_line_id):
+            _twin.account_code      = t.account_code
+            _twin.account_code_name = t.account_code_name
+            _twin.budget_line_id    = t.budget_line_id
     before = {"source": t.source, "vendor": t.vendor,
               "amount": float(t.amount) if t.amount is not None else None,
               "txn_date": t.txn_date, "card_last4": t.card_last4,
@@ -2405,7 +2428,13 @@ def actuals_delete_duplicate_txn(pid, tid):
               "match_status": t.match_status}
     Transaction.query.filter_by(parent_transaction_id=tid).update(
         {"parent_transaction_id": None}, synchronize_session=False)
+    Transaction.query.filter_by(backup_of_txn_id=tid).update(
+        {"backup_of_txn_id": None}, synchronize_session=False)
     _delete_evidence_for_txns([tid])
+    # Splits point at the row with no cascade (#7).
+    before["splits"] = [{"budget_line_id": sp.budget_line_id, "amount": float(sp.amount or 0)}
+                        for sp in TransactionSplit.query.filter_by(transaction_id=tid).all()]
+    TransactionSplit.query.filter_by(transaction_id=tid).delete(synchronize_session=False)
     _label = (t.vendor or f'Txn #{tid}')[:80]
     _amt = float(t.amount or 0)
     db.session.delete(t)
