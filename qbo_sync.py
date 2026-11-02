@@ -252,14 +252,18 @@ def _extract_txn_fields(txn, entity, acct_ref, account_meta):
     vendor = _eref.get("name", "")
     # The QuickBooks Vendor id behind the payee (Documents Phase 3): kept as
     # qbo_entity_ref so the charge attributes to the Payee that mirrors
-    # that vendor — now, or later when the vendor gets linked.
-    entity_ref = str(_eref.get("value") or "") if _eref.get("value") else None
+    # that vendor — now, or later when the vendor gets linked. ONLY a
+    # Vendor-typed ref: QuickBooks ids are per entity type, so a Customer
+    # or Employee ref of the same number must never be read as a vendor.
+    entity_ref = None
+    if _eref.get("value") and (_eref.get("type") or "Vendor") == "Vendor":
+        entity_ref = str(_eref["value"])
     if not vendor:
         for _l in lines:
             _ent = (((_l.get("DepositLineDetail") or {}).get("Entity")) or {})
             if _ent.get("name"):
                 vendor = _ent["name"]
-                if not entity_ref and _ent.get("value"):
+                if not entity_ref and _ent.get("value") and _ent.get("type") == "Vendor":
                     entity_ref = str(_ent["value"])
                 break
     if not vendor:

@@ -263,12 +263,20 @@ def test_qbo_quote_escapes_apostrophes():
 ACCT_META = {"41": {"id": "41", "name": "Chase Ink", "type": "Credit Card", "mask": "8432"}}
 
 
-def test_extract_keeps_entity_ref():
+def test_extract_keeps_entity_ref_only_for_vendors():
     txn = {"Id": "1001", "TxnDate": "2026-10-12", "TotalAmt": 37.93,
-           "AccountRef": {"value": "41"}, "EntityRef": {"value": "88", "name": "Vega Camera LLC"},
+           "AccountRef": {"value": "41"},
+           "EntityRef": {"value": "88", "name": "Vega Camera LLC", "type": "Vendor"},
            "Line": []}
     r = _extract_txn_fields(txn, "Purchase", "41", ACCT_META)
     assert r["qbo_entity_ref"] == "88" and r["vendor"] == "Vega Camera LLC"
+    r = _extract_txn_fields(dict(txn, EntityRef={"value": "88", "name": "Vega Camera LLC"}),
+                            "Purchase", "41", ACCT_META)
+    assert r["qbo_entity_ref"] == "88", "an untyped ref is a vendor (QuickBooks' default)"
+    r = _extract_txn_fields(dict(txn, EntityRef={"value": "88", "name": "Sam Staff", "type": "Employee"}),
+                            "Purchase", "41", ACCT_META)
+    assert r["qbo_entity_ref"] is None and r["vendor"] == "Sam Staff", \
+        "ids are per entity type — an Employee 88 is not Vendor 88"
     r = _extract_txn_fields(dict(txn, EntityRef=None), "Purchase", "41", ACCT_META)
     assert r["qbo_entity_ref"] is None
 
@@ -276,9 +284,11 @@ def test_extract_keeps_entity_ref():
 def test_extract_deposit_line_entity():
     txn = {"Id": "2", "TxnDate": "2026-10-12", "TotalAmt": 500,
            "DepositToAccountRef": {"value": "7"},
-           "Line": [{"DepositLineDetail": {"Entity": {"value": "91", "name": "Client Co"}}}]}
+           "Line": [{"DepositLineDetail": {"Entity": {"value": "91", "name": "Client Co", "type": "Customer"}}}]}
     r = _extract_txn_fields(txn, "Deposit", "7", ACCT_META)
-    assert r["qbo_entity_ref"] == "91" and r["vendor"] == "Client Co"
+    assert r["qbo_entity_ref"] is None and r["vendor"] == "Client Co"
+    txn["Line"][0]["DepositLineDetail"]["Entity"]["type"] = "Vendor"
+    assert _extract_txn_fields(txn, "Deposit", "7", ACCT_META)["qbo_entity_ref"] == "91"
 
 
 def test_attribute_from_entity_ref_rules():
