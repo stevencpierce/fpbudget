@@ -222,7 +222,11 @@
   .aw-nums { display: grid; grid-template-columns: var(--aw-nums); gap: 8px; text-align: right; font-size: 12px; flex-shrink: 0; }
   .aw-nums.head { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
   .aw-budget { flex: 1 1 auto; overflow-y: auto; padding: 8px 12px 20px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-  .aw-sec { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  /* flex: 0 0 auto — .aw-budget is a column flexbox and overflow:hidden
+     makes a section's automatic min-height 0, so without this every
+     section SHRINKS to share the pane height and clips its own lines
+     (seen on iPad, Nov 2 2026). The pane scrolls; sections do not shrink. */
+  .aw-sec { flex: 0 0 auto; background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .aw-sec-head { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; background: var(--bg-3);
                  font-size: 13px; font-weight: 600; }
   .aw-sec-head .code { color: var(--text-muted); }
