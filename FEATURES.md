@@ -171,9 +171,12 @@ bottom under "Recent Pushes".
 | ✅ | Drag-reorder | Drag rows up/down; sort_order persists |
 | ✅ | Bulk delete | Multi-select rows then delete |
 | ✅ | Section auto-totals | Each section header shows running total; recalculates on every edit |
-| ✅ | Auto-line: Workers' Comp | % of gross labor wages, default 3%, lands in section 6000 (Insurance) |
-| ✅ | Auto-line: Production Liability Insurance | Mode picker (off / % of labor / flat $); default ON at 1.5% on new budgets |
-| ✅ | Auto-line: Payroll Service Fee | % of gross labor wages, default 1.75%, lands in section 6500 (Administrative) |
+| ✅ | Auto-line: Workers' Comp | % of gross labor wages, default 3%, lands in section 6000 (Insurance). Backed by a hidden real line (`auto_kind='wc'`) so actuals can be coded to it; the row shows Estimate / Actual / Variance and the % edits in place (✎ or right-click) on the budget page and the Top Sheet as well as Settings |
+| ✅ | Auto-line: Production Liability Insurance | Mode picker (off / % of labor / flat $); default ON at 1.5% on new budgets. Hidden line `auto_kind='ins'`; mode + value edit in place from the row |
+| ✅ | Auto-line: Payroll Service Fee | % of gross labor wages, default 1.75%, lands in section 6500 (Administrative). Hidden line `auto_kind='fee'`; the payroll parser books the platform fee to it |
+| ✅ | Auto-line: Production Company Fee | Hidden line `auto_kind='pcf'` in 6500 so the fee invoice can be coded; shown as a display-only row in 6500 on the budget page (the fee itself stays below the Top Sheet subtotal) |
+| ✅ | Payroll fringes in 6500, one line per department (Phase 4, Oct 30 2026) | Fringe never sits inside a labor line's total. Each labor department with at least one labor line has a `Payroll Fringes — <Department>` line in 6500 Administrative (`line_tag='fringe_rollup'`, `fringe_for_section=<section>`), estimate written through from the calc on every render; the line disappears when the department has no labor and nothing coded to it (kept and flagged otherwise). Each labor section shows a read-only `<sec>-FR` summary (estimate / actual / variance) that links to its 6500 row. The Oct 5 "Roll fringes up" toggle is retired |
+| ✅ | Payroll package parse → department fringe lines | `⚡ Parse payroll package` lands gross wages on each person's line, employer FICA / Medicare / FUTA / SUI on that person's department fringe line in 6500, workers' comp on the WC line and the platform fee on the Payroll Service Fee line. A row whose parts do not tie to the person's total within $1 keeps its split, books the difference to the person and is flagged yellow with the delta |
 | ✅ | Production Company Fee — flat or dispersed | Toggle in Settings; flat shows a separate fee line, dispersed spreads into section totals |
 | ✅ | Per-section fee exemption | Per-budget checklist of COA sections that pass through without the fee markup |
 | ✅ | Fringes excluded from fee base | Default ON: P&W / P/H/W fringes don't compound the Prod Co Fee |
@@ -264,7 +267,8 @@ bottom under "Recent Pushes".
 | Status | Feature | Plain English |
 |---|---|---|
 | ✅ | Section-grouped totals | All COA sections rolled up: Estimated / Working / Actual / Variance |
-| ✅ | Auto-calc inline rows | Workers' Comp / Production Liability / Payroll Service Fee shown as muted sub-lines under their home sections |
+| ✅ | Auto-calc inline rows | Workers' Comp / Production Liability / Payroll Service Fee shown as muted sub-lines under their home sections, each with the Actual coded to its hidden line and in-place editing (✎ / right-click) |
+| ✅ | Payroll Fringes rows under 6500 | One `↳ Payroll Fringes — <Department>` row per labor department under 6500 Administrative with Estimated / Working / Actual / Variance; double-click opens the row in the budget |
 | ✅ | Fee-exempt annotation | Sections marked exempt show "(Prod Co Fee exempt)" inline in italic amber |
 | ✅ | Tax credits row | Subtracted from grand total when applicable |
 | ✅ | Float bar | Sticky bottom bar shows Subtotal · Prod Fee · Grand Total — recalculates live |
@@ -316,9 +320,9 @@ bottom under "Recent Pushes".
 | ✅ | Production Company Fee % | Plus dispersed toggle |
 | ✅ | Sections exempt from Prod Co Fee | Per-COA-section checkboxes |
 | ✅ | Exclude fringes from fee base | Default ON |
-| ✅ | Workers' Comp % | Default 3% |
-| ✅ | Payroll Service Fee % | Default 1.75% |
-| ✅ | Production Liability Insurance | Mode (off / % / flat) + value |
+| ✅ | Workers' Comp % | Default 3% — also editable from the budget page and Top Sheet rows |
+| ✅ | Payroll Service Fee % | Default 1.75% — also editable from the budget page and Top Sheet rows |
+| ✅ | Production Liability Insurance | Mode (off / % / flat) + value — also editable from the budget page and Top Sheet rows |
 | ✅ | Payroll profile | Pick the union profile that drives ST/OT/DT calculations |
 | ✅ | Payroll week start | Override the profile's default week-start day |
 | ✅ | Timezone | Per budget |

@@ -204,15 +204,15 @@ Five phases, each shippable on its own, each ending with the CLAUDE.md pre-deplo
 - [ ] Retire `/register` with a redirect.
 - [ ] Replace `tests/test_actuals.py` with Playwright tests for: drag to line, not project then recover, split that must sum, needs-backup flag clears on link, super-admin sees a claimed row with the project name.
 
-**Phase 4 — Fringes to Administrative (one to two days)**
+**Phase 4 — Fringes to Administrative (one to two days)** — built 2026-11-01 (PR "Actuals Phase 4"); the migration shipped as `0023a_admin_fringe_lines` with the data step as the boot task `_migrate_fringes_to_admin`, and the hidden lines carry `line_tag='auto_calc'` + `auto_kind` (`wc` / `ins` / `fee` / `pcf`) rather than four tags.
 
-- [ ] Migration `0021_admin_fringe_lines`: `BudgetLine.fringe_for_section` (nullable Int); a data migration (marker plus advisory lock, per CLAUDE.md) that creates one `Payroll Fringes — <Department>` line in 6500 per labor section on every current Working budget, creates the hidden `auto_wc` / `auto_ins` / `auto_fee` / `auto_pcf` lines, and moves existing `section:6500` fringe rows and per-section `fringe_rollup` lines onto the new 6500 lines.
-- [ ] `_ensure_fringe_rollup_line`: now keyed by `(budget_id, fringe_for_section)`, always `account_code=6500`; add the removal side so a department with no labor lines loses its fringe line (only when the line has no transactions; otherwise keep it and flag it).
-- [ ] `budget_calc.calc_line`: always return fringe separately; `calc_top_sheet`: each section's fringe pot becomes the estimate of its 6500 line and the labor section's `<sec>-FR` summary row; remove the `fringe_rollup` branches and the `__fringe_rollup__` sentinel.
-- [ ] Auto-calc settings (workers' comp %, production insurance, payroll fee %, production company fee) editable on the budget page and the top sheet as well as Settings; all three write the same `Budget.*` fields.
-- [ ] `docs_parse_people`: new targets, the tie-out delta rule, `workers_comp` and `platform_fee` fields from `extract_people`; fix the `b03.js` status text.
-- [ ] Grid: the `<sec>-FR` footer row becomes a read-only summary that links to the 6500 line; auto-calc rows gain an Actual column fed by their hidden lines.
-- [ ] Update `FEATURES.md` rows 85-94, `HANDOFF.md`, and `AUDIT_CHECKLIST.md` A1-A4 to match.
+- [x] Migration `0021_admin_fringe_lines`: `BudgetLine.fringe_for_section` (nullable Int); a data migration (marker plus advisory lock, per CLAUDE.md) that creates one `Payroll Fringes — <Department>` line in 6500 per labor section on every current Working budget, creates the hidden `auto_wc` / `auto_ins` / `auto_fee` / `auto_pcf` lines, and moves existing `section:6500` fringe rows and per-section `fringe_rollup` lines onto the new 6500 lines.
+- [x] `_ensure_fringe_rollup_line`: now keyed by `(budget_id, fringe_for_section)`, always `account_code=6500`; add the removal side so a department with no labor lines loses its fringe line (only when the line has no transactions; otherwise keep it and flag it).
+- [x] `budget_calc.calc_line`: always return fringe separately; `calc_top_sheet`: each section's fringe pot becomes the estimate of its 6500 line and the labor section's `<sec>-FR` summary row; remove the `fringe_rollup` branches and the `__fringe_rollup__` sentinel.
+- [x] Auto-calc settings (workers' comp %, production insurance, payroll fee %, production company fee) editable on the budget page and the top sheet as well as Settings; all three write the same `Budget.*` fields.
+- [x] `docs_parse_people`: new targets, the tie-out delta rule, `workers_comp` and `platform_fee` fields from `extract_people`; fix the `b03.js` status text.
+- [x] Grid: the `<sec>-FR` footer row becomes a read-only summary that links to the 6500 line; auto-calc rows gain an Actual column fed by their hidden lines.
+- [x] Update `FEATURES.md` rows 85-94, `HANDOFF.md`, and `AUDIT_CHECKLIST.md` A1-A4 to match.
 
 **Phase 5 — Later: upload pathway for external users.** Not in this build. One entry point for crew and vendors to drop receipts and invoices from the app or a computer, replacing the three paths above with one. Scope it after Phase 3 ships.
 

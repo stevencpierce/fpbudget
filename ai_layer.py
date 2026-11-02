@@ -292,14 +292,19 @@ class ClaudeProvider(AIProvider):
             "their total amount in this document. Payroll invoices usually split "
             "each person's cost into GROSS WAGES (what the person earned — employee "
             "tax withholding comes OUT of this, so it stays part of wages) and "
-            "EMPLOYER-paid fringes/fees (employer FICA, employer Medicare, FUTA/SUI "
-            "unemployment, workers compensation, platform/handling fees, PH&W). "
-            "Wrapbook's Fringe Report and Cost Code Report show both per person — "
-            "when the document separates them, fill wages and fringes per row so "
-            "the caller can book wages to the person's budget line and fringes to "
-            "the payroll-fringe bucket; amount stays the person's total "
-            "(wages + fringes). When only a single figure per person exists, set "
-            "wages/fringes to null. Use the ROSTER of known crew "
+            "EMPLOYER-paid costs. Report the employer costs in THREE separate "
+            "fields per row: fringes = employer payroll taxes only (employer FICA, "
+            "employer Medicare, FUTA/SUI unemployment, and any PH&W / union "
+            "fringe); workers_comp = the workers' compensation premium; "
+            "platform_fee = the payroll company's platform / handling / service "
+            "fee. Wrapbook's Fringe Report and Cost Code Report show these per "
+            "person — when the document separates them, fill the fields so the "
+            "caller can book wages to the person's budget line, fringes to that "
+            "department's payroll-fringe line, workers' comp to the Workers' Comp "
+            "line and the platform fee to the Payroll Service Fee line; amount "
+            "stays the person's total (wages + fringes + workers_comp + "
+            "platform_fee). When only a single figure per person exists, set "
+            "wages/fringes/workers_comp/platform_fee to null. Use the ROSTER of known crew "
             "names to normalize spellings when a printed name clearly refers to a "
             "rostered person (return the roster spelling). Skip subtotal/header/"
             "tax-summary rows that aren't a person. Amounts are positive numbers. "
@@ -420,14 +425,26 @@ _PEOPLE_TOOL = {
                                                  "Null when the document doesn't "
                                                  "separate wages from employer costs."},
                         "fringes": {"type": ["number", "null"],
-                                    "description": "The EMPLOYER-paid fringes and fees "
-                                                   "for that person: employer FICA/"
-                                                   "Medicare, FUTA/SUI unemployment, "
-                                                   "workers compensation, handling/"
-                                                   "platform fees, PH&W, etc. "
-                                                   "(wages + fringes should equal "
-                                                   "amount). Null when not shown "
-                                                   "per person."},
+                                    "description": "The EMPLOYER-paid payroll taxes "
+                                                   "and fringes for that person: "
+                                                   "employer FICA/Medicare, FUTA/SUI "
+                                                   "unemployment, PH&W / union fringe. "
+                                                   "EXCLUDES workers' compensation and "
+                                                   "the platform/handling fee (those "
+                                                   "have their own fields). Null when "
+                                                   "not shown per person."},
+                        "workers_comp": {"type": ["number", "null"],
+                                         "description": "That person's workers' "
+                                                        "compensation premium (employer "
+                                                        "paid). Null when not shown per "
+                                                        "person."},
+                        "platform_fee": {"type": ["number", "null"],
+                                         "description": "The payroll company's platform / "
+                                                        "handling / service fee charged "
+                                                        "for that person. Null when not "
+                                                        "shown per person. wages + fringes "
+                                                        "+ workers_comp + platform_fee "
+                                                        "should equal amount."},
                     },
                     "required": ["name", "amount"],
                 },
@@ -518,7 +535,9 @@ def pick_match(payload):
 
 def extract_people(payload):
     """Fail-open payroll-package extractor. payload: {document:{...}, roster:[names]}.
-    Returns {rows:[{name, amount}], document_total, confidence}."""
+    Returns {rows:[{name, amount, wages, fringes, workers_comp, platform_fee}],
+    document_total, confidence} — fringes is employer FICA/Medicare/FUTA/SUI
+    only; workers_comp and platform_fee are their own fields (Phase 4)."""
     p = get_provider("people")
     try:
         return p.extract_people(payload)

@@ -460,6 +460,76 @@ def compute_row_flags(row, *, today=None, date_far_days=7):
     return {"red": red, "yellow": yellow}
 
 
+# ── Fringes to 6500 Administrative (ACTUALS_HANDOFF Phase 4, 2026-11-01) ──
+
+FRINGE_HOME_SECTION = 6500
+
+
+def resolve_fringe_line(lines, section, home=FRINGE_HOME_SECTION):
+    """Find a labor DEPARTMENT's Payroll Fringes line among line-likes
+    (id, line_tag, account_code, fringe_for_section). Pure; app.
+    _ensure_fringe_rollup_line uses it so the register, the parser and the
+    grid resolve the same line.
+
+    Returns (line, is_legacy):
+      * the line tagged fringe_rollup whose fringe_for_section == section
+        (the Phase 4 shape, in 6500) → (line, False);
+      * else the pre-Phase-4 per-section line (fringe_rollup, account_code
+        == section, fringe_for_section NULL) → (line, True) so the caller
+        adopts it into 6500 keeping its id and its coded actuals;
+      * else (None, False). The old single 6500 pot (account_code == home,
+        no department) is never a department's line."""
+    try:
+        section = int(section)
+    except (TypeError, ValueError):
+        return None, False
+    for l in lines or []:
+        if (getattr(l, 'line_tag', None) or '') != 'fringe_rollup':
+            continue
+        if getattr(l, 'fringe_for_section', None) == section:
+            return l, False
+    if section == home:
+        return None, False
+    for l in lines or []:
+        if ((getattr(l, 'line_tag', None) or '') == 'fringe_rollup'
+                and getattr(l, 'fringe_for_section', None) is None
+                and getattr(l, 'account_code', None) == section):
+            return l, True
+    return None, False
+
+
+def parse_people_split(amount, wages, fringes, workers_comp=0.0, platform_fee=0.0):
+    """Tie-out rule for one parsed payroll row (Phase 4; pure, unit-tested
+    in tests/unit/test_fringe_lines.py; app.docs_parse_people calls it).
+
+    amount is the person's total on the document. When the AI separated the
+    parts, the split is used as given; the difference between amount and
+    (wages + fringes + workers_comp + platform_fee) is booked to the
+    person's line (wages) and returned as `delta` when it exceeds $1 so the
+    UI can flag it, instead of silently merging everything back into one
+    row. When no split exists (wages missing) the whole amount is wages.
+    Returns {wages, fringes, workers_comp, platform_fee, delta}."""
+    def _f(v):
+        try:
+            return round(float(v), 2)
+        except (TypeError, ValueError):
+            return None
+    amount = _f(amount) or 0.0
+    wages, fringes = _f(wages), _f(fringes)
+    wc = _f(workers_comp) or 0.0
+    fee = _f(platform_fee) or 0.0
+    if wages is None or wages < 0:
+        return {"wages": amount, "fringes": 0.0, "workers_comp": 0.0,
+                "platform_fee": 0.0, "delta": 0.0}
+    fringes = fringes if (fringes is not None and fringes >= 0) else 0.0
+    wc = max(wc, 0.0)
+    fee = max(fee, 0.0)
+    diff = round(amount - (wages + fringes + wc + fee), 2)
+    delta = diff if abs(diff) > 1.0 else 0.0
+    return {"wages": round(wages + diff, 2), "fringes": fringes,
+            "workers_comp": wc, "platform_fee": fee, "delta": delta}
+
+
 # ── Workspace screen helpers (ACTUALS_HANDOFF Phase 3, 2026-11-01) ────────
 
 def build_line_picker_options(groups):
@@ -470,9 +540,15 @@ def build_line_picker_options(groups):
 
     Rules (owner 2026-10-31): header / spacer rows are never targets;
     child lines (kit fees, agent fees …) ride indented right under their
-    parent; a section's Payroll Fringes line anchors the bottom of its
-    group and is marked kind='fringe' so the screen can draw it read-only.
+    parent. Since Phase 4 (Steven, Oct 30) the per-department Payroll
+    Fringes lines live in 6500 Administrative — they anchor the bottom of
+    the 6500 group as kind='fringe' with their department name, and ARE
+    coding targets (the payroll parser codes each person's employer
+    fringes there). The hidden auto-calc lines (Workers' Comp, Production
+    Insurance, Payroll Service Fee, Production Company Fee) list the same
+    way as kind='auto'. A labor section never offers a fringe target.
     Returns [{code, name, opts:[{id, label, kind, parent_id}]}]."""
+    _COMPUTED = ('fringe_rollup', 'auto_calc')
     out = []
     for g in groups or []:
         raw_lines = g.get("lines") if isinstance(g, dict) else getattr(g, "lines", [])
@@ -489,21 +565,26 @@ def build_line_picker_options(groups):
             d = (getattr(l, 'description', None) or getattr(l, 'account_name', None) or 'untitled')[:60]
             return {"id": l.id, "kind": kind,
                     "parent_id": getattr(l, 'parent_line_id', None),
-                    "label": (d if kind == 'fringe' else f"{l.account_code} · {d}")}
+                    "label": (d if kind in ('fringe', 'auto') else f"{l.account_code} · {d}")}
+        def _tag(l):
+            return getattr(l, 'line_tag', None) or ''
         ordered, seen = [], set()
         for l in lines:
-            if l.id in seen or getattr(l, 'parent_line_id', None) or (getattr(l, 'line_tag', None) or '') == 'fringe_rollup':
+            if l.id in seen or getattr(l, 'parent_line_id', None) or _tag(l) in _COMPUTED:
                 continue
             ordered.append(_opt(l, 'top')); seen.add(l.id)
             for k in kids.get(l.id, []):
                 ordered.append(_opt(k, 'child')); seen.add(k.id)
         for l in lines:          # orphan children whose parent is elsewhere
-            if l.id not in seen and (getattr(l, 'line_tag', None) or '') != 'fringe_rollup':
+            if l.id not in seen and _tag(l) not in _COMPUTED:
                 ordered.append(_opt(l, 'child' if getattr(l, 'parent_line_id', None) else 'top'))
                 seen.add(l.id)
-        for l in lines:          # fringes last, read-only on the screen
-            if (getattr(l, 'line_tag', None) or '') == 'fringe_rollup':
+        for l in lines:          # computed lines last (fringes by department, then autos)
+            if _tag(l) == 'fringe_rollup':
                 ordered.append(_opt(l, 'fringe'))
+        for l in lines:
+            if _tag(l) == 'auto_calc':
+                ordered.append(_opt(l, 'auto'))
         code = g.get("code") if isinstance(g, dict) else getattr(g, "code", None)
         name = g.get("name") if isinstance(g, dict) else getattr(g, "name", None)
         out.append({"code": code, "name": name, "opts": ordered})

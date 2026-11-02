@@ -286,42 +286,103 @@ function toggleTsSection(code, btn) {
   btn.textContent = isExpanded ? '▸' : '▾';
 }
 
-// ── % Edit Popup ─────────────────────────────────────────────────────────────
+// ── Auto-calc setting popup ───────────────────────────────────────────────
+// Phase 4 (Steven, Oct 30 2026): Workers' Comp %, Payroll Service Fee % and
+// Production Insurance (off / % / flat) edit in place from the budget page
+// and the Top Sheet (✎ or right-click). The popup writes the Settings
+// panel's inputs and saves through saveSettings() — ONE POST route, the
+// same Budget.* fields Settings writes. The Production Company Fee has its
+// own editor (feeEditMenu).
 let _pctEditType = null;
 function editAutoLinePct(event, type) {
   event.preventDefault();
+  event.stopPropagation();
   _pctEditType = type;
   const popup = document.getElementById('pct-edit-popup');
+  const modeSel = document.getElementById('pct-edit-mode');
   popup.classList.remove('hidden');
   popup.style.left = Math.min(event.clientX, window.innerWidth - 260) + 'px';
   popup.style.top = (event.clientY + 8) + 'px';
+  if (modeSel) modeSel.style.display = 'none';
+  const prefix = document.getElementById('pct-edit-prefix');
+  const suffix = document.getElementById('pct-edit-suffix');
+  if (prefix) prefix.style.display = 'none';
+  if (suffix) suffix.style.display = '';
+  document.getElementById('pct-edit-row').style.display = 'flex';
   if (type === 'workers_comp') {
     document.getElementById('pct-edit-label').textContent = "Workers' Comp %";
-    document.getElementById('pct-edit-note').textContent = "% of gross labor wages → Insurance";
+    document.getElementById('pct-edit-note').textContent = "% of gross labor wages → 6000 Insurance";
     document.getElementById('pct-edit-value').value = parseFloat(document.getElementById('set-workers-comp')?.value || 3.0).toFixed(2);
+  } else if (type === 'production_insurance') {
+    document.getElementById('pct-edit-label').textContent = "Production Liability Insurance";
+    document.getElementById('pct-edit-note').textContent = "off, % of gross labor wages, or a flat amount → 6000 Insurance";
+    if (modeSel) {
+      modeSel.style.display = '';
+      modeSel.value = document.getElementById('set-pi-mode')?.value || 'off';
+    }
+    pctPopModeSwap();
   } else {
     document.getElementById('pct-edit-label').textContent = "Payroll Service Fee %";
-    document.getElementById('pct-edit-note').textContent = "% of gross labor wages → Administrative";
+    document.getElementById('pct-edit-note').textContent = "% of gross labor wages → 6500 Administrative";
     document.getElementById('pct-edit-value').value = parseFloat(document.getElementById('set-payroll-fee')?.value || 1.75).toFixed(2);
   }
   setTimeout(() => document.getElementById('pct-edit-value').focus(), 50);
+}
+function pctPopModeSwap() {
+  if (_pctEditType !== 'production_insurance') return;
+  const mode = document.getElementById('pct-edit-mode')?.value || 'off';
+  const row = document.getElementById('pct-edit-row');
+  const prefix = document.getElementById('pct-edit-prefix');
+  const suffix = document.getElementById('pct-edit-suffix');
+  const inp = document.getElementById('pct-edit-value');
+  row.style.display = 'flex';
+  if (mode === 'flat') {
+    if (prefix) prefix.style.display = '';
+    if (suffix) suffix.style.display = 'none';
+    inp.step = '100'; inp.removeAttribute('max');
+    inp.value = parseFloat(document.getElementById('set-pi-flat')?.value || 0).toFixed(2);
+  } else if (mode === 'pct') {
+    if (prefix) prefix.style.display = 'none';
+    if (suffix) suffix.style.display = '';
+    inp.step = '0.01'; inp.max = '100';
+    inp.value = parseFloat(document.getElementById('set-pi-pct')?.value || 1.5).toFixed(2);
+  } else {
+    if (prefix) prefix.style.display = 'none';
+    if (suffix) suffix.style.display = 'none';
+    inp.value = '';
+  }
 }
 function closePctPopup() {
   document.getElementById('pct-edit-popup').classList.add('hidden');
   _pctEditType = null;
 }
 function savePctEdit() {
+  const type = _pctEditType;
   const val = parseFloat(document.getElementById('pct-edit-value').value);
-  if (isNaN(val)) { closePctPopup(); return; }
-  if (_pctEditType === 'workers_comp') {
-    const el = document.getElementById('set-workers-comp');
-    if (el) { el.value = val; el.dispatchEvent(new Event('change')); }
+  if (type === 'production_insurance') {
+    const mode = document.getElementById('pct-edit-mode')?.value || 'off';
+    const modeEl = document.getElementById('set-pi-mode');
+    if (modeEl) { modeEl.value = mode; modeEl.dispatchEvent(new Event('change')); }
+    if (mode === 'pct' && !isNaN(val)) {
+      const el = document.getElementById('set-pi-pct');
+      if (el) { el.value = val; el.dispatchEvent(new Event('change')); }
+    } else if (mode === 'flat' && !isNaN(val)) {
+      const el = document.getElementById('set-pi-flat');
+      if (el) { el.value = val; el.dispatchEvent(new Event('change')); }
+    } else if (mode !== 'off' && isNaN(val)) { closePctPopup(); return; }
   } else {
-    const el = document.getElementById('set-payroll-fee');
+    if (isNaN(val)) { closePctPopup(); return; }
+    const el = document.getElementById(type === 'workers_comp' ? 'set-workers-comp' : 'set-payroll-fee');
     if (el) { el.value = val; el.dispatchEvent(new Event('change')); }
   }
   closePctPopup();
-  if (typeof saveSettings === 'function') saveSettings();
+  // The auto rows (grid + Top Sheet + their hidden lines' estimates) are
+  // server-computed — reload in place once the save lands, keeping the tab.
+  if (typeof saveSettings === 'function') {
+    Promise.resolve(saveSettings()).then(() => {
+      if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload();
+    });
+  }
 }
 document.addEventListener('click', e => {
   if (!e.target.closest('#pct-edit-popup')) closePctPopup();

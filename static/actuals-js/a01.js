@@ -477,25 +477,32 @@
           <div class="aw-nums num"><span>${whole(sec.estimate)}</span><span>${whole(sec.actual)}</span>${varCell(sec.variance)}</div>
         </div>`;
       const lines = (sec.lines || []).slice();
-      // Children ride under their parent; fringe summary rows close the card.
+      // Children ride under their parent. Phase 4 (Steven, Oct 30): the
+      // per-department Payroll Fringes lines live in 6500 Administrative
+      // and close that card, followed by the auto-calc lines (Workers'
+      // Comp, Production Insurance, Payroll Service Fee, Production
+      // Company Fee); all of them are coding targets. A labor section
+      // has no fringe row here — its fringe summary is on the budget page.
+      const computed = l => l.line_tag === 'fringe_rollup' || l.line_tag === 'auto_calc';
       const byParent = new Map();
       lines.forEach(l => { if (l.parent_line_id) { if (!byParent.has(l.parent_line_id)) byParent.set(l.parent_line_id, []); byParent.get(l.parent_line_id).push(l); } });
       const ordered = [];
       const seen = new Set();
       lines.forEach(l => {
-        if (seen.has(l.id) || l.parent_line_id || l.line_tag === 'fringe_rollup') return;
+        if (seen.has(l.id) || l.parent_line_id || computed(l)) return;
         ordered.push(l); seen.add(l.id);
         (byParent.get(l.id) || []).forEach(k => { ordered.push(k); seen.add(k.id); });
       });
-      lines.forEach(l => { if (!seen.has(l.id) && l.line_tag !== 'fringe_rollup') { ordered.push(l); seen.add(l.id); } });
+      lines.forEach(l => { if (!seen.has(l.id) && !computed(l)) { ordered.push(l); seen.add(l.id); } });
       lines.forEach(l => { if (l.line_tag === 'fringe_rollup') ordered.push(l); });
+      lines.forEach(l => { if (l.line_tag === 'auto_calc') ordered.push(l); });
       ordered.forEach(l => {
         const fringe = l.line_tag === 'fringe_rollup';
-        const off = !fringe && !l.is_drop_target;
+        const off = !l.is_drop_target;
         const cls = 'aw-line' + (l.parent_line_id ? ' child' : '') + (fringe ? ' fringe' : '') + (off ? ' off' : '') + (S.lineFilter === l.id ? ' sel' : '');
-        const target = (!fringe && !off) ? `data-target="line" data-line-id="${l.id}" data-code="${l.account_code}" data-label="${esc(l.label)}" tabindex="0" role="button" aria-label="${esc(l.label)}: assign the selection here, or click to list its transactions"` : '';
-        const name = fringe ? `Fringes for this section${l.description ? ' · ' + esc(l.description) : ''}` : esc(l.description || l.label);
-        const auto = (l.line_tag || '').startsWith('auto_') ? '<span class="auto">auto</span>' : '';
+        const target = !off ? `data-target="line" data-line-id="${l.id}" data-code="${l.account_code}" data-label="${esc(l.label)}" tabindex="0" role="button" aria-label="${esc(l.label)}: assign the selection here, or click to list its transactions"` : '';
+        const name = esc(l.description || l.label);
+        const auto = (l.line_tag === 'auto_calc' || (l.line_tag || '').startsWith('auto_')) ? '<span class="auto">auto</span>' : '';
         html += `<div class="${cls}" ${target} data-line="${l.id}">
           <span class="name">${name}${auto}</span>
           <div class="aw-nums num">${off ? '<span>—</span><span>—</span><span>—</span>' : `<span>${whole(l.estimate)}</span><span>${whole(l.actual)}</span>${varCell(l.variance)}`}</div>

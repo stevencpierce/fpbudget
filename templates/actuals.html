@@ -381,9 +381,11 @@
   <option value="">— assign budget line —</option>
   {% for grp in line_groups %}
   <optgroup label="{{ grp.code }} · {{ grp.name }}">
-    {% for o in grp.opts %}{% if o.kind != 'fringe' %}
+    {# Phase 4: the per-department Payroll Fringes lines (6500) and the
+       auto-calc lines are coding targets, so they stay in the picker. #}
+    {% for o in grp.opts %}
     <option value="{{ o.id }}" data-kind="{{ o.kind }}">{{ '    ' if o.kind == 'child' else '' }}{{ o.label }}</option>
-    {% endif %}{% endfor %}
+    {% endfor %}
   </optgroup>
   {% endfor %}
 </template>

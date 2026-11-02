@@ -49,7 +49,7 @@
       recent.forEach(e => { const l = S.lineById.get(+e.lineId); out.push({ lineId: l.id, label: l.label, est: l.estimate, act: l.actual }); });
     }
     (AJ.lineGroups || []).forEach(g => {
-      const opts = g.opts.filter(o => o.kind !== 'fringe' && (!q || o.label.toLowerCase().includes(q) || String(g.code).includes(q) || (g.name || '').toLowerCase().includes(q)));
+      const opts = g.opts.filter(o => (!q || o.label.toLowerCase().includes(q) || String(g.code).includes(q) || (g.name || '').toLowerCase().includes(q)));
       const secMatch = q && (String(g.code).includes(q) || (g.name || '').toLowerCase().includes(q));
       if (!opts.length && !secMatch) return;
       out.push({ group: `${g.code} · ${g.name}` });
@@ -374,7 +374,7 @@
     const recent = (AW.recentTargets ? AW.recentTargets() : []).filter(e => e.kind === 'line' && S.lineById.has(+e.lineId));
     if (!q && recent.length) { out.push({ group: 'Suggested' }); recent.forEach(e => { const l = S.lineById.get(+e.lineId); out.push({ lineId: l.id, label: l.label, est: l.estimate, act: l.actual }); }); }
     (AJ.lineGroups || []).forEach(g => {
-      const opts = g.opts.filter(o => o.kind !== 'fringe' && (!q || o.label.toLowerCase().includes(q) || String(g.code).includes(q) || (g.name || '').toLowerCase().includes(q)));
+      const opts = g.opts.filter(o => (!q || o.label.toLowerCase().includes(q) || String(g.code).includes(q) || (g.name || '').toLowerCase().includes(q)));
       if (!opts.length) return;
       out.push({ group: `${g.code} · ${g.name}` });
       opts.forEach(o => { const l = S.lineById.get(o.id) || {}; out.push({ lineId: o.id, label: o.label, child: o.kind === 'child', est: l.estimate, act: l.actual }); });

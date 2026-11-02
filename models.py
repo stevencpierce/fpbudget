@@ -446,6 +446,17 @@ class BudgetLine(db.Model):
     line_tag        = db.Column(db.String(50), nullable=True)
     # If True, sync_schedule_driven_lines will not update this line (user opted out of auto-calc)
     sync_omit       = db.Column(db.Boolean, default=False)
+    # Fringes to 6500 Administrative (Actuals Phase 4, Steven Oct 30 2026):
+    # a line_tag='fringe_rollup' line lives in 6500 and carries the fringe
+    # pot of ONE labor department — fringe_for_section is that department's
+    # COA section code (2000, 2100, ...). One line per department that has
+    # labor; created / removed by app._sync_fringe_lines on render.
+    fringe_for_section = db.Column(db.Integer, nullable=True, index=True)
+    # Hidden auto-calc lines (line_tag='auto_calc'): 'wc' Workers' Comp and
+    # 'ins' Production Insurance in 6000; 'fee' Payroll Service Fee and
+    # 'pcf' Production Company Fee in 6500. Their estimate is written from
+    # the calc; they exist so actuals have a line to land on.
+    auto_kind       = db.Column(db.String(12), nullable=True)
     # Travel role group override: 'talent' | 'atl' | 'crew'  (falls back to COA code)
     role_group      = db.Column(db.String(20), nullable=True)
     # Per-unit rate used by schedule-driven non-labor lines (e.g. $25/meal, $150/night)

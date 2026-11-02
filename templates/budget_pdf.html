@@ -461,18 +461,22 @@
       {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
     {% endif %}
-    {% set _fr_pdf = (top_sheet.fringe_by_section or {}).get(row.code, 0) %}
-    {% if _fr_pdf %}
-    {# Rolled-up labor fringes — per SECTION since 2026-10-21; labor
-       detail lines exclude fringe in this mode. #}
+    {% if row.code == 6500 %}
+    {# Payroll fringes — one row per labor department, pooled in 6500
+       Administrative (Phase 4, Oct 30 2026); labor detail lines carry
+       wages only. #}
+    {% set _coa_pdf = dict(coa_sections) if coa_sections is defined else {} %}
+    {% for _fc, _fr_pdf in (top_sheet.fringe_by_section or {}).items() | sort %}
+    {% set _fname = _coa_pdf.get(_fc) or ('section ' ~ _fc) %}
     <tr class="auto-line">
       <td class="code"></td>
-      <td style="padding-left:22pt">↳ Payroll Fringes — this section's labor</td>
+      <td style="padding-left:22pt">↳ Payroll Fringes — {{ _fname }}</td>
       {% if _col_est  %}<td class="num">{{ currency(_fr_pdf) }}</td>{% endif %}
       {% if _col_work %}<td class="num">{{ currency(_fr_pdf) }}</td>{% endif %}
       {% if _col_act  %}<td class="num">—</td>{% endif %}
       {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
+    {% endfor %}
     {% endif %}
     {% endfor %}
   </tbody>

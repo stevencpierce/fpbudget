@@ -4198,10 +4198,16 @@ def actuals_workspace_json(pid):
                 "parent_line_id": ln.parent_line_id,
                 "estimate": est, "actual": act,
                 "variance": round(est - act, 2),
-                # Header / spacer rows and the section's fringe summary are
-                # never targets (Phase 3: the fringe row is read-only).
-                "is_drop_target": (not bool(ln.sync_omit)
-                                   and (ln.line_tag or '') not in ('fringe_rollup', 'header', 'spacer')),
+                # Phase 4: the per-department Payroll Fringes lines (in 6500)
+                # and the hidden auto-calc lines are real coding targets;
+                # fringe_for_section / auto_kind let the screen label them
+                # ("Payroll Fringes — Production Staff"). Header / spacer
+                # rows are never targets; a labor section has no fringe row.
+                "fringe_for_section": getattr(ln, 'fringe_for_section', None),
+                "auto_kind": getattr(ln, 'auto_kind', None),
+                "is_drop_target": (((ln.line_tag or '') in ('fringe_rollup', 'auto_calc'))
+                                   or (not bool(ln.sync_omit)
+                                       and (ln.line_tag or '') not in ('header', 'spacer'))),
             })
         _order = {code: i for i, (code, _n) in enumerate(FP_COA_SECTIONS)}
         for sec in sorted(by_sec, key=lambda c: (_order.get(c, 9999), c or 0)):

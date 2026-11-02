@@ -151,3 +151,37 @@ from it (cash/reimbursement/accrual) — and every expense gets coded + backed.
   docs; a still-uncoded receipt's own charge is absorbed exactly like the
   receipt-side flow) and detach (restores an absorbed charge to the queue).
   Shared _absorb_receipt_as_backup helper backs both directions.
+
+## 🧾 Actuals Phase 4 — fringes to 6500 Administrative (2026-11-01, Steven's Oct 30 decision)
+- [x] A4-1 — Schema: `budget_line.fringe_for_section` (indexed) + `auto_kind`
+  (alembic `0023a_admin_fringe_lines`, mirrored in `_web_worker_essential_columns`).
+  Data migration is the boot task `_migrate_fringes_to_admin` (system_task_log
+  marker `migrate_fringes_to_admin_2026_11` + advisory lock, idempotent): one
+  `Payroll Fringes — <Department>` line in 6500 per labor department on every
+  project's target budget (Working, else Estimated), the four hidden auto-calc
+  lines, legacy per-section fringe lines adopted (id kept), parsed
+  "employer fringes" rows re-pointed from section:6500 / the old 6500 pot when
+  the person's "— payroll" sibling resolves the department; unresolved rows are
+  counted in the task log and left in place.
+- [x] A4-2 — Calc: `calc_line` / `calc_line_from_schedule` never put fringe in the
+  line total; `calc_top_sheet` pools every department's pot into 6500
+  (`fringe_by_section` keyed by labor section, `fringe_home_section`); lines
+  tagged `fringe_rollup` / `auto_calc` calc as zero (`COMPUTED_LINE_TAGS`) and
+  carry their number on `estimated_total`, written through by
+  `_sync_fringe_lines` on each render. `__fringe_rollup__` sentinel and the
+  `ProjectSheet.fringe_rollup` toggle are retired (column stays, ignored).
+- [x] A4-3 — Grid / Top Sheet / PDF: labor sections show a read-only `<sec>-FR`
+  summary linking to 6500; 6500 shows the per-department rows + fee / pcf; 6000
+  shows WC / PLI; every auto row has an Actual column fed by its hidden line and
+  in-place editing through the one Settings POST (`budget_settings`).
+- [x] A4-4 — Parser: `docs_parse_people` targets the department line, the WC
+  line and the fee line; `extract_people` returns `workers_comp` / `platform_fee`
+  separately; `actuals.parse_people_split` tie-out keeps the split, books the
+  difference to the person and returns a delta the UI flags yellow.
+- [x] A4-5 — Register / workspace: computed lines list under 6500 (6000) as
+  coding targets with their department name; labor sections offer no fringe row.
+- [ ] A4-6 — Deferred: the Estimated-only view of a project that has a Working
+  budget shows the fringe rows from its own calc but the lines live only on the
+  Working budget (by design); FEATURES rows for the old per-section fringe row
+  are superseded by this entry. Confirm in a deploy log that
+  `migrate_fringes_to_admin_2026_11` ran once in production.
