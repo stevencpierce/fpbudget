@@ -944,7 +944,16 @@ window.purgeAllScheduleFlags = async function () {
     if (!btn) return;
     e.preventDefault(); e.stopPropagation();
     if (!confirm(`Permanently delete "${btn.dataset.name}"? This cannot be undone.`)) return;
-    const r = await fetch(`/projects/${_GANTT_PID}/budget/${btn.dataset.bid}/delete`, { method: 'POST' });
+    let r = await fetch(`/projects/${_GANTT_PID}/budget/${btn.dataset.bid}/delete`, { method: 'POST' });
+    if (r.status === 409) {
+      const d409 = await r.json().catch(() => ({}));
+      if (!d409.needs_force) { alert(d409.error || 'Could not delete this version.'); return; }
+      const n = d409.coded_count || 0;
+      if (!confirm(`${n} transaction${n === 1 ? ' is' : 's are'} coded to lines on "${btn.dataset.name}".\n\n` +
+                   `Deleting this version UN-CODES ${n === 1 ? 'it' : 'them'} - the charges are kept but go back to "Needs coding".\n\n` +
+                   `Delete the version anyway?`)) return;
+      r = await fetch(`/projects/${_GANTT_PID}/budget/${btn.dataset.bid}/delete?force=1`, { method: 'POST' });
+    }
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
       alert(d.error || 'Could not delete this version.');

@@ -7040,6 +7040,9 @@ def delete_budget(pid, bid):
     Deleting a Working budget while an Estimated exists is always allowed.
     """
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    # Cleanup A #5 (2026-11-02): a permanent delete is for the project owner
+    # (LP) or an admin — any project editor could do it before.
+    _require_project_role(pid, 'owner')
 
     # Locked versions can't be deleted — the version's Estimated anchor
     # carries the lock and it covers the whole version pair. (Owner
@@ -7053,6 +7056,36 @@ def delete_budget(pid, bid):
     if _anchor_locked:
         return jsonify({"error": "This version is locked — unlock it (✎ in the "
                                  "version menu) before deleting."}), 403
+
+    # Coded spend on this version: deleting the lines un-codes every
+    # transaction / split pointing at them (they survive, uncoded). Refuse
+    # unless the caller explicitly forces it, so a Working budget with real
+    # actuals can't be dropped by a single click.
+    _line_ids_del = [r[0] for r in db.session.query(BudgetLine.id).filter_by(budget_id=bid).all()]
+    _coded_n = 0
+    if _line_ids_del:
+        _coded_n = (db.session.query(Transaction.id)
+                    .filter(Transaction.budget_line_id.in_(_line_ids_del)).count())
+        try:
+            _coded_n += (db.session.query(TransactionSplit.transaction_id)
+                         .filter(TransactionSplit.budget_line_id.in_(_line_ids_del))
+                         .distinct().count())
+        except Exception:
+            pass
+    _force = (request.args.get('force') == '1'
+              or bool((request.get_json(silent=True) or {}).get('force')))
+    if _coded_n and not _force:
+        return jsonify({
+            "error": (f"{_coded_n} transaction{'s are' if _coded_n != 1 else ' is'} coded "
+                      f"to lines on this version. Deleting it un-codes them (the "
+                      f"charges themselves are kept). Confirm to continue."),
+            "needs_force": True, "coded_count": _coded_n,
+        }), 409
+    _snapshot = {"name": budget.name, "budget_mode": budget.budget_mode,
+                 "version_number": budget.version_number,
+                 "version_status": budget.version_status,
+                 "line_count": len(_line_ids_del), "coded_transactions": _coded_n,
+                 "forced": bool(_force)}
 
     # Guard: never delete the last estimated budget
     if _budget_type(budget.budget_mode) == 'estimated':
@@ -7077,6 +7110,16 @@ def delete_budget(pid, bid):
 
     _delete_budget_cascade(bid)
     db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='budget', entity_id=bid,
+                      entity_label=_snapshot["name"], project_id=pid,
+                      before=_snapshot, after=None,
+                      note=(f'Deleted budget version "{_snapshot["name"]}" '
+                            f'({_snapshot["budget_mode"]}, v{_snapshot["version_number"]}; '
+                            f'{_snapshot["line_count"]} lines, '
+                            f'{_coded_n} coded transaction(s) un-coded)'))
+    except Exception:
+        pass
 
     if remaining:
         return jsonify({"ok": True, "redirect": url_for("budget_view", pid=pid, bid=remaining.id)})
