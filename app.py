@@ -35464,11 +35464,19 @@ def docs_upload_rename(uid):
 #   * /update       → save edits to vendor / amount / doc_date / category /
 #                     note from the detail modal
 
-def _docs_check_row_access(upload):
-    """Return None if current user may see/edit this upload, else a Flask
-    response ready to be returned. Mirrors the pattern in upload_post.
-    A document with no project (Payee-page paperwork, Phase 2) is reachable
-    by admins only — the Payee pages are admin-only by decision."""
+def _docs_check_row_access(upload, require_editor=False):
+    """Return None if current user may see (or, with require_editor, edit)
+    this upload, else a Flask response ready to be returned. Mirrors the
+    pattern in upload_post. A document with no project (Payee-page
+    paperwork, Phase 2) is reachable by admins only — the Payee pages are
+    admin-only by decision.
+
+    require_editor (Cleanup A #11, 2026-11-02): the mutating doc routes
+    (/update, /reocr, /parse-people, attach/detach-backup) pass True so a
+    project VIEWER can read a document but not rewrite its vendor / amount
+    / type or itemize it — the central enforce_project_access gate exempts
+    docs endpoints for viewers (uploads are allowed), so this is the only
+    editor check they get."""
     if current_user.role in ('super_admin', 'admin'):
         return None
     if upload.project_id is None:
@@ -35477,6 +35485,11 @@ def _docs_check_row_access(upload):
         project_id=upload.project_id, user_id=current_user.id).first()
     if not access:
         return jsonify({"error": "Forbidden"}), 403
+    if require_editor:
+        _role = 'editor' if access.role == 'collaborator' else (access.role or '')
+        if _role not in ('editor', 'owner'):
+            return jsonify({"error": "Viewers can't edit documents — ask a project "
+                                     "editor or admin."}), 403
     return None
 
 
@@ -35765,7 +35778,7 @@ def docs_parse_people(uid):
     rows come back with an empty line picker."""
     import re as _re_pp
     upload = DocUpload.query.get_or_404(uid)
-    deny = _docs_check_row_access(upload)
+    deny = _docs_check_row_access(upload, require_editor=True)
     if deny:
         return deny
     pid = upload.project_id
@@ -37291,7 +37304,7 @@ def docs_upload_attach_backup(uid):
     tagged. Otherwise the doc is attached as evidence only. Body:
     {doc_id, target_txn_id}. (2026-07-22.)"""
     upload = DocUpload.query.get_or_404(uid)
-    deny = _docs_check_row_access(upload)
+    deny = _docs_check_row_access(upload, require_editor=True)
     if deny:
         return deny
     _require_project_role(upload.project_id, 'editor')
@@ -37336,7 +37349,7 @@ def docs_upload_detach_backup(uid):
     the backing doc's own charge was absorbed (backup_of_txn_id → this
     target), restore it to the queue. Body: {doc_id, target_txn_id}. (2026-07-22.)"""
     upload = DocUpload.query.get_or_404(uid)
-    deny = _docs_check_row_access(upload)
+    deny = _docs_check_row_access(upload, require_editor=True)
     if deny:
         return deny
     _require_project_role(upload.project_id, 'editor')
@@ -39823,7 +39836,7 @@ def docs_upload_reocr(uid):
     so the user can review and Save. Lets you re-read a receipt OCR got wrong
     (e.g. a foreign transaction that wasn't recognized). (User 2026-06-17.)"""
     upload = DocUpload.query.get_or_404(uid)
-    deny = _docs_check_row_access(upload)
+    deny = _docs_check_row_access(upload, require_editor=True)
     if deny:
         return deny
     from datetime import datetime as _dt
@@ -39885,7 +39898,7 @@ def docs_upload_update(uid):
     without disturbing the filed file's path.
     """
     upload = DocUpload.query.get_or_404(uid)
-    deny = _docs_check_row_access(upload)
+    deny = _docs_check_row_access(upload, require_editor=True)
     if deny:
         return deny
     # `_dt` is used below (filed_at, txn updated_at) but was never defined in
