@@ -40,6 +40,12 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
 - Boot DDL must stay idempotent; data migrations need marker + advisory lock.
 - Money: `db.Numeric` only. AI features: advisory + fail-open, never
   auto-confirm financial mutations.
+- Docs and Actuals are their own screens (`/projects/<pid>/docs`,
+  `/projects/<pid>/actuals`). The budget page has NO in-page Docs/Actuals
+  panes any more (Cleanup B, 2026-11-02) — link there, never `?tab=docs` /
+  `?tab=actuals`. The document editor MODAL on the budget page stays
+  (`#docDetailOverlay`, b03.js) and needs `#actualsLineOptsTpl` + the picker
+  glue in b04.js.
 
 ## Splitting app.py (M1, ongoing)
 Route slices move to `routes/<name>.py` — plain modules using `@app.route` on

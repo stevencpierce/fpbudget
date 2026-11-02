@@ -93,8 +93,8 @@
     <a class="tab-btn tab-link" href="{{ url_for('po_list_page', pid=project.id) }}?return_bid={{ return_budget.id }}">POs</a>
     <span class="tab-btn active">Sub-Budgets</span>
     <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=return_budget.id) }}">Call Sheets</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=docs">Docs</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=actuals">Actuals</a>
+    <a class="tab-btn tab-link" href="{{ url_for('docs_inbox_page', pid=project.id) }}">Docs</a>
+    <a class="tab-btn tab-link" href="{{ url_for('actuals_workspace_page', pid=project.id) }}">Actuals</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=activity">Activity</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=import-tools">Tools</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=settings">⚙ Settings</a>

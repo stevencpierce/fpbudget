@@ -1256,21 +1256,9 @@
   // ── Tab activation hooks: load data the FIRST time the panel becomes
   //    active, regardless of whether activation came from a real click,
   //    a programmatic btn.click() from the URL handler, or pre-active
-  //    state at page load. MutationObserver on the panel's class list
-  //    is the only reliable way to catch all three.
+  //    state at page load. (The unused _watchPanel helper was removed in
+  //    Cleanup B, 2026-11-02; the per-panel observers below do the work.)
   let _travelLoaded = false, _cateringLoaded = false;
-  function _watchPanel(tabName, loader, loadedFlag) {
-    const panel = document.getElementById('tab-' + tabName);
-    if (!panel) return;
-    const fire = () => {
-      if (!window['_'+tabName+'Loaded'] && panel.classList.contains('active')) {
-        window['_'+tabName+'Loaded'] = true;
-        loader();
-      }
-    };
-    new MutationObserver(fire).observe(panel, { attributes: true, attributeFilter: ['class'] });
-    fire();  // catch initial state if user landed directly on this tab
-  }
   // Use module-scoped flags via closures instead of window globals
   document.querySelector('.tab-btn[data-tab="travel"]')?.addEventListener('click', () => {
     if (!_travelLoaded || window._travelStale) { _travelLoaded = true; window._travelStale = false; loadTravelGrid(); }

@@ -293,3 +293,51 @@ end in `tests/unit/test_safety_app.py`.
   `transaction_split`, `budget_comment`, `sub_budget_line`, `estimate_share`,
   `schedule_waypoint`, `budget_lever` and unpin `sub_budget`.
 - [x] A19 — `analyzer_batch` created in `_web_worker_essential_columns`.
+
+## 🧹 Cleanup B — links and legacy panels (2026-11-02, branch `cleanup/b-panels`)
+Every Docs / Actuals link opens the new screens; the hidden legacy panes on
+the budget page and their JS are gone. Route snapshot: 5 removals, 0 additions.
+
+**Links**
+- [x] B1 — Budget-page Dashboard cards: Uncoded → `/projects/<pid>/actuals`,
+  Unmatched → `?view=needs_backup`, Docs to review → `/projects/<pid>/docs`,
+  Matches to review → `?view=receipts`. They are plain `<a class="dash-card">`.
+- [x] B2 — `_project_tabs.html` (docs inbox / doc editor strip): Docs and
+  Actuals go to the inbox / workspace; POs and Sub-Budgets to their pages;
+  Schedule and Call Sheets through `/projects/<pid>/budget?page=schedule|callsheets`
+  (`project_budget_redirect` resolves the budget id — no new route).
+- [x] B3 — callsheet / gantt / pos / sub_budgets / docs_upload tab strips,
+  the PO page's "Manage" link (`/actuals?txn=`), the doc editor's Back link
+  (inbox) and the inbox's "Classic list" link (removed).
+- [x] B4 — Old bookmarks: `?tab=docs` / `?tab=actuals` on the budget page
+  `location.replace` to the new screens.
+- [x] B5 — Top nav: Crew → Payees (`/payees`).
+
+**Legacy panels**
+- [x] B6 — `#tab-docs` (~870 lines) and `#tab-actuals` (~1,420 lines) deleted
+  from `budget.html` with their hidden tab buttons and the `?tab=` lazy-load
+  plumbing (`active_tab`, `data-needs-load`). Kept: the document detail modal
+  (`#docDetailOverlay` + `_doc_editor.html`, opened by line receipt links,
+  People packets, Dashboard queue, Line Ledger) and `#actualsLineOptsTpl`
+  (the modal's pickers clone from it).
+- [x] B7 — `b02.js` deleted; `b03.js` 2,468 → 297 lines (modal glue only);
+  `b04.js` 4,891 → 935 lines (Dashboard / Action Center, Find-duplicates
+  modal, picker glue, toast); `b14.js` `_watchPanel` removed. Dead per the
+  audit and gone: `actualsCleanup`, `codeFilterNeeds`, `actualsFindReceipt`,
+  `actualsAutoCode`, `actualsRunAutoMatch`, `openDupTxnReview`, `docsFmtSize`.
+- [x] B8 — `budget_view` no longer builds the transaction list, uploader
+  filter, doc-coding parity map, QBO status, line suggestions, backup
+  suggestions, code buckets, doc groups or line-label maps the panes read.
+- [x] B9 — Routes removed: `/projects/<pid>/reconcile`, `/register`,
+  `reconcile/workspace.json`, `actuals/init` (GET that created a legacy
+  Actual budget), `actuals/reconcile-columns.json`. Templates removed:
+  `reconcile.html`, `crew.html` (never rendered). `routes/crew.py` stays —
+  its JSON / edit / delete / docs routes back the Payee page.
+- [x] B10 — Tests: `tests/test_actuals.py` deleted; `tests/test_docs.py`
+  rewritten against the Docs inbox.
+- [ ] B11 — Follow-ups seen, not done here: `_buildLocationDocs` /
+  `_buildVendorView` (budget.html People tab) still read `#docsHistory .doc-row`,
+  which has been empty on every normal load since the June lazy-load — they
+  should read `/actuals/docs.json` like `_buildPacketView`; `gantt.js` calls
+  `fetchTotals()` before `init()` sets `_pid/_bid` (404 on
+  `/projects/undefined/...` on every schedule load, pre-existing).

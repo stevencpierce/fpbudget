@@ -1310,9 +1310,9 @@ def scan_duplicate_receipts(project_id):
 
 # ── Legacy Working → Actual helpers ──────────────────────────────────
 # Kept for projects that still carry an Actual budget from before the Phase 1
-# money-path migration (2026-07). Coding no longer clones an Actual; the
-# explicit route (app.py actuals_init_actual_budget) is the only caller of
-# clone_working_to_actual today.
+# money-path migration (2026-07). Coding no longer clones an Actual, and the
+# /actuals/init route that used to call clone_working_to_actual was removed in
+# Cleanup B (2026-11-02); nothing in the app creates an Actual budget now.
 
 def get_current_actual_budget(project_id):
     """Return the project's current Actual budget, or None."""

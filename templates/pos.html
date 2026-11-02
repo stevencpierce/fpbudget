@@ -132,8 +132,8 @@
     <span class="tab-btn active">POs</span>
     <a class="tab-btn tab-link" href="{{ url_for('sub_budgets_page', pid=project.id) }}?return_bid={{ return_budget.id }}">Sub-Budgets</a>
     <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=return_budget.id) }}">Call Sheets</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=docs">Docs</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=actuals">Actuals</a>
+    <a class="tab-btn tab-link" href="{{ url_for('docs_inbox_page', pid=project.id) }}">Docs</a>
+    <a class="tab-btn tab-link" href="{{ url_for('actuals_workspace_page', pid=project.id) }}">Actuals</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=activity">Activity</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=import-tools">Tools</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=settings">⚙ Settings</a>
@@ -481,10 +481,8 @@
           <span style="display:flex;gap:4px">
             <button class="btn btn-xs btn-ghost" title="Flag this as not a project expense — removes it from Actualized totals."
                     onclick="markTxnNotProject({{ t.id }}, this)">✕ Not project</button>
-            {% if return_budget %}
             <a class="btn btn-xs btn-ghost" title="Open Actuals to reassign this transaction"
-               href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=actuals#txn-{{ t.id }}">↗ Manage</a>
-            {% endif %}
+               href="{{ url_for('actuals_workspace_page', pid=project.id) }}?txn={{ t.id }}">↗ Manage</a>
           </span>
         </div>
         {% endfor %}

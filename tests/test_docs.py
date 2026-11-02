@@ -1,8 +1,10 @@
 """
-Docs tab tests: file drop zone, upload queue, upload history.
-The Docs tab lives inside the budget page at #tab-docs.
+Docs tests: the budget page's Docs tab opens the Docs inbox
+(/projects/<pid>/docs) — drop zone, upload control, search.
+(Cleanup B, 2026-11-02: the in-page #tab-docs pane is gone.)
 """
 
+import re
 import time
 import allure
 import pytest
@@ -20,43 +22,35 @@ PROJECT_NAME = f"DocsTest-{int(time.time()) % 100000}"
 
 
 @pytest.fixture
-def docs_tab_page(admin_page: Page) -> Page:
+def docs_inbox_page(admin_page: Page) -> Page:
     page = admin_page
     create_project(page, PROJECT_NAME, template="FP Standard")
     open_project_by_name(page, PROJECT_NAME)
     page.wait_for_timeout(2000)
-    # Switch to Docs tab
-    page.locator('button.tab-btn:has-text("Docs")').first.click()
-    page.wait_for_timeout(1000)
+    # The Docs tab is a link to the inbox, not an in-page pane.
+    page.locator('a.tab-btn:has-text("Docs")').first.click()
+    page.wait_for_load_state("networkidle", timeout=10_000)
     yield page
     go_to_projects(page)
     delete_project(page, PROJECT_NAME)
 
 
-@allure.title("Docs tab activates and drop zone is visible")
-def test_docs_tab_activates(docs_tab_page: Page):
-    page = docs_tab_page
-    expect(page.locator("#tab-docs.active")).to_be_visible(timeout=10_000)
-    expect(page.locator("#docsDropZone")).to_be_visible()
-    take_step_screenshot(page, "docs-tab-active")
+@allure.title("Docs tab opens the Docs inbox")
+def test_docs_tab_opens_inbox(docs_inbox_page: Page):
+    page = docs_inbox_page
+    assert re.search(r"/projects/\d+/docs$", page.url.split("?")[0]), page.url
+    expect(page.locator("#inbxDropZone")).to_be_visible(timeout=10_000)
+    take_step_screenshot(page, "docs-inbox")
 
 
-@allure.title("Docs tab shows the hidden file inputs for upload")
-def test_docs_file_inputs_present(docs_tab_page: Page):
-    page = docs_tab_page
-    for input_id in ("docsFileInput", "docsCameraInput", "docsGalleryInput"):
-        assert page.locator(f"#{input_id}").count() >= 1, f"Missing {input_id}"
+@allure.title("Docs inbox shows the upload control and hidden file input")
+def test_docs_inbox_upload_controls(docs_inbox_page: Page):
+    page = docs_inbox_page
+    expect(page.locator("#inbxUploadBtn")).to_be_visible(timeout=5000)
+    assert page.locator("#inbxFileInput").count() == 1, "Missing #inbxFileInput"
 
 
-@allure.title("Docs Upload All button is visible")
-def test_docs_upload_button_visible(docs_tab_page: Page):
-    page = docs_tab_page
-    upload_btn = page.locator("#docsBtnUpload")
-    expect(upload_btn).to_be_visible(timeout=5000)
-
-
-@allure.title("Docs history list container is present")
-def test_docs_history_list_present(docs_tab_page: Page):
-    page = docs_tab_page
-    history = page.locator("#docsHistory")
-    assert history.count() == 1, "Expected exactly one #docsHistory container"
+@allure.title("Docs inbox search box is present")
+def test_docs_inbox_search_present(docs_inbox_page: Page):
+    page = docs_inbox_page
+    expect(page.locator("#inbxSearch")).to_be_visible(timeout=5000)
