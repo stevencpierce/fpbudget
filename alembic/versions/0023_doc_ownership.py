@@ -37,7 +37,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "0023_doc_ownership"
-down_revision = "0022_payee_fields"
+down_revision = "0023a_admin_fringe_lines"
 branch_labels = None
 depends_on = None
 

@@ -94,9 +94,14 @@ def ctx(monkeypatch_module):
     app.config["WTF_CSRF_ENABLED"] = False
     with app.app_context():
         db.create_all()
-        u = User(email="steven@thefp.tv", name="Steven", role="super_admin")
+        # Another test module may have booted app.py first in this process
+        # (with RUN_BOOT_TASKS=1, which seeds this user) — reuse it.
+        u = User.query.filter_by(email="steven@thefp.tv").first()
+        if not u:
+            u = User(email="steven@thefp.tv", name="Steven", role="super_admin")
+            db.session.add(u)
+        u.role = "super_admin"
         u.set_password("pw")
-        db.session.add(u)
         p = ProjectSheet(name="GrubHub Fee Breakdown", dropbox_folder="GrubHub_Fee_Breakdown", status="active")
         db.session.add(p)
         theo = CrewMember(name="Theo Lindqvist", kind="person", active=True)
