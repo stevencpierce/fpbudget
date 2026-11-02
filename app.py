@@ -11165,28 +11165,12 @@ def hide_group_label(pid, bid):
 # batch helpers and the anomaly scans.
 
 def _normalize_vendor(v):
-    """Lowercase + strip common credit-card noise so 'LYFT *RIDE MON 8AM'
-    and 'Lyft' both normalize to 'lyft' for fuzzy sibling matching.
-    Used by _sync_claim_state's fuzzy branch (2026-05-15) to match
-    receipt-only rows against QBO charges across projects."""
-    if not v:
-        return ""
-    import re as _re
-    s = str(v).strip().lower()
-    # Strip common prefixes credit-card processors prepend.
-    for _p in ('sq *', 'sq*', 'tst* ', 'tst*', 'amzn mktp ', 'amzn mktp* ',
-               'amazon mktpl*', 'amazon mktpl ', 'amazon mktp ', 'paypal *',
-               'paypal*', 'pp*', 'pos debit ', 'remote online deposit '):
-        if s.startswith(_p):
-            s = s[len(_p):]
-            break
-    # Strip trailing " *" + ride/order id noise after a space-asterisk.
-    s = _re.split(r'\s+\*', s, maxsplit=1)[0]
-    # Strip trailing reference digits / dates / "ride mon 8am" tails.
-    s = _re.sub(r'\s+\d[\w\-: ]*$', '', s).strip()
-    # Collapse remaining whitespace.
-    s = _re.sub(r'\s+', ' ', s)
-    return s
+    """'LYFT *RIDE MON 8AM' and 'Lyft' both normalize to 'lyft' for fuzzy
+    sibling matching (used by _sync_claim_state's fuzzy branch, 2026-05-15).
+    Thin alias of actuals.vendor_match_key — the ONE vendor-cleaning rule
+    (Cleanup D); the separate processor-prefix list that lived here is gone."""
+    from actuals import vendor_match_key
+    return vendor_match_key(v)
 
 
 def _sync_claim_state(txn):
