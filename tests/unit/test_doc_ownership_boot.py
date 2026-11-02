@@ -113,11 +113,15 @@ def ctx(monkeypatch_module):
     monkeypatch_module.setattr(fp_analyzer, "get_dropbox_client", lambda: _FakeDbx())
     monkeypatch_module.setenv("DROPBOX_ACCESS_TOKEN", "x")
     c = app.test_client()
-    r = c.post("/login", data={"email": "steven@thefp.tv", "password": "pw"}, follow_redirects=False)
-    assert r.status_code in (302, 303), r.status_code
+    # A browser always renders the login page (which seeds the session's
+    # CSRF token) before posting it; the token must come with the POST now
+    # that the rollout-era "seed and allow" path is gone (Cleanup A #15).
     with c.session_transaction() as s:
         s["_csrf"] = "t0k3n"
     c.environ_base["HTTP_X_CSRFTOKEN"] = "t0k3n"
+    r = c.post("/login", data={"email": "steven@thefp.tv", "password": "pw",
+                               "csrf_token": "t0k3n"}, follow_redirects=False)
+    assert r.status_code in (302, 303), r.status_code
     return {"app": app, "client": c, **ids}
 
 
