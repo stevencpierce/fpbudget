@@ -1650,12 +1650,23 @@ def actuals_edit_transaction(pid, tid):
     if "amount" in data:
         a = data.get("amount")
         if a in (None, "", "null"):
-            txn.amount = None
+            _new_amt = None
         else:
             try:
-                txn.amount = round(float(a), 2)
+                _new_amt = round(float(a), 2)
             except (TypeError, ValueError):
                 return jsonify({"error": "amount must be a number"}), 400
+        # Cleanup A #16 (2026-11-02): a bank-sourced amount is what the bank
+        # says it is, and a split row's amount must keep matching its split
+        # sum — the old code changed either silently. Rule in
+        # actuals.amount_edit_allowed (unit-tested).
+        from actuals import amount_edit_allowed as _amt_ok
+        _split_amts = [sp.amount for sp in
+                       TransactionSplit.query.filter_by(transaction_id=txn.id).all()]
+        _ok, _why = _amt_ok(txn, _new_amt if _new_amt is not None else 0, _split_amts)
+        if not _ok:
+            return jsonify({"error": _why}), 409
+        txn.amount = _new_amt
     if "txn_date" in data:
         d = (data.get("txn_date") or "").strip()
         if not d:
