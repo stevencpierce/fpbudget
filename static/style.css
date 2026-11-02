@@ -5915,6 +5915,9 @@ select.pay-select { height: 34px; width: auto; padding: 0 28px 0 10px; border: 1
 .pay-alias { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
   border: 1px solid var(--border); border-radius: 14px; font-size: .78rem; }
 .pay-alias .raw { color: var(--text-muted); }
+.pay-alias.linked { border-color: color-mix(in srgb, var(--green) 45%, var(--border)); background: color-mix(in srgb, var(--green) 6%, var(--bg-2)); }
+.pay-alias-x { border: 0; background: none; color: var(--text-muted); font-size: .72rem; cursor: pointer; padding: 0 2px; }
+.pay-alias-x:hover { color: var(--text); }
 .pay-notes { padding: 12px 16px; font-size: .85rem; white-space: pre-wrap; }
 
 /* edit modal extras */

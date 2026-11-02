@@ -19,7 +19,13 @@
       <span class="pay-chip">Admin</span>
     </div>
     <div class="pay-actions">
-      <span class="pay-sync" title="QuickBooks vendor mirror arrives with Documents Phase 3"><span class="pay-dot"></span>QuickBooks vendors: not yet synced</span>
+      {% if d.qbo %}
+      <a class="pay-sync" href="{{ url_for('admin_qbo_vendors') }}" style="text-decoration:none"
+         title="QuickBooks vendors mirrored into FPBudget (QuickBooks → FPBudget only)">
+        <span class="pay-dot {{ 'ok' if d.qbo.last_sync and not d.qbo.unlinked else ('warn' if d.qbo.unlinked else '') }}"></span>
+        {% if not d.qbo.connected %}QuickBooks not connected{% elif not d.qbo.last_sync %}QuickBooks vendors: not yet mirrored{% elif d.qbo.unlinked %}QuickBooks vendors: {{ d.qbo.unlinked }} to link{% else %}QuickBooks vendors: all linked{% endif %}
+      </a>
+      {% endif %}
       {% if current_user.role == 'super_admin' %}
       <button type="button" class="pay-btn" id="pay-syncall-btn" onclick="payeesSyncAllDocs()"
               title="Copy every person-linked document on all current and wrapped projects into the Crew Database folder in Dropbox. Safe to re-run.">Sync crew docs</button>
@@ -84,7 +90,7 @@
     </div>
   </div>
   {% if d.shared_line_year and d.shared_line_year.total %}
-  <p class="muted" style="font-size:.78rem;margin-top:10px">{{ d.shared_line_year.total | money0 }} paid in {{ d.year }} through budget lines shared by more than one person is not attributed to anyone above. Assigning one person per line, or the Phase 3 payee link on each transaction, places it.</p>
+  <p class="muted" style="font-size:.78rem;margin-top:10px">{{ d.shared_line_year.total | money0 }} paid in {{ d.year }} through budget lines shared by more than one person is not attributed to anyone above. Assigning one person per line, naming the payee on the document, or linking the vendor name to a payee places it.</p>
   {% endif %}
 </div>
 
@@ -98,6 +104,15 @@
       <input type="hidden" name="next" value="{{ url_for('payees_directory') }}">
       {% include "_crew_fields.html" %}
       {% include "_payee_fields.html" %}
+      {# Create in QuickBooks (Phase 3, Steven Nov 1): the one write FPBudget
+         makes there — an exact DisplayName match is linked, else a Vendor is
+         created from these fields. Hidden for W-2 employees (Wrapbook). #}
+      <div class="field" id="add-payee-qbo" style="margin-top:.5rem">
+        <label class="checkbox-label">
+          <input type="checkbox" name="qbo_create" value="1"> Create in QuickBooks
+          <span style="font-weight:400;font-size:.78rem;color:var(--text-muted)">— links to a vendor with this exact name, otherwise creates one. QuickBooks owns the record after that.</span>
+        </label>
+      </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-outline" onclick="document.getElementById('add-payee-modal').classList.add('hidden')">Cancel</button>
         <button type="submit" class="btn btn-primary">Add</button>
@@ -154,7 +169,22 @@ function openAddPayee(){
   const f = m.querySelector('form'); if (f) f.reset();
   m.classList.remove('hidden');
   const n = f && f.querySelector('[name="name"]'); if (n) n.focus();
+  _addPayeeQboToggle();
 }
+/* W-2 employees go to Wrapbook, never to QuickBooks: hide the checkbox. */
+function _addPayeeQboToggle(){
+  const f = document.querySelector('#add-payee-modal form'); if (!f) return;
+  const w2 = f.querySelector('input[type="checkbox"][name="is_w2_employee"]');
+  const box = document.getElementById('add-payee-qbo');
+  const cb = box && box.querySelector('input[name="qbo_create"]');
+  if (!w2 || !box) return;
+  box.style.display = w2.checked ? 'none' : '';
+  if (w2.checked && cb) cb.checked = false;
+}
+(function(){
+  const w2 = document.querySelector('#add-payee-modal input[type="checkbox"][name="is_w2_employee"]');
+  if (w2) w2.addEventListener('change', _addPayeeQboToggle);
+})();
 
 {% if current_user.role == 'super_admin' %}
 /* Global Crew Database sync (carried over from the Crew page): loops the
