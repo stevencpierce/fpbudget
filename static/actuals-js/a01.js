@@ -181,7 +181,17 @@
     $('aw-synctext').innerHTML = sy.connected
       ? esc(`QuickBooks synced ${sy.last_synced ? whenText(sy.last_synced) : 'never'} · ${sy.accounts} account${sy.accounts === 1 ? '' : 's'}`)
       : `QuickBooks not connected · <a href="${esc(AJ.urls.oauth)}">Connect in Admin</a>`;
-    $('aw-syncnow').disabled = !sy.connected || !sy.accounts;
+    $('aw-syncnow').disabled = !sy.connected || !sy.accounts || !AJ.canSync;
+    // Company ledger (2026-11-03): charges this project claimed that another
+    // project claimed too are flagged for review — one banner, admin page.
+    const ban = $('aw-banner');
+    if (ban) {
+      const n = (c.claim_conflicts || 0);
+      if (n && d.conflicts_url) {
+        ban.innerHTML = `<span>${n} charge${n === 1 ? ' is' : 's are'} claimed by two projects</span> <a href="${esc(d.conflicts_url)}">Resolve</a>`;
+        ban.hidden = false;
+      } else { ban.hidden = true; ban.innerHTML = ''; }
+    }
     // Card filter options (kept in sync with the pool).
     const cards = new Set();
     (d.transactions || []).concat(d.not_project || []).forEach(t => { if (t.card_last4) cards.add(t.card_last4); });
@@ -201,7 +211,10 @@
 
   function sourceChip(t) {
     const s = (t.source || '');
-    if (s === 'qbo_sync' || s === 'reconciled') return '<span class="aw-src">QBO</span>';
+    if (s === 'qbo_sync' || s === 'reconciled') {
+      if (t.claim_conflict) return '<span class="aw-src" style="color:var(--orange)" title="Claimed by two projects — see the banner">QBO · review</span>';
+      return t.pooled ? '<span class="aw-src" title="In the company pool — unclaimed by any project">QBO · pool</span>' : '<span class="aw-src">QBO</span>';
+    }
     if (s.includes('csv')) return '<span class="aw-src">CSV</span>';
     if (s === 'receipt' || s === 'doc_upload') return '<span class="aw-src receipt">Receipt</span>';
     return '<span class="aw-src manual">Manual</span>';
@@ -438,17 +451,6 @@
         </div>`;
       });
     }
-    const ce = d.claimed_elsewhere || [];
-    if (ce.length) {
-      html += `<div class="aw-grp" role="row" style="position:static;margin-top:12px"><span>Claimed by other projects</span><span class="tot num">${ce.length}</span></div>`;
-      ce.forEach(t => {
-        html += `<div role="row" class="aw-row excluded" tabindex="0"><div class="aw-cell"></div>
-          <div class="aw-cell num muted">${esc(shortDate(t.date))}</div>
-          <div class="aw-cell"><span class="vendor ell" style="text-decoration:none">${esc(t.vendor)}</span></div>
-          <div class="aw-cell num right amt">${money(t.amount)}</div><div class="aw-cell"></div><div class="aw-cell"></div>
-          <div class="aw-cell" style="font-size:12px"><span class="aw-chip solid"><span>${esc(t.claimed_by)}</span></span></div><div class="aw-cell"></div></div>`;
-      });
-    }
     return html;
   }
 
@@ -460,7 +462,7 @@
         <h3>QuickBooks</h3>
         <dl class="aw-kv">
           <dt>Status</dt><dd>${connected ? '<span class="aw-flag green">Connected</span>' : `<span class="aw-flag yellow">Not connected</span> <a href="${esc(AJ.urls.oauth)}">Connect in Admin</a>`}</dd>
-          <dt>Accounts</dt><dd class="num">${sy.accounts || 0} selected</dd>
+          <dt>Accounts</dt><dd class="num">${sy.accounts || 0} company-wide${AJ.canSync ? ` · <a href="${esc(AJ.urls.accounts)}">choose in Admin</a>` : ''}</dd>
           <dt>Last sync</dt><dd class="num">${sy.last_synced ? esc(sy.last_synced.replace('T', ' ')) + ' (' + whenText(sy.last_synced) + ')' : 'never'}</dd>
           <dt>Change capture</dt><dd class="num">${sy.last_cdc_sync ? esc(sy.last_cdc_sync.replace('T', ' ')) : '—'}</dd>
           <dt>Synced through</dt><dd class="num">${esc(sy.sync_through || '—')}</dd>
@@ -469,9 +471,9 @@
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <label for="aw-sync-from" class="vis-hidden">Sync from</label><input id="aw-sync-from" type="date" title="Sync from (optional)">
           <label for="aw-sync-to" class="vis-hidden">Sync to</label><input id="aw-sync-to" type="date" title="Sync to (optional)">
-          <button type="button" class="aw-btn primary" data-act="sync-now" ${connected && sy.accounts ? '' : 'disabled'}>Sync now</button>
+          <button type="button" class="aw-btn primary" data-act="sync-now" ${connected && sy.accounts && AJ.canSync ? '' : 'disabled'}>Sync now</button>
         </div>
-        <span class="help" style="font-size:12px;color:var(--text-muted)">Only charges accepted into the books reach the API; items still in QuickBooks' For Review tab arrive once accepted.</span>
+        <span class="help" style="font-size:12px;color:var(--text-muted)">The sync is company-wide: every account chosen in Admin is pulled into one pool, and a sync from any project refreshes it for all. Only charges accepted into the books reach the API; items still in QuickBooks' For Review tab arrive once accepted.</span>
       </div>
       <div class="aw-card">
         <h3>This project</h3>
@@ -481,19 +483,14 @@
           <dt>Needs backup</dt><dd class="num">${c.needs_backup || 0}</dd>
           <dt>Receipts waiting</dt><dd class="num">${c.receipts || 0}</dd>
           <dt>Not project</dt><dd class="num">${c.not_project || 0}</dd>
-          <dt>Claimed elsewhere</dt><dd class="num">${c.claimed_elsewhere || 0}</dd>
+          <dt>In the company pool</dt><dd class="num">${c.pooled || 0}</dd>
+          <dt>Claimed by two projects</dt><dd class="num">${c.claim_conflicts || 0}${(c.claim_conflicts && S.data.conflicts_url) ? ` · <a href="${esc(S.data.conflicts_url)}">resolve</a>` : ''}</dd>
         </dl>
         <span class="help" style="font-size:12px;color:var(--text-muted)">Uploads: <a href="${esc(AJ.urls.docs)}">Documents</a> · <a href="${esc(AJ.urls.upload)}">mobile upload</a></span>
       </div>
       <div class="aw-card" style="grid-column:1 / -1">
-        <h3>Accounts feeding this project</h3>
-        <span class="help" style="font-size:12px;color:var(--text-muted)">Only transactions from the checked bank and credit-card accounts are pulled in on Sync.</span>
-        <div id="aw-accts" style="display:flex;flex-direction:column;gap:6px"><span class="muted" style="font-size:13px">${connected ? 'Loading accounts' : 'Connect QuickBooks to pick accounts.'}</span></div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center">
-          <span id="aw-accts-status" class="muted" style="font-size:12px;margin-right:auto"></span>
-          <button type="button" class="aw-btn" data-act="accts-load" ${connected ? '' : 'disabled'}>Refresh</button>
-          <button type="button" class="aw-btn primary" data-act="accts-save" ${connected ? '' : 'disabled'}>Save accounts</button>
-        </div>
+        <h3>How the pool works</h3>
+        <span class="help" style="font-size:12px;color:var(--text-muted)">Every QuickBooks charge exists once for the whole company. Unclaimed charges show in every project's Unclaimed view; assigning a line or section, splitting, attaching a receipt or marking Not project claims the charge for this project and it leaves the other projects' views. Unassigning, unmatching or recovering it with nothing else on it returns it to the pool.</span>
       </div>
     </div>`;
   }

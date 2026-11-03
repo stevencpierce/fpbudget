@@ -500,6 +500,7 @@
     if (t.dup_group) { items.push({ hr: true }); items.push({ act: 'open-dup', label: 'Open the duplicate group', key: t.dup_group }); }
     items.push({ hr: true });
     items.push({ act: 'not-project', label: 'Not a project expense', danger: true });
+    if (AJ.canSync && t.qbo_txn_id && !t.pooled) items.push({ act: 'release-pool', label: 'Release to unclaimed (company pool)', danger: true });
     menu.innerHTML = items.map(i => i.hr ? '<hr>' : `<button type="button" role="menuitem" data-act="${i.act}" data-tid="${t.id}" ${i.key ? `data-key="${esc(i.key)}"` : ''} class="${i.danger ? 'danger' : ''}">${esc(i.label)}</button>`).join('');
     const r = btn.getBoundingClientRect();
     menu.style.top = Math.min(window.innerHeight - 320, r.bottom + 4) + 'px';
@@ -539,26 +540,17 @@
       AW.toast('Sync failed: ' + (e.message || e), 'red');
     } finally { b.disabled = false; b.textContent = orig; }
   };
-  A['accts-load'] = async () => {
-    const host = $('aw-accts'); if (!host) return;
-    const st = $('aw-accts-status'); if (st) st.textContent = '';
-    host.innerHTML = '<span class="muted" style="font-size:13px">Loading accounts</span>';
+  // (The per-project account picker is gone: the company account set lives
+  // in Admin → QuickBooks — AJ.urls.accounts.)
+
+  // ── Release to unclaimed + unmatch receipt (admins; company ledger) ──
+  A['release-pool'] = async btn => {
+    const tid = tidFrom(btn); const t = S.byId.get(tid) || {};
+    if (!confirm(`Release ${t.vendor || 'this charge'} ${money(t.amount)} to the unclaimed pool?\n\nIts line, section, splits and receipt link are removed; the receipt goes back to Receipts to place. Logged and restorable from Admin → Maintenance → Undo a ledger merge.`)) return;
     try {
-      const d = await AW.get(`/projects/${PID}/actuals/qbo-accounts`);
-      if (!d.accounts || !d.accounts.length) { host.innerHTML = '<span class="muted" style="font-size:13px">No bank or credit-card accounts on the connected QuickBooks company.</span>'; return; }
-      host.innerHTML = d.accounts.map(a => `<label class="aw-acct"><input type="checkbox" class="aw-acct-cb" value="${esc(a.id)}" ${a.enabled ? 'checked' : ''}>
-        <span class="n">${esc(a.name)}</span><span class="t">${a.type === 'Credit Card' ? 'Credit card' : 'Bank'}${a.mask ? ' · ' + esc(a.mask) : ''}</span></label>`).join('');
-    } catch (e) {
-      host.innerHTML = `<span style="font-size:13px;color:var(--red)">${esc(e.message || e)}${(e.data || {}).needs_oauth ? ` — <a href="${esc(AJ.urls.oauth)}">connect QuickBooks in Admin</a>` : ''}</span>`;
-    }
-  };
-  A['accts-save'] = async () => {
-    const ids = Array.from(document.querySelectorAll('.aw-acct-cb:checked')).map(c => c.value);
-    const st = $('aw-accts-status');
-    try {
-      const d = await AW.post(`/projects/${PID}/actuals/qbo-accounts`, { account_ids: ids });
-      if (st) st.textContent = `Saved ${d.count} account${d.count === 1 ? '' : 's'}`;
+      await AW.post('/admin/ledger/release', { txn_id: tid });
+      AW.toast(`${t.vendor || 'Charge'} ${money(t.amount)} released to the company pool`, '');
       await AW.load();
-    } catch (e) { if (st) st.textContent = e.message || 'Could not save'; }
+    } catch (e) { AW.toast('Could not release: ' + (e.message || e), 'red'); }
   };
 })();

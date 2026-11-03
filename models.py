@@ -173,18 +173,21 @@ class Transaction(db.Model):
     qbo_account_id  = db.Column(db.String(50), nullable=True)
     qbo_category    = db.Column(db.String(200), nullable=True)
 
-    # ── Cross-project claim (2026-05-07) ───────────────────────────────
-    # An electronic transaction (qbo_txn_id present) can only be billed
-    # to one project at a time. When project A codes it, every parallel
-    # row across other projects gets this set to A's project_id so it
-    # can be hidden from B's "uncoded" pile and shown to admins+ as
-    # "claimed elsewhere → Project A · Account 2100". Releasing the
-    # claim (clearing budget_line_id and account_code in A) clears it
-    # everywhere. Self-heal DDL adds the column on every worker boot;
-    # `nullable=True` so legacy rows are valid.
-    claimed_by_project_id = db.Column(db.Integer,
-                                      db.ForeignKey("project_sheet.id"),
-                                      nullable=True)
+    # ── Company ledger (2026-11-03) ─────────────────────────────────────
+    # ONE row per QuickBooks transaction for the whole company.
+    # project_id on a QuickBooks-sourced row means "claimed by": NULL = in
+    # the company pool, visible to every project's Actuals through
+    # actuals.pool_filter. Claiming / releasing goes through
+    # actuals.claim_for / actuals.release — never a direct project_id write.
+    # claim_conflict marks a charge the ledger migration found claimed by
+    # two projects (each project's row is kept, both flagged) or whose
+    # receipt-side payee differs from the QuickBooks payee; the partial
+    # unique index uq_transaction_qbo_company skips flagged rows so both
+    # can coexist until a person resolves them (Admin → Maintenance).
+    # The retired claimed_by_project_id column stays in the database but
+    # is no longer mapped.
+    claim_conflict        = db.Column(db.Boolean, default=False, nullable=True)
+    claim_conflict_reason = db.Column(db.String(200), nullable=True)
 
     # Required stated reason when a receipt becomes a standalone expense
     # with NO electronic charge behind it (owner 2026-10-30) — e.g.
@@ -286,6 +289,24 @@ class TransactionSplit(db.Model):
     created_by_user_id = db.Column(db.Integer, nullable=True)
 
 
+class TransactionMergeLog(db.Model):
+    """Every twin row the company-ledger migration (or a conflict
+    resolution) removed, with the whole row as JSON so it can be put back
+    by id from Admin → Maintenance → "Undo a ledger merge" (2026-11-03)."""
+    __tablename__ = "transaction_merge_log"
+    id                 = db.Column(db.Integer, primary_key=True)
+    qbo_txn_id         = db.Column(db.String(50), nullable=True)
+    qbo_txn_type       = db.Column(db.String(20), nullable=True)
+    kept_txn_id        = db.Column(db.Integer, nullable=True)
+    removed_txn_id     = db.Column(db.Integer, nullable=True)
+    removed_project_id = db.Column(db.Integer, nullable=True)
+    removed_row_json   = db.Column(db.Text, nullable=True)
+    reason             = db.Column(db.String(120), nullable=True)
+    restored_at        = db.Column(db.DateTime, nullable=True)
+    restored_txn_id    = db.Column(db.Integer, nullable=True)
+    created_at         = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 class QBOConnection(db.Model):
     """OAuth tokens for QuickBooks Online. Single global row for now —
     multi-user QBO connections come later. Updated in place; the
@@ -296,7 +317,16 @@ class QBOConnection(db.Model):
     access_token        = db.Column(db.Text)
     refresh_token       = db.Column(db.Text)
     token_expiry        = db.Column(db.DateTime)
+    # Company account set (2026-11-03): the bank / credit-card accounts the
+    # company-wide sync pulls (Admin → QuickBooks). Seeded by the ledger
+    # migration as the union of every project's retired qbo_account_ids.
     enabled_account_ids = db.Column(db.Text, default="[]")  # JSON array of QBO account ids
+    # Company-wide sync watermarks (2026-11-03; alembic 0025). The per-
+    # project sync_through / last_synced / last_cdc_sync columns on
+    # project_sheet are retired (kept, no longer read).
+    sync_through        = db.Column(db.String(10), nullable=True)
+    last_synced         = db.Column(db.DateTime, nullable=True)
+    last_cdc_sync       = db.Column(db.DateTime, nullable=True)
     updated_at          = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     # Vendor mirror watermark (DOCUMENTS_HANDOFF Phase 3, alembic 0024):
     # NULL = no full pull yet (sync_vendors pages SELECT * FROM Vendor);

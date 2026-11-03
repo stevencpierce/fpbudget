@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}QuickBooks accounts — FPBudget{% endblock %}
+
+{# ══════════════════════════════════════════════════════════════════════════
+   Company QuickBooks account set (company ledger, 2026-11-03). Every bank
+   and credit-card account checked here is pulled by the company-wide sync
+   into one pool that every project's Actuals works from. Replaces the
+   per-project "Accounts feeding this project" picker (retired). Admin+.
+   ══════════════════════════════════════════════════════════════════════ #}
+{% block content %}
+<style>
+  .qa-page { max-width: 820px; margin: 0 auto; padding-bottom: 40px; }
+  .qa-intro { font-size: .86rem; color: var(--text-muted); margin: 0 0 16px; }
+  .qa-card { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px 16px; }
+  .qa-acct { display: flex; align-items: center; gap: 12px; padding: 9px 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, var(--bg-2)); font-size: .9rem; cursor: pointer; }
+  .qa-acct:last-child { border-bottom: 0; }
+  .qa-acct input { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; }
+  .qa-acct .n { font-weight: 500; flex: 1; }
+  .qa-acct .t { font-size: .78rem; color: var(--text-muted); }
+  .qa-foot { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+  .qa-foot .s { font-size: .8rem; color: var(--text-muted); margin-right: auto; }
+  .qa-kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: .82rem; margin: 0 0 14px; }
+  .qa-kv dt { color: var(--text-muted); } .qa-kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+</style>
+<div class="pay-page qa-page">
+  <div class="pay-head">
+    <div class="pay-crumbs">
+      <a href="{{ url_for('dashboard') }}">FPBudget</a><span class="sep">/</span>
+      <a href="{{ url_for('admin_panel') }}">Admin</a><span class="sep">/</span>
+      <span class="cur">QuickBooks accounts</span>
+    </div>
+    <div class="pay-actions">
+      <a class="pay-btn" href="{{ url_for('admin_panel') }}#company-qbo">Back to Admin</a>
+    </div>
+  </div>
+  <p class="qa-intro">
+    The accounts the company-wide sync pulls. Every transaction on a checked account lands once in the company
+    pool, where every project's Actuals can claim it. The rule is "all transactions from our QuickBooks show up
+    all the time" — check every bank and card the company spends from.
+  </p>
+  <div class="qa-card">
+    {% if not d.connected %}
+      <p style="margin:0;font-size:.88rem">QuickBooks is not connected. <a href="{{ url_for('admin_panel') }}#company-qbo">Connect it in Admin</a> first.</p>
+    {% else %}
+      <dl class="qa-kv">
+        <dt>Synced through</dt><dd>{{ d.sync_through or '—' }}</dd>
+        <dt>Last sync</dt><dd>{{ d.last_synced or 'never' }}</dd>
+        <dt>Change capture</dt><dd>{{ d.last_cdc_sync or '—' }}</dd>
+      </dl>
+      {% if d.error %}<p style="color:var(--red);font-size:.85rem">{{ d.error }}</p>{% endif %}
+      <div id="qa-list">
+        {% for a in d.accounts %}
+        <label class="qa-acct"><input type="checkbox" class="qa-cb" value="{{ a.id }}" {{ 'checked' if a.enabled else '' }}>
+          <span class="n">{{ a.name }}</span>
+          <span class="t">{{ 'Credit card' if a.type == 'Credit Card' else 'Bank' }}{% if a.mask %} · {{ a.mask }}{% endif %}</span></label>
+        {% else %}
+        {% if not d.error %}<p style="font-size:.85rem;color:var(--text-muted);margin:0">No bank or credit-card accounts on the connected QuickBooks company.</p>{% endif %}
+        {% endfor %}
+      </div>
+      <div class="qa-foot">
+        <span class="s" id="qa-status">{{ d.enabled|length }} selected</span>
+        <button type="button" class="pay-btn primary" id="qa-save">Save accounts</button>
+      </div>
+    {% endif %}
+  </div>
+</div>
+<script>
+(function () {
+  const btn = document.getElementById('qa-save'); if (!btn) return;
+  const st = document.getElementById('qa-status');
+  btn.addEventListener('click', async () => {
+    const ids = Array.from(document.querySelectorAll('.qa-cb:checked')).map(c => c.value);
+    btn.disabled = true; st.textContent = 'Saving…';
+    try {
+      const r = await fetch('{{ url_for("admin_qbo_accounts_save") }}', { method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({ account_ids: ids }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+      st.textContent = `Saved ${j.count} account${j.count === 1 ? '' : 's'}`;
+    } catch (e) { st.textContent = e.message || 'Could not save'; }
+    finally { btn.disabled = false; }
+  });
+})();
+</script>
+{% endblock %}

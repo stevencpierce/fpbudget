@@ -19,12 +19,22 @@ import logging
 import os
 from budget_calc import (FP_COA_SECTIONS)
 from datetime import (datetime)
-from flask import (abort, jsonify, render_template, request)
+from flask import (abort, jsonify, render_template, request, url_for)
 from flask_login import (current_user, login_required)
 from sqlalchemy import (func, text)
 
-from app import (app, _absorb_receipt_as_backup, _actuals_vendor_suggestions, _ai_clean_transaction, _ai_coa_taxonomy, _ai_known_vendors, _ai_match_batch, _ai_past_corrections, _ai_suggest_code_for_txn, _bg_run_all_scans, _clear_ai_code_suggestion, _delete_evidence_for_txns, _exclude_estimate_linked_txns_clause, _line_picker_groups, _log_activity, _parse_bank_csv, _require_project_role, _run_budget_mismatch_scan, _run_double_coded_scan, _run_duplicate_receipt_scan, _run_people_line_scan, _section_name, _signed_amount, _split_parent_id_set, _sync_claim_state, _txn_is_split_parent, _validate_upload_file)
+from app import (app, _absorb_receipt_as_backup, _actuals_vendor_suggestions, _ai_clean_transaction, _ai_coa_taxonomy, _ai_known_vendors, _ai_match_batch, _ai_past_corrections, _ai_suggest_code_for_txn, _bg_run_all_scans, _clear_ai_code_suggestion, _delete_evidence_for_txns, _exclude_estimate_linked_txns_clause, _line_picker_groups, _log_activity, _parse_bank_csv, _require_project_role, _run_budget_mismatch_scan, _run_double_coded_scan, _run_duplicate_receipt_scan, _run_people_line_scan, _section_name, _signed_amount, _split_parent_id_set, _txn_is_split_parent, _validate_upload_file)
 from models import (Budget, BudgetLine, DocUpload, ProjectAccess, ProjectSheet, Transaction, TransactionDupDismissal, TransactionSplit, User, db)
+from actuals import (ClaimError, claim_for, pool_filter, pool_txn, release)
+
+
+def _pool_txn_or_404(pid, tid):
+    """The row by id when it is in this project's pool (its own rows + the
+    unclaimed QuickBooks rows — actuals.pool_filter), else 404."""
+    txn = pool_txn(pid, tid)
+    if txn is None:
+        abort(404)
+    return txn
 
 
 def _split_parent_error(txn):
@@ -81,7 +91,7 @@ def actuals_set_line(pid, tid):
     """Click-to-code: set the budget_line_id on a transaction (or clear
     it). Auto-clones Working → Actual on the first link via
     actuals.link_transaction_to_line. Returns JSON."""
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     data = request.get_json(force=True) or {}
     if data.get("budget_line_id"):
         _ge = _guard_doc_expense(txn, data)
@@ -102,11 +112,7 @@ def actuals_set_line(pid, tid):
                              'account_code': txn.account_code,
                              'account_code_name': txn.account_code_name}
             unlink_transaction(tid)
-            # Refresh the txn after unlink_transaction's commit so the
-            # claim-sync sees the cleared state.
             db.session.refresh(txn)
-            _sync_claim_state(txn)
-            db.session.commit()
             _act = None
             try:
                 _act = _log_activity(
@@ -141,9 +147,6 @@ def actuals_set_line(pid, tid):
         )
         # Refresh after commit so UI gets the freshly-set fields.
         db.session.refresh(txn)
-        # Cross-project claim: now that this row owns a budget line,
-        # propagate to any sibling rows in other projects.
-        _sync_claim_state(txn)
         # Coding it manually clears any AI code suggestion so it stops showing
         # in the popup / row chip / 'Codes to confirm' queue. (User 2026-06-22.)
         _clear_ai_code_suggestion(txn)
@@ -179,6 +182,9 @@ def actuals_set_line(pid, tid):
             "working_was_just_created": result.get("working_was_just_created"),
             "actual_budget_id":         result.get("actual_budget_id"),
         })
+    except ClaimError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 409
     except Exception as e:
         logging.exception(f"[actuals] link failed: {e}")
         return jsonify({"error": str(e)}), 500
@@ -280,9 +286,14 @@ def actuals_link_split(pid):
     sg = f"SG-{keeper}"
     linked = 0
     for tid in tids:
-        txn = Transaction.query.filter_by(id=tid, project_id=pid).first()
+        txn = pool_txn(pid, tid)
         if not txn:
             continue
+        try:
+            claim_for(txn, pid, why='split receipt linked')
+        except ClaimError as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 409
         txn.doc_upload_id = keeper
         txn.match_status = 'confirmed'
         txn.split_group = sg
@@ -304,7 +315,7 @@ def actuals_link_split(pid):
         if not rdoc:
             continue
         # Any charge still pointing at the dup → repoint to the keeper.
-        Transaction.query.filter(Transaction.project_id == pid,
+        Transaction.query.filter(pool_filter(pid),
                                  Transaction.doc_upload_id == rid,
                                  Transaction.source != 'doc_upload').update(
             {"doc_upload_id": keeper}, synchronize_session=False)
@@ -357,7 +368,6 @@ def _txn_state_json(txn):
             "account_code_name": txn.account_code_name,
             "match_status": txn.match_status,
             "not_project_expense": bool(txn.not_project_expense),
-            "claimed_by_project_id": getattr(txn, 'claimed_by_project_id', None),
             "excluded": _txn_excluded_info(txn)}
 
 
@@ -376,7 +386,7 @@ def actuals_mark_not_project(pid, tid):
     Body (optional JSON): {reason: str}. Any coding and any transaction
     splits are cleared; the before-state goes into the ActivityLog so the
     action can be undone."""
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     _require_project_role(pid, 'editor')
     if txn.source == 'invoice_split' and txn.parent_transaction_id:
         return jsonify({"error": "This is one line of an itemized document — "
@@ -407,7 +417,12 @@ def actuals_mark_not_project(pid, tid):
     txn.updated_at          = _now
     if _old_splits:
         TransactionSplit.query.filter_by(transaction_id=txn.id).delete(synchronize_session=False)
-    _sync_claim_state(txn)
+    # Excluding is a claim: the charge is this project's to exclude.
+    try:
+        claim_for(txn, pid, why='marked not a project expense')
+    except ClaimError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 409
     db.session.commit()
     _act = None
     try:
@@ -437,22 +452,15 @@ def actuals_mark_not_project(pid, tid):
 def actuals_recover_not_project(pid, tid):
     """Undo a Not-project exclusion (Phase 1, 2026-10-30): clears
     not_project_expense and the three excluded_* columns so the row returns
-    to the Unclaimed list, releases the cross-project claim through
-    _sync_claim_state, logs with an undo payload and returns the row's new
-    state. Refuses when the row is excluded because ANOTHER project claimed
-    it — that is their claim to release, not this project's."""
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    to the Unclaimed list, logs with an undo payload and returns the row's
+    new state. A QuickBooks row with no other claim signal goes back to
+    the company pool (actuals.release) — it reappears in Unclaimed here
+    and in every other project."""
+    txn = _pool_txn_or_404(pid, tid)
     _require_project_role(pid, 'editor')
     if not txn.not_project_expense:
         return jsonify({"ok": True, "already": True,
                         "transaction": _txn_state_json(txn)})
-    _cl = getattr(txn, 'claimed_by_project_id', None)
-    if _cl and _cl != pid:
-        _pp = ProjectSheet.query.get(_cl)
-        return jsonify({"error": "This charge is claimed by "
-                                 f"{(_pp.name if _pp else f'project #{_cl}')} — "
-                                 "unassign it there to release it.",
-                        "claimed_by_project_id": _cl}), 409
     _before = {'not_project_expense': True,
                'excluded_at': (txn.excluded_at.isoformat(timespec='minutes')
                                if txn.excluded_at else None),
@@ -469,7 +477,7 @@ def actuals_recover_not_project(pid, tid):
     txn.excluded_by_user_id = None
     txn.excluded_reason     = None
     txn.updated_at          = datetime.utcnow()
-    _sync_claim_state(txn)
+    release(txn, why='recovered from Not project')
     db.session.commit()
     _act = None
     try:
@@ -493,10 +501,9 @@ def actuals_recover_not_project(pid, tid):
 @login_required
 def actuals_not_project_json(pid):
     """The recoverable Not-project list (Phase 1): rows this project excluded,
-    newest exclusion first, each with who / when / reason. Rows hidden here
-    only because ANOTHER project claimed them are listed separately under
-    claimed_elsewhere (project name only) — they are not this project's to
-    recover."""
+    newest exclusion first, each with who / when / reason. (claimed_elsewhere
+    is always empty since the company ledger, 2026-11-03: a charge another
+    project claimed is simply not in this project's pool.)"""
     ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'viewer')
     rows = (Transaction.query
@@ -513,14 +520,6 @@ def actuals_not_project_json(pid):
     from actuals import signed_amount_value as _sav_np
     not_project, claimed_elsewhere = [], []
     for t in rows:
-        _cl = getattr(t, 'claimed_by_project_id', None)
-        if _cl and _cl != pid:
-            claimed_elsewhere.append({
-                "id": t.id, "vendor": t.vendor or '—',
-                "amount": _sav_np(t.amount, t.is_expense),
-                "date": (t.txn_date or '')[:10],
-                "claimed_by": _pname(_cl)})
-            continue
         not_project.append({
             "id": t.id, "date": (t.txn_date or '')[:10],
             "vendor": t.vendor or '—',
@@ -878,7 +877,7 @@ def actuals_txn_review(pid, tid):
     Sets/clears reviewed_at (utcnow) + reviewed_by (current user). Advisory —
     does not touch totals or matching."""
     _require_project_role(pid, 'viewer')
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     data = request.get_json(silent=True) or {}
     want = bool(data.get("reviewed"))
     if want:
@@ -1097,8 +1096,8 @@ def actuals_merge_transactions(pid):
     if tid_a == tid_b:
         return jsonify({"error": "Cannot merge a transaction with itself"}), 400
 
-    a = Transaction.query.filter_by(id=tid_a, project_id=pid).first()
-    b = Transaction.query.filter_by(id=tid_b, project_id=pid).first()
+    a = pool_txn(pid, tid_a)
+    b = pool_txn(pid, tid_b)
     if not a or not b:
         return jsonify({"error": "Both transactions must exist on this project"}), 404
 
@@ -1191,6 +1190,13 @@ def actuals_merge_transactions(pid):
     canon.source       = 'reconciled'
     canon.match_status = 'confirmed' if canon.budget_line_id or canon.account_code else canon.match_status
     canon.updated_at   = datetime.utcnow()
+    # The merged row is this project's (a pooled QuickBooks charge is claimed
+    # by the merge — the receipt / coding came from here).
+    try:
+        claim_for(canon, pid, why='merged with a row of this project')
+    except ClaimError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 409
 
     # Clear FK on loser BEFORE delete so cascade-on-delete behavior is
     # predictable (we don't want the loser's doc_upload_id row touched —
@@ -1260,7 +1266,7 @@ def actuals_ai_cleanup(pid):
         limit = 8
     force = bool(body.get('force'))
     q = (Transaction.query
-         .filter(Transaction.project_id == pid,
+         .filter(pool_filter(pid),
                  Transaction.vendor.isnot(None),
                  Transaction.doc_upload_id.is_(None),   # doc-linked charges clean via the doc
                  Transaction.source.in_(('csv_import', 'qbo_sync', 'manual_entry', 'reconciled'))))
@@ -1304,12 +1310,10 @@ def actuals_ai_suggest_codes(pid):
         limit = 10
     force = bool(body.get('force'))
     q = (Transaction.query
-         .filter(Transaction.project_id == pid,
+         .filter(pool_filter(pid),
                  Transaction.account_code.is_(None),
                  Transaction.not_project_expense == False,   # noqa: E712
-                 Transaction.vendor.isnot(None),
-                 db.or_(Transaction.claimed_by_project_id.is_(None),
-                        Transaction.claimed_by_project_id == pid)))
+                 Transaction.vendor.isnot(None)))
     # Skip itemized containers (their sublines carry the coding) and the
     # sublines' own source. (Review fix 2026-07.)
     _split_parents_q = (db.session.query(Transaction.parent_transaction_id)
@@ -1352,7 +1356,7 @@ def actuals_clear_suggestions(pid):
     ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'editor')
     n = (Transaction.query
-         .filter(Transaction.project_id == pid,
+         .filter(pool_filter(pid),
                  Transaction.ai_suggested_code.isnot(None))
          .update({Transaction.ai_suggested_code: None,
                   Transaction.ai_suggested_code_name: None,
@@ -1396,16 +1400,18 @@ def actuals_clear_match_suggestions(pid):
     so the AI match pass can be re-run from scratch (testing). (User 2026-06-18.)"""
     ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'editor')
-    n = (Transaction.query
-         .filter(Transaction.project_id == pid,
-                 Transaction.match_status == 'suggested')
-         .update({Transaction.match_status: 'unmatched',
-                  Transaction.doc_upload_id: None,
-                  Transaction.match_confidence: None,
-                  Transaction.match_source: None},
-                 synchronize_session=False))
+    n = 0
+    for _t in (Transaction.query
+               .filter(Transaction.project_id == pid,
+                       Transaction.match_status == 'suggested').all()):
+        _t.match_status = 'unmatched'
+        _t.doc_upload_id = None
+        _t.match_confidence = None
+        _t.match_source = None
+        release(_t, why='match suggestions cleared')   # a suggestion-only claim goes back to the pool
+        n += 1
     (Transaction.query
-     .filter(Transaction.project_id == pid,
+     .filter(pool_filter(pid),
              Transaction.ai_match_checked_at.isnot(None))
      .update({Transaction.ai_match_checked_at: None}, synchronize_session=False))
     db.session.commit()
@@ -1428,18 +1434,20 @@ def actuals_unmatch_all(pid):
     reverted = (Transaction.query
                 .filter(Transaction.project_id == pid, Transaction.source == 'reconciled')
                 .update({Transaction.source: 'csv_import'}, synchronize_session=False))
-    unmatched = (Transaction.query
-                 .filter(Transaction.project_id == pid,
-                         Transaction.source.in_(('qbo_sync', 'csv_import')),
-                         db.or_(Transaction.doc_upload_id.isnot(None),
-                                Transaction.match_status != 'unmatched',
-                                Transaction.ai_match_checked_at.isnot(None)))
-                 .update({Transaction.doc_upload_id: None,
-                          Transaction.match_status: 'unmatched',
-                          Transaction.match_confidence: None,
-                          Transaction.match_source: None,
-                          Transaction.ai_match_checked_at: None},
-                         synchronize_session=False))
+    unmatched = 0
+    for _t in (Transaction.query
+               .filter(Transaction.project_id == pid,
+                       Transaction.source.in_(('qbo_sync', 'csv_import')),
+                       db.or_(Transaction.doc_upload_id.isnot(None),
+                              Transaction.match_status != 'unmatched',
+                              Transaction.ai_match_checked_at.isnot(None))).all()):
+        _t.doc_upload_id = None
+        _t.match_status = 'unmatched'
+        _t.match_confidence = None
+        _t.match_source = None
+        _t.ai_match_checked_at = None
+        release(_t, why='unmatch-all reset')   # receipt-only claims return to the pool
+        unmatched += 1
     # Also clear any 'remembered' rejections so nothing is suppressed in the re-test.
     try:
         from models import MatchRejection
@@ -1479,7 +1487,7 @@ def actuals_dismiss_code(pid, tid):
     coding the charge — clears the ai_suggested_* fields so it stops surfacing.
     (Phase 2, 2026-06-22.)"""
     _require_project_role(pid, 'editor')
-    t = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    t = _pool_txn_or_404(pid, tid)
     t.ai_suggested_code = None
     t.ai_suggested_code_name = None
     t.ai_code_confidence = None
@@ -1495,7 +1503,7 @@ def actuals_set_coa(pid, tid):
     the sidebar onto a transaction row. The dropdown remains the way to
     pick a specific sub-line (which triggers Working→Actual auto-clone).
     """
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     data = request.get_json(force=True) or {}
     if data.get("account_code") and data.get("account_code") != "not_project":
         # not_project is excluded: flagging a document as "not a project
@@ -1561,7 +1569,17 @@ def actuals_set_coa(pid, tid):
     txn.ai_code_reason = None
     txn.suggested_budget_line_id = None
     txn.updated_at = datetime.utcnow()
-    _sync_claim_state(txn)
+    # Company ledger: a section or a not-project mark claims the charge for
+    # this project; a clear with nothing else on the row releases it.
+    try:
+        if txn.account_code or txn.not_project_expense:
+            claim_for(txn, pid, why=('marked not a project expense' if txn.not_project_expense
+                                     else 'coded to a section'))
+        else:
+            release(txn, why='section coding cleared')
+    except ClaimError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 409
     # Reinforce the learned vendor→category mapping when a real section was set
     # (so AI/memory can auto-suggest this vendor next time). (2026-06-18.)
     if txn.account_code and not txn.not_project_expense and txn.vendor:
@@ -1643,7 +1661,7 @@ def actuals_set_line_bulk(pid):
 
     for tid in tids:
         try:
-            txn = Transaction.query.filter_by(id=int(tid), project_id=pid).first()
+            txn = pool_txn(pid, int(tid))
             if not txn:
                 failed += 1
                 continue
@@ -1678,7 +1696,7 @@ def actuals_set_line_bulk(pid):
                 txn.not_project_expense = False
                 txn.match_status = 'confirmed'
                 txn.updated_at = datetime.utcnow()
-                _sync_claim_state(txn)
+                claim_for(txn, pid, why='coded to a section')
                 db.session.commit()
                 if line_label is None:
                     line_label = (str(code_int) + ' ' + nm).strip()
@@ -1723,7 +1741,7 @@ def actuals_edit_transaction(pid, tid):
     Mirrors the Docs detail modal's update endpoint but for the
     Actuals-side row. Also propagates back to the linked DocUpload
     (when one exists) so the two views stay in lockstep."""
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     data = request.get_json(force=True) or {}
     _edit_before = {'vendor': txn.vendor,
                     'amount': float(txn.amount) if txn.amount is not None else None,
@@ -1948,7 +1966,7 @@ def actuals_reconcile_json(pid):
         doc_name[d.id] = d.filed_filename or d.original_filename or f'Doc #{d.id}'
 
     txns = Transaction.query.filter(
-        Transaction.project_id == pid,
+        pool_filter(pid),
         Transaction.not_project_expense == False).all()
 
     suggested, charges_no_receipt = [], []
@@ -2197,7 +2215,7 @@ def actuals_delete_duplicate_txn(pid, tid):
     and logs a full before-snapshot. (User 2026-06-17.)"""
     if getattr(current_user, 'role', None) == 'viewer':
         return jsonify({"error": "Forbidden"}), 403
-    t = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    t = _pool_txn_or_404(pid, tid)
     if t.source == 'doc_upload':
         # Only deletable if the receipt is ALSO carried by an electronic charge
         # (then this doc_upload row is a redundant phantom). Otherwise deleting
@@ -2216,6 +2234,11 @@ def actuals_delete_duplicate_txn(pid, tid):
             rep.account_code      = t.account_code
             rep.account_code_name = t.account_code_name
             rep.budget_line_id    = t.budget_line_id
+            try:
+                claim_for(rep, pid, why='coding carried from a duplicate')
+            except ClaimError as e:
+                db.session.rollback()
+                return jsonify({"error": str(e)}), 409
     elif t.doc_upload_id:
         return jsonify({"error": "This charge is linked to a receipt — unmatch it first "
                         "instead of deleting it here."}), 400
@@ -2226,7 +2249,7 @@ def actuals_delete_duplicate_txn(pid, tid):
         # one this click simply erased a charge from the ledger.
         from actuals import is_duplicate_twin as _is_twin
         _cands = (Transaction.query
-                  .filter(Transaction.project_id == pid,
+                  .filter(pool_filter(pid),
                           Transaction.id != tid,
                           Transaction.txn_date == t.txn_date,
                           Transaction.source != 'invoice_split')
@@ -2242,6 +2265,11 @@ def actuals_delete_duplicate_txn(pid, tid):
             _twin.account_code      = t.account_code
             _twin.account_code_name = t.account_code_name
             _twin.budget_line_id    = t.budget_line_id
+            try:
+                claim_for(_twin, pid, why='coding carried from a duplicate')
+            except ClaimError as e:
+                db.session.rollback()
+                return jsonify({"error": str(e)}), 409
     before = {"source": t.source, "vendor": t.vendor,
               "amount": float(t.amount) if t.amount is not None else None,
               "txn_date": t.txn_date, "card_last4": t.card_last4,
@@ -2439,7 +2467,7 @@ def actuals_automatch_trace(pid):
     # would match (exact amount + vendor>=0.45) if the ±3-day window widened.
     if request.args.get('analyze') == '1':
         elec = (Transaction.query
-                .filter(Transaction.project_id == pid,
+                .filter(pool_filter(pid),
                         Transaction.source.in_(('qbo_sync', 'csv_import')),
                         Transaction.match_status == 'unmatched',
                         Transaction.doc_upload_id.is_(None),
@@ -2493,7 +2521,7 @@ def actuals_automatch_trace(pid):
         return sub in (t.vendor or '').lower()
 
     elec = (Transaction.query
-            .filter(Transaction.project_id == pid,
+            .filter(pool_filter(pid),
                     Transaction.source.in_(('qbo_sync', 'csv_import')))
             .all())
     docs = (Transaction.query
@@ -2560,7 +2588,7 @@ def actuals_automatch_trace(pid):
 @login_required
 def actuals_confirm_match(pid, tid):
     """User accepts the auto-matcher's suggestion for this txn."""
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     from actuals import confirm_match
     try:
         result = confirm_match(tid)
@@ -2590,7 +2618,7 @@ def actuals_dismiss_suggestion(pid, tid):
     """User marks the auto-matcher's suggestion as 'Not a match'. Separates the
     pair AND remembers the rejection so it's never re-suggested. (Pass
     remember=0 to just unlink without remembering.)"""
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     body = request.get_json(silent=True) or {}
     remember = str(body.get('remember', '1')).lower() not in ('0', 'false', 'no')
     from actuals import dismiss_suggestion
@@ -2619,7 +2647,7 @@ def actuals_unmatch(pid, tid):
     receipt to the unlinked pool. The charge survives. (User 2026-06-02.)"""
     if getattr(current_user, 'role', None) == 'viewer':
         return jsonify({"error": "Forbidden"}), 403
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     from actuals import unmatch_receipt
     try:
         info = unmatch_receipt(tid)
@@ -2840,7 +2868,7 @@ def actuals_link_existing_doc(pid, tid):
     blank vendor / amount / date from the doc's OCR data (won't
     override existing values), flips match_status to 'confirmed'.
     """
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     data = request.get_json(force=True) or {}
     raw  = data.get("doc_upload_id")
     if not raw:
@@ -2854,6 +2882,12 @@ def actuals_link_existing_doc(pid, tid):
     if not doc:
         return jsonify({"error": "DocUpload not found in this project"}), 404
 
+    # Attaching a receipt claims the charge for this project (company ledger).
+    try:
+        claim_for(txn, pid, why='receipt attached')
+    except ClaimError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 409
     txn.doc_upload_id = doc.id
     if not txn.vendor and doc.vendor:                txn.vendor   = doc.vendor
     if txn.amount is None and doc.amount is not None: txn.amount  = doc.amount
@@ -2910,7 +2944,7 @@ def actuals_receipt_candidates(pid, tid):
     plain search over every open receipt (vendor, amount, date, filename)
     under `pool`, so a receipt the engine would not rank can still be
     linked by hand. Read-only."""
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     from actuals import match_candidates, open_receipts, score_match
     try:
         limit = max(1, min(50, int(request.args.get('limit') or 8)))
@@ -3017,7 +3051,7 @@ def actuals_merge_duplicate(pid, tid):
     from actuals import (is_duplicate_twin, duplicate_delete_mode, merge_duplicate_into,
                          txn_snapshot)
     from models import ExpenseEvidence
-    extra = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    extra = _pool_txn_or_404(pid, tid)
     body = request.get_json(silent=True) or {}
     try:
         keeper_id = int(body.get('keeper_id'))
@@ -3025,7 +3059,7 @@ def actuals_merge_duplicate(pid, tid):
         return jsonify({"error": "keeper_id required"}), 400
     if keeper_id == tid:
         return jsonify({"error": "The keeper and the extra must be different rows."}), 400
-    keeper = Transaction.query.filter_by(id=keeper_id, project_id=pid).first()
+    keeper = pool_txn(pid, keeper_id)
     if keeper is None:
         return jsonify({"error": "Keeper not found on this project."}), 404
     if extra.source in ('doc_upload', 'invoice_split'):
@@ -3132,7 +3166,7 @@ def actuals_upload_receipt_to_transaction(pid, tid):
     ledger with a parallel doc-source row.
     """
     project = ProjectSheet.query.get_or_404(pid)
-    txn     = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn     = _pool_txn_or_404(pid, tid)
 
     # Reject if the transaction already has a receipt linked. The user
     # should clear or replace the existing one explicitly rather than
@@ -3142,6 +3176,14 @@ def actuals_upload_receipt_to_transaction(pid, tid):
             "error": "Transaction already has a receipt linked. "
                      "Open the receipt and re-upload from the Docs tab to replace.",
         }), 409
+    # Attaching a receipt claims the charge for this project (company
+    # ledger) — refused before any file is touched when another project
+    # holds it.
+    try:
+        claim_for(txn, pid, why='receipt uploaded')
+    except ClaimError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 409
 
     f = request.files.get("file")
     if not f or not f.filename:
@@ -3283,99 +3325,32 @@ def actuals_upload_receipt_to_transaction(pid, tid):
     })
 
 
-@app.route("/projects/<int:pid>/actuals/qbo-accounts", methods=["GET"])
-@login_required
-def actuals_qbo_accounts_list(pid):
-    """Return the list of available QBO bank/credit-card accounts on
-    the connected realm, plus the subset already enabled for this
-    project. The Settings panel calls this on open + on Refresh."""
-    ProjectSheet.query.get_or_404(pid)
-    from models import QBOConnection
-    conn = QBOConnection.query.first()
-    if not conn or not conn.refresh_token:
-        return jsonify({
-            "error": "QuickBooks not connected.",
-            "needs_oauth": True,
-        }), 400
-
-    project = ProjectSheet.query.get(pid)
-    import json as _json
-    enabled = set()
-    try:
-        enabled = set(_json.loads(project.qbo_account_ids or "[]") or [])
-    except Exception:
-        enabled = set()
-
-    from qbo_sync import list_qbo_accounts
-    try:
-        accts = list_qbo_accounts(conn, db)
-    except Exception as e:
-        logging.exception("[qbo] list_qbo_accounts failed")
-        return jsonify({"error": f"Could not list accounts: {e}"}), 500
-
-    # Tag each account with whether it's currently enabled for this project.
-    for a in accts:
-        a["enabled"] = a["id"] in enabled
-    return jsonify({"ok": True, "accounts": accts})
-
-
-@app.route("/projects/<int:pid>/actuals/qbo-accounts", methods=["POST"])
-@login_required
-def actuals_qbo_accounts_save(pid):
-    """Save the project's QBO account selection. Body:
-    {"account_ids": ["1","42",...]}. Admin only (Cleanup A #13, 2026-11-02):
-    which bank accounts feed a project is a company setting, not a project
-    editor's call."""
-    if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
-        return jsonify({"error": "Only an admin can change the QuickBooks accounts "
-                                 "for a project."}), 403
-    project = ProjectSheet.query.get_or_404(pid)
-    data = request.get_json(force=True) or {}
-    ids  = data.get("account_ids") or []
-    if not isinstance(ids, list):
-        return jsonify({"error": "account_ids must be a list"}), 400
-    # Cast each to string — QBO ids are strings like "42".
-    cleaned = [str(x) for x in ids if x not in (None, "", "0", 0)]
-    import json as _json
-    _accts_before = project.qbo_account_ids or '[]'
-    project.qbo_account_ids = _json.dumps(cleaned)
-    db.session.commit()
-    try:
-        _log_activity(
-            action='update', entity_type='qbo_accounts',
-            entity_id=pid, entity_label=project.name or f'Project #{pid}',
-            project_id=pid,
-            before={'qbo_account_ids': _accts_before},
-            after={'qbo_account_ids': project.qbo_account_ids},
-            note=f'Updated QBO account selection ({len(cleaned)} account{"s" if len(cleaned) != 1 else ""})')
-    except Exception: pass
-    return jsonify({"ok": True, "count": len(cleaned)})
-
-
 @app.route("/projects/<int:pid>/actuals/sync-now", methods=["POST"])
 @login_required
 def actuals_sync_now(pid):
-    """Run a QBO sync for one project. Stub for slice 1 — wires the
-    button to qbo_sync.sync_project() but requires QBOConnection
-    (OAuth done) to actually pull data. If not connected, returns a
-    clear error message that the UI surfaces."""
+    """Run the COMPANY-WIDE QuickBooks sync (qbo_sync.sync_company) from a
+    project's Sync button. Since the company ledger (2026-11-03) every
+    account in Admin → QuickBooks is pulled into one pool, so a sync from
+    any project refreshes the pool for all of them. The per-project
+    account picker is retired: the account set lives on the connection."""
     project = ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
     from models import QBOConnection
     conn = QBOConnection.query.first()
     if not conn or not conn.refresh_token:
         return jsonify({
-            "error": "QuickBooks not connected. Go to Admin → QBO to authorize.",
+            "error": "QuickBooks not connected. Go to Admin → QuickBooks to authorize.",
             "needs_oauth": True,
         }), 400
 
     import json as _json
-    if not (project.qbo_account_ids and _json.loads(project.qbo_account_ids or "[]")):
+    if not _json.loads(conn.enabled_account_ids or "[]"):
         return jsonify({
-            "error": "No QBO accounts selected for this project. Configure under Settings → QBO accounts.",
+            "error": "No QuickBooks accounts selected for the company. Pick them under Admin → QuickBooks.",
         }), 400
 
     # Optional date overrides from the panel form. When omitted,
-    # sync_project uses its watermark logic (sync_through if set,
+    # sync_company uses its watermark logic (sync_through if set,
     # else 90 days back).
     body = request.get_json(silent=True) or {}
     start_date = (body.get("start_date") or "").strip() or None
@@ -3388,25 +3363,21 @@ def actuals_sync_now(pid):
     if end_date and not _date_re.match(end_date):
         return jsonify({"error": "end_date must be YYYY-MM-DD"}), 400
 
-    from qbo_sync import sync_project
-    # Audit H4 (2026-07-20): single-flight per project. A double-click or an
-    # overlapping run duplicated qbo_txn_ids → IntegrityError at commit → the
-    # ENTIRE batch (every genuinely-new row) rolled back. Non-blocking try-lock:
-    # a second caller gets a clear message instead of a doomed parallel run.
-    _sync_lock_key = 776600000 + int(pid)
-    _got = db.session.execute(text("SELECT pg_try_advisory_lock(:k)"),
-                              {"k": _sync_lock_key}).scalar()
-    if not _got:
-        return jsonify({"error": "A QBO sync for this project is already "
-                                 "running — wait for it to finish."}), 409
+    from qbo_sync import sync_company, SYNC_LOCK_KEY
+    # Audit H4 (2026-07-20): single-flight. A double-click or an overlapping
+    # run duplicated qbo_txn_ids → IntegrityError at commit → the ENTIRE
+    # batch rolled back. Non-blocking try-lock (Postgres); sqlite dev runs
+    # unguarded. One lock for the whole company now.
+    _is_pg = 'postgresql' in str(db.engine.url).lower()
+    if _is_pg:
+        _got = db.session.execute(text("SELECT pg_try_advisory_lock(:k)"),
+                                  {"k": SYNC_LOCK_KEY}).scalar()
+        if not _got:
+            return jsonify({"error": "A QuickBooks sync is already running — "
+                                     "wait for it to finish."}), 409
     try:
-        result = sync_project(project, conn, db,
-                              start_date=start_date, end_date=end_date)
+        result = sync_company(conn, db, start_date=start_date, end_date=end_date)
         try:
-            # These are the keys sync_project() actually returns. The old
-            # read looked for 'added' / 'inserted' / 'updated' / 'skipped',
-            # none of which exist, so every log line said "+0 new".
-            # (ACTUALS_HANDOFF Phase 0, 2026-10-30.)
             _imported   = int(result.get('imported') or 0)
             _enriched   = int(result.get('enriched') or 0)
             _reconciled = int(result.get('reconciled') or 0)
@@ -3424,7 +3395,7 @@ def actuals_sync_now(pid):
                        'reconciled': _reconciled, 'cdc_additions': _cdc,
                        'qbo_deleted': _qdel, 'qbo_voided': _qvoid,
                        'sync_through': str(result.get('sync_through') or '')},
-                note=f'QBO sync{_range}: +{_imported} new, {_enriched} enriched, '
+                note=f'QuickBooks company sync{_range}: +{_imported} new, {_enriched} enriched, '
                      f'{_reconciled} reconciled to receipts, {_cdc} via change-capture'
                      + (f', {_qdel} removed (deleted in QuickBooks)' if _qdel else '')
                      + (f', {_qvoid} flagged voided' if _qvoid else ''))
@@ -3444,12 +3415,12 @@ def actuals_sync_now(pid):
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
-        try:
-            db.session.execute(text("SELECT pg_advisory_unlock(:k)"),
-                               {"k": _sync_lock_key})
-            db.session.commit()
-        except Exception:
-            pass
+        if _is_pg:
+            try:
+                db.session.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": SYNC_LOCK_KEY})
+                db.session.commit()
+            except Exception:
+                pass
 
 
 @app.route("/projects/<int:pid>/actuals/absorb-linked-receipts", methods=["GET", "POST"])
@@ -3510,7 +3481,7 @@ def actuals_backup_candidates(pid, tid):
     sublines first (they ARE the line items), then other doc-carrying charges.
     Ranked by amount closeness then date closeness to the receipt. (v2.)"""
     _require_project_role(pid, 'viewer')
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     _amt = abs(float(txn.amount or 0))
     cands = (Transaction.query
              .filter(Transaction.project_id == pid,
@@ -3547,7 +3518,7 @@ def actuals_mark_backup(pid, tid):
     parking receipts → both were counting.) v1 rides not_project_expense (the
     established exclusion flag) with a 📎 note naming what it backs up."""
     _require_project_role(pid, 'editor')
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     data = request.get_json(force=True) or {}
     ref = (data.get("backs_up") or '').strip()[:200]
     # v2: hard linkage to the specific transaction (usually an invoice_split
@@ -3883,12 +3854,6 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
             logging.warning(f"[workspace.json] AI batch failed (continuing): {_ae}")
 
     budget, lines_by_id = _ws_working_budget_and_lines(pid)
-    _proj_names = {}
-    def _proj_name(_ppid):
-        if _ppid not in _proj_names:
-            _pp = ProjectSheet.query.get(_ppid)
-            _proj_names[_ppid] = _pp.name if _pp else f'project #{_ppid}'
-        return _proj_names[_ppid]
     _any_line = {}
     def _line_label_any(lid):
         """Label for a line that may sit on an older budget."""
@@ -3914,9 +3879,10 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
 
     # Every top-level money row (same selection the retired reconcile_workspace_json used):
     # electronic + hand-typed; doc-born rows only once activated; never
-    # split children or backup rows.
+    # split children or backup rows. The project's POOL (company ledger,
+    # 2026-11-03): its own rows + every unclaimed QuickBooks row.
     txns = (Transaction.query
-            .filter(Transaction.project_id == pid,
+            .filter(pool_filter(pid),
                     db.or_(Transaction.source.is_(None),
                            Transaction.source.notin_(('doc_upload', 'invoice_split'))),
                     Transaction.backup_of_txn_id.is_(None))
@@ -3986,14 +3952,6 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
         _inbox_pool = []
     for rep, members in grouped:
         t = rep
-        _cl = getattr(t, 'claimed_by_project_id', None)
-        if t.not_project_expense and _cl and _cl != pid:
-            claimed_elsewhere.append({
-                "id": t.id, "vendor": t.vendor or '—',
-                "amount": signed_amount_value(t.amount, t.is_expense),
-                "date": (t.txn_date or '')[:10],
-                "claimed_by": _proj_name(_cl)})
-            continue
         _sps = splits_by_txn.get(t.id, [])
         splits = [{"id": sp.id, "budget_line_id": sp.budget_line_id,
                    "label": _line_label_any(sp.budget_line_id) if sp.budget_line_id else None,
@@ -4071,8 +4029,12 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
         excluded = _txn_excluded_info(t)
         row = {
             "id": t.id,
-            "sibling_ids": [m.id for m in members if m.id != t.id],
             "qbo_txn_id": t.qbo_txn_id, "qbo_txn_type": t.qbo_txn_type,
+            # Company ledger: an unclaimed QuickBooks row is in the pool
+            # (every project sees it until one claims it); a flagged row
+            # is claimed by two projects — see the banner.
+            "pooled": t.project_id is None,
+            "claim_conflict": bool(getattr(t, 'claim_conflict', False)),
             "date": (t.txn_date or '')[:10],
             "vendor": t.vendor or '—',
             "amount": signed_amount_value(t.amount, t.is_expense),
@@ -4139,9 +4101,6 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
                                          "reasons": _rs.get("reasons") or [],
                                          "strong": bool(_rs.get("strong"))}
                 break
-        _cl = getattr(dt, 'claimed_by_project_id', None) if dt is not None else None
-        if _cl and _cl != pid:
-            r["conflict"] = {"claimed_by": _proj_name(_cl)}
         receipts.append(r)
     receipts.sort(key=lambda r: (r.get("date") or ''), reverse=True)
     not_project.sort(key=lambda r: ((r["excluded"] or {}).get("at") or '',
@@ -4208,23 +4167,26 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
                 "is_drop_target": sec is not None,
                 "lines": rows})
 
-    _prj = ProjectSheet.query.get(pid)
+    # Sync is company-wide (2026-11-03): the account set and the watermarks
+    # live on the QuickBooks connection (Admin → QuickBooks), not the project.
     import json as _json_ws
-    try:
-        _acct_n = len(_json_ws.loads(_prj.qbo_account_ids or '[]'))
-    except Exception:
-        _acct_n = 0
     from models import QBOConnection as _WSQC
     try:
         _qc = _WSQC.query.first()
     except Exception:
         _qc = None
+    try:
+        _acct_n = len(_json_ws.loads((_qc.enabled_account_ids if _qc else None) or '[]'))
+    except Exception:
+        _acct_n = 0
     sync = {"connected": bool(_qc and _qc.refresh_token),
             "accounts": _acct_n,
-            "last_synced": (_prj.last_synced.isoformat(timespec='minutes') if _prj.last_synced else None),
-            "last_cdc_sync": (_prj.last_cdc_sync.isoformat(timespec='minutes')
-                              if getattr(_prj, 'last_cdc_sync', None) else None),
-            "sync_through": _prj.sync_through,
+            "last_synced": (_qc.last_synced.isoformat(timespec='minutes')
+                            if _qc is not None and _qc.last_synced else None),
+            "last_cdc_sync": (_qc.last_cdc_sync.isoformat(timespec='minutes')
+                              if _qc is not None and _qc.last_cdc_sync else None),
+            "sync_through": (_qc.sync_through if _qc is not None else None),
+            "company_wide": True,
             "auto": "twice a day"}
     # Duplicates view (Phase 5): one entry per group with the suggested
     # keeper and how each extra would be removed (hard delete, or move its
@@ -4255,6 +4217,11 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
     n_unclaimed = sum(1 for r in transactions if 'no_line' in r["flags"]["red"])
     n_assigned = len(transactions) - n_unclaimed
     n_needs_backup = sum(1 for r in transactions if 'needs_backup' in r["flags"]["red"])
+    from actuals import claim_conflicts_for
+    try:
+        n_conflicts = claim_conflicts_for(pid)
+    except Exception:
+        n_conflicts = 0
     counts = {"unclaimed": n_unclaimed, "assigned": n_assigned,
               "needs_backup": n_needs_backup, "receipts": len(receipts),
               "not_project": len(not_project),
@@ -4263,13 +4230,16 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
               "strong_matches": sum(1 for r in transactions
                                     if (r.get("receipt_suggestion") or {}).get("strong")),
               "sync": (0 if sync["connected"] else 1),
-              "claimed_elsewhere": len(claimed_elsewhere)}
+              "claimed_elsewhere": 0,
+              "claim_conflicts": n_conflicts,
+              "pooled": sum(1 for r in transactions if r.get("pooled"))}
     return {"ok": True, "project_id": pid,
             "budget_id": (budget.id if budget else None),
             "transactions": transactions, "receipts": receipts,
             "not_project": not_project,
             "duplicates": duplicates, "voided": voided,
             "claimed_elsewhere": claimed_elsewhere,
+            "conflicts_url": (url_for('admin_ledger_conflicts', pid=pid) if n_conflicts else None),
             "sync": sync, "counts": counts,
             "budget": {"sections": sections,
                        "name": (budget.name if budget else None),
@@ -4287,12 +4257,12 @@ def actuals_split_transaction(pid, tid):
     transaction amount to the cent (else 400 with the delta), and the save
     REPLACES any existing splits. The transaction's own budget_line_id /
     account_code go NULL — it is now a split parent that reaches rollups
-    only through its splits (actuals.split_sums_by_line). Claim-synced and
-    logged with an undo payload.
+    only through its splits (actuals.split_sums_by_line). Claims the charge
+    for this project and is logged with an undo payload.
 
     DELETE removes the splits; the transaction returns to Unclaimed."""
     from actuals import validate_splits
-    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = _pool_txn_or_404(pid, tid)
     _require_project_role(pid, 'editor')
     _old = [{"budget_line_id": sp.budget_line_id, "amount": float(sp.amount or 0),
              "note": sp.note} for sp in TransactionSplit.query.filter_by(transaction_id=tid).all()]
@@ -4307,7 +4277,8 @@ def actuals_split_transaction(pid, tid):
             return jsonify({"ok": True, "already": True, "transaction": _txn_state_json(txn)})
         TransactionSplit.query.filter_by(transaction_id=tid).delete(synchronize_session=False)
         txn.updated_at = datetime.utcnow()
-        _sync_claim_state(txn)
+        # The split was the claim → a QuickBooks row returns to the pool.
+        release(txn, why='split removed', has_splits=False)
         db.session.commit()
         _act = None
         try:
@@ -4352,7 +4323,12 @@ def actuals_split_transaction(pid, tid):
     txn.match_status = 'confirmed' if txn.doc_upload_id else txn.match_status
     txn.updated_at = _now
     _clear_ai_code_suggestion(txn)
-    _sync_claim_state(txn)
+    # A split is a claim (company ledger).
+    try:
+        claim_for(txn, pid, why='split across lines')
+    except ClaimError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 409
     db.session.commit()
     _act = None
     try:

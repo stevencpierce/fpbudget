@@ -329,11 +329,12 @@
         </div>
         <dl class="adm-kv">
           <dt>Realm</dt><dd>{{ status.qbo.realm_id or '—' }}</dd>
-          <dt>Last sync</dt><dd>{{ status.qbo.last_sync or '—' }}</dd>
+          <dt>Last sync</dt><dd>{{ status.qbo.last_sync or '—' }}{% if status.qbo.sync_through %} · through {{ status.qbo.sync_through }}{% endif %}</dd>
+          <dt>Accounts</dt><dd>{{ status.qbo.accounts }} in the company set · <a href="{{ url_for('admin_qbo_accounts') }}">choose</a></dd>
           <dt>Token expires</dt><dd>{{ status.qbo.token_expiry or '—' }}</dd>
           <dt>App keys</dt><dd>{{ 'set' if status.qbo.env_ok else 'QBO_CLIENT_ID / SECRET missing' }}</dd>
         </dl>
-        <div class="d">Syncing happens per project on its Actuals screen. Vendors mirror through <a href="{{ url_for('admin_qbo_vendors') }}">QuickBooks vendors</a>.</div>
+        <div class="d">One company-wide pull of every account in the set, into one pool every project claims from (Sync now on any Actuals screen, and twice a day on its own). Vendors mirror through <a href="{{ url_for('admin_qbo_vendors') }}">QuickBooks vendors</a>.</div>
         <div class="act">
           <a class="pay-btn primary" href="{{ url_for('qbo_oauth_start') }}">{{ 'Reconnect' if status.qbo.connected else 'Connect' }}</a>
           {% if status.qbo.connected %}
@@ -386,14 +387,15 @@
       <a class="adm-link" href="{{ url_for('payees_directory') }}">Payees <span class="sub">people, loan-outs, vendors</span></a>
       {% if current_user.role == 'super_admin' %}
       <a class="adm-link" href="{{ url_for('admin_qbo_vendors') }}">QuickBooks vendors <span class="sub">link</span></a>
-      <a class="adm-link" href="{{ url_for('admin_transactions_page') }}">Transactions <span class="sub">whole pool</span></a>
+      <a class="adm-link" href="{{ url_for('admin_transactions_page') }}">Company ledger <span class="sub">every QuickBooks transaction</span></a>
       <a class="adm-link" href="{{ url_for('admin_catalog_view') }}">Quick Entry catalog</a>
       <a class="adm-link" href="{{ url_for('admin_role_mapping_view') }}">Role mapping <span class="sub">MMB / ShowBiz</span></a>
       {% endif %}
     </div>
     <div class="adm-links" style="margin-top:8px">
       <a class="adm-link" href="{{ url_for('company_health') }}">Company health <span class="sub">cross-project rollup</span></a>
-      <a class="adm-link" href="{{ url_for('admin_qbo_coverage') }}">QuickBooks sync coverage</a>
+      <a class="adm-link" href="{{ url_for('admin_qbo_accounts') }}">QuickBooks accounts <span class="sub">company set</span></a>
+      <a class="adm-link" href="{{ url_for('admin_ledger_conflicts') }}">Claimed in two projects <span class="sub">review</span></a>
       {% if current_user.role == 'super_admin' %}
       <a class="adm-link" href="{{ url_for('admin_qe_audit_csv') }}">Quick Entry vs catalog audit <span class="sub">CSV</span></a>
       {% endif %}

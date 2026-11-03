@@ -19,8 +19,11 @@ Ingestion (pulling QBO bank txns into the Transaction table) lives
 in `qbo_sync.py` — separate concern. This module is what happens
 *after* a Transaction exists, regardless of source.
 
+  • The company ledger rules (2026-11-03): pool_filter (what a project's
+    Actuals sees), claim_for / release (who owns a QuickBooks charge)
+
 Convention: this module never imports `app` at module level. The one
-helper that lives in app.py and is needed here (_sync_claim_state) is
+helper that lives in app.py and is needed here (_log_activity) is
 imported lazily inside the function that calls it.
 """
 import logging
@@ -720,6 +723,140 @@ def split_sums_by_section_code(project_id):
     return {code: float(amt or 0) for code, amt in rows if code is not None}
 
 
+# ── Company ledger: the pool, claiming and releasing (2026-11-03) ─────────
+# ONE row per QuickBooks transaction for the whole company. On a
+# QuickBooks-sourced row (qbo_txn_id set) project_id means "claimed by":
+# NULL = unclaimed, in the company pool. Rows born elsewhere (receipt,
+# manual entry, bank CSV) keep the project_id they were created with.
+#
+#   pool_filter(pid)   the ONE criterion for "a project's transactions":
+#                      its own rows + every unclaimed QuickBooks row.
+#                      Rollups that go by budget_line_id need nothing —
+#                      a coded row is always claimed.
+#   claim_for(t, pid)  every claim signal (line, section, split, receipt,
+#                      not-project) calls this; refuses a row another
+#                      project holds.
+#   release(t)         when the last signal is gone from a QuickBooks row
+#                      it returns to the pool.
+# Both log through app._log_activity (lazy import, fail-open).
+
+class ClaimError(ValueError):
+    """The row is claimed by a different project (the UI never offers that)."""
+
+
+def pool_filter(project_id):
+    """SQLAlchemy criterion: the rows a project's Actuals works with — its
+    own rows plus every unclaimed QuickBooks row in the company pool. A
+    row claimed by another project never satisfies it."""
+    return db.or_(Transaction.project_id == project_id,
+                  db.and_(Transaction.project_id.is_(None),
+                          Transaction.qbo_txn_id.isnot(None)))
+
+
+def in_pool(txn, project_id):
+    """Python twin of pool_filter for a row already in hand."""
+    if txn is None:
+        return False
+    if txn.project_id == project_id:
+        return True
+    return txn.project_id is None and bool(txn.qbo_txn_id)
+
+
+def pool_txn(project_id, tid):
+    """The transaction by id if it is in this project's pool, else None."""
+    return Transaction.query.filter(Transaction.id == tid, pool_filter(project_id)).first()
+
+
+def is_qbo_row(txn):
+    return bool(getattr(txn, 'qbo_txn_id', None))
+
+
+def claim_signals(txn, has_splits=None):
+    """Which claim signals the row carries right now. has_splits may be
+    passed when the caller already knows (bulk reads); else it is queried."""
+    from models import TransactionSplit
+    if has_splits is None:
+        has_splits = (db.session.query(TransactionSplit.id)
+                      .filter_by(transaction_id=txn.id).first() is not None) if txn.id else False
+    return {
+        'line':        bool(txn.budget_line_id),
+        'section':     bool(txn.account_code) and not txn.budget_line_id,
+        'split':       bool(has_splits),
+        'receipt':     bool(txn.doc_upload_id),
+        'not_project': bool(txn.not_project_expense),
+    }
+
+
+def is_claimed(txn, has_splits=None):
+    return any(claim_signals(txn, has_splits).values())
+
+
+def _ledger_log(action, txn, project_id, note):
+    try:
+        from app import _log_activity
+        _log_activity(action=action, entity_type='transaction', entity_id=txn.id,
+                      entity_label=(txn.vendor or f'Txn #{txn.id}')[:80],
+                      project_id=project_id,
+                      after={'project_id': txn.project_id, 'qbo_txn_id': txn.qbo_txn_id,
+                             'qbo_txn_type': txn.qbo_txn_type,
+                             'amount': float(txn.amount or 0)},
+                      note=note[:500])
+    except Exception:
+        log.info("[ledger] activity log skipped for txn %s", getattr(txn, 'id', None), exc_info=True)
+
+
+def claim_for(txn, project_id, why='coded'):
+    """Set project_id = project_id on a QuickBooks row that is unclaimed or
+    already this project's. Raises ClaimError when another project holds
+    it. Returns True when the row changed hands. Does not commit — the
+    caller's write path does, as it always did."""
+    if txn is None or not project_id:
+        return False
+    project_id = int(project_id)
+    if txn.project_id == project_id:
+        return False
+    if txn.project_id is not None:
+        other = ProjectSheet.query.get(txn.project_id)
+        raise ClaimError(
+            f"This charge is already claimed by "
+            f"{(other.name if other else f'project #{txn.project_id}')} — "
+            f"resolve it there (or in Admin → Maintenance → Claimed in two projects).")
+    txn.project_id = project_id
+    txn.updated_at = datetime.utcnow()
+    _ledger_log('claim', txn, project_id,
+                f"Claimed QuickBooks {txn.qbo_txn_type or 'charge'}/{txn.qbo_txn_id or '?'} "
+                f"for this project ({why})")
+    return True
+
+
+def release(txn, why='last claim signal removed', has_splits=None):
+    """Return a QuickBooks row to the company pool when no claim signal is
+    left on it (no line, no section, no splits, no receipt, not excluded).
+    A row born in a project (receipt / manual / CSV) is never released.
+    Returns True when it was released. Does not commit."""
+    if txn is None or not is_qbo_row(txn) or txn.project_id is None:
+        return False
+    if is_claimed(txn, has_splits):
+        return False
+    pid = txn.project_id
+    txn.project_id = None
+    txn.match_status = 'unmatched'
+    txn.match_confidence = None
+    txn.updated_at = datetime.utcnow()
+    _ledger_log('release', txn, pid,
+                f"Released QuickBooks {txn.qbo_txn_type or 'charge'}/{txn.qbo_txn_id or '?'} "
+                f"to the company pool ({why})")
+    return True
+
+
+def claim_conflicts_for(project_id):
+    """The flagged rows this project holds (the Actuals banner)."""
+    return (Transaction.query
+            .filter(Transaction.project_id == project_id,
+                    Transaction.claim_conflict == True)        # noqa: E712
+            .count())
+
+
 # ── Workspace rows: qbo_txn_id grouping and flags (Phase 2) ───────────────
 
 def group_pool_rows(rows, key=lambda t: (getattr(t, 'qbo_txn_id', None),
@@ -760,7 +897,7 @@ def compute_row_flags(row, *, today=None, date_far_days=7):
     (bool | None), assigned (bool | None — overrides the line / split
     test), amount, is_expense, has_backup (evidence row or
     no_charge_reason), receipt_amount, receipt_date, txn_date,
-    possible_duplicate (bool), claimed_by_project_id, project_id,
+    possible_duplicate (bool), project_id,
     payment_method, not_project_expense, source.
 
     Red (blocks nothing, never disappears on its own):
@@ -960,16 +1097,16 @@ def build_line_picker_options(groups):
     return out
 
 
-ADMIN_POOL_CSV_COLUMNS = ("date", "vendor", "amount", "card_last4", "source",
-                          "project", "line", "backup", "status", "seen_in",
+ADMIN_POOL_CSV_COLUMNS = ("date", "vendor", "amount", "card_last4", "account", "source",
+                          "project", "line", "backup", "status",
                           "qbo_txn_id", "qbo_txn_type", "payment_method", "id")
 
 
 def admin_pool_csv(rows):
     """The super-admin pool as CSV text (one row per charge, the same
     columns the page shows plus the ids). Pure; `rows` is the list
-    _admin_pool_rows() builds. Status is 'not project' / 'claimed' / 'open'
-    exactly as the page labels it; seen_in joins with ' | '."""
+    _admin_pool_rows() builds. Status is 'not project' / 'conflict' /
+    'claimed' / 'unclaimed' exactly as the ledger page labels it."""
     import csv as _csv
     import io as _io
     buf = _io.StringIO()
@@ -977,14 +1114,15 @@ def admin_pool_csv(rows):
     w.writerow(ADMIN_POOL_CSV_COLUMNS)
     for r in rows or []:
         status = ('not project' if r.get("excluded")
-                  else 'claimed' if r.get("project_id") else 'open')
+                  else 'conflict' if r.get("claim_conflict")
+                  else 'claimed' if r.get("project_id") else 'unclaimed')
         amt = r.get("amount")
         w.writerow([
             r.get("date") or '', r.get("vendor") or '',
             ('' if amt is None else f"{float(amt):.2f}"),
-            r.get("card_last4") or '', r.get("source") or '',
+            r.get("card_last4") or '', r.get("account") or '', r.get("source") or '',
             r.get("project") or '', r.get("line") or '', r.get("backup") or '',
-            status, ' | '.join(r.get("seen_in") or []),
+            status,
             r.get("qbo_txn_id") or '', r.get("qbo_txn_type") or '',
             r.get("payment_method") or '', r.get("id") or '',
         ])
@@ -1686,8 +1824,8 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     Side effects on the row: budget_line_id / account_code / account_code_name
     set, match_status → 'confirmed', not_project_expense → False (assigning a
     line is a claim), AI suggestion cleared, vendor→COA mapping reinforced,
-    one-way line→person stamp on the doc, then _sync_claim_state() so sibling
-    rows of the same charge in other projects are hidden. Commits.
+    one-way line→person stamp on the doc. An unclaimed QuickBooks row is
+    claimed by the line's project (claim_for). Commits.
 
     Backward compat: if the PICKED line turns out to be on an ACTUAL budget
     (re-coding from the legacy Actual view / stale UI state), we translate it
@@ -1715,14 +1853,15 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     if not working_line:
         raise ValueError(f"budget_line {working_line_id} not found")
 
-    project_id = txn.project_id
-    if not project_id:
-        raise ValueError(f"transaction {transaction_id} has no project")
-
     # Which budget is the picked line on? A legacy ACTUAL line is translated
     # back to its Working peer below; a Working / Estimated line is used as-is
     # (or swapped for its Working peer when one exists).
     line_budget = Budget.query.get(working_line.budget_id)
+    # An unclaimed QuickBooks row (company pool) is claimed by the line's
+    # project here; a row another project holds is refused (ClaimError).
+    project_id = txn.project_id or (line_budget.project_id if line_budget else None)
+    if not project_id:
+        raise ValueError(f"transaction {transaction_id} has no project")
     # Cross-project guard: a stale UI or crafted request must not code one
     # project's money to another project's budget line. (Code review 2026-06-04.)
     if line_budget and line_budget.project_id != project_id:
@@ -1730,6 +1869,7 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
             f"budget line {working_line_id} belongs to project "
             f"{line_budget.project_id}, not transaction {transaction_id}'s "
             f"project {project_id}")
+    claim_for(txn, project_id, why='coded to a line')
     actual_was_just_made  = False
     working_was_just_made = False
 
@@ -1867,19 +2007,6 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
         log.info("[actuals/auto-assign] skipped (fail-open) for txn %s",
                  getattr(txn, 'id', None), exc_info=True)
 
-    # Cross-project claim: this row now owns a budget line, so sibling rows of
-    # the same charge in other projects must be hidden. _sync_claim_state lives
-    # in app.py (it is the one place that knows the sibling channels), so it is
-    # imported lazily here — this module never imports app at load time. Must
-    # run BEFORE the commit below (the helper's own contract). Fail-open: a
-    # claim hiccup must never undo the coding that was just written.
-    try:
-        from app import _sync_claim_state as _scs
-        _scs(txn)
-    except Exception:
-        log.warning("[actuals/link] cross-project claim sync failed for txn %s "
-                    "(coding kept)", getattr(txn, 'id', None), exc_info=True)
-
     db.session.commit()
 
     # ── Absorb the attached receipt's own row (Nov 2 2026) ────────────────
@@ -1943,6 +2070,8 @@ def unlink_transaction(transaction_id):
         set_txn_payee(txn, None, 'line')
     except Exception:
         pass
+    # A QuickBooks row with nothing left on it goes back to the company pool.
+    release(txn, why='coding cleared')
     db.session.commit()
     return {'transaction_id': txn.id}
 
@@ -2086,7 +2215,7 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
     amount_tol = max(0.0, float(amount_tol or 0.0))
 
     qbo_unmatched = (Transaction.query
-                     .filter(Transaction.project_id == project_id,
+                     .filter(pool_filter(project_id),
                              Transaction.source.in_(('qbo_sync', 'csv_import')),
                              Transaction.match_status == 'unmatched',
                              Transaction.doc_upload_id.is_(None),
@@ -2105,7 +2234,7 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
                       .filter(DocUpload.project_id == project_id,
                               DocUpload.category.in_(('receipt', 'invoice'))).all()}
     taken_docs = {t.doc_upload_id for t in Transaction.query.filter(
-        Transaction.project_id == project_id,
+        pool_filter(project_id),
         Transaction.source.in_(('qbo_sync', 'csv_import')),
         Transaction.doc_upload_id.isnot(None)).all() if t.doc_upload_id}
     rejected_pairs = {(r.transaction_id, r.doc_upload_id) for r in
@@ -2261,7 +2390,7 @@ def find_split_candidates(project_id, date_window=5, card=None, max_combo=3):
     import datetime as _dt, itertools as _it
 
     charges = (Transaction.query
-               .filter(Transaction.project_id == project_id,
+               .filter(pool_filter(project_id),
                        Transaction.source.in_(('qbo_sync', 'csv_import')),
                        Transaction.match_status == 'unmatched',
                        Transaction.doc_upload_id.is_(None),
@@ -2278,7 +2407,7 @@ def find_split_candidates(project_id, date_window=5, card=None, max_combo=3):
         DocUpload.project_id == project_id,
         DocUpload.category.in_(('receipt', 'invoice'))).all()}
     taken = {t.doc_upload_id for t in Transaction.query.filter(
-        Transaction.project_id == project_id,
+        pool_filter(project_id),
         Transaction.source.in_(('qbo_sync', 'csv_import')),
         Transaction.doc_upload_id.isnot(None)).all() if t.doc_upload_id}
     docmeta = {}
@@ -2365,6 +2494,16 @@ def confirm_match(qbo_transaction_id):
         raise ValueError("no linked receipt (doc_upload_id) to confirm")
     if q.match_status not in ('suggested', 'confirmed'):
         raise ValueError(f"unexpected match_status '{q.match_status}' — cannot confirm")
+    # The receipt's project owns the charge (company ledger): a pooled row
+    # is claimed here; a row another project holds is refused.
+    try:
+        _doc_for_claim = DocUpload.query.get(q.doc_upload_id)
+        if _doc_for_claim is not None and _doc_for_claim.project_id:
+            claim_for(q, _doc_for_claim.project_id, why='receipt confirmed')
+    except ClaimError:
+        raise
+    except Exception:
+        log.info("[actuals/claim] confirm claim skipped for txn %s", q.id, exc_info=True)
     # Find the doc_upload Transaction that backs the same DocUpload.
     sister = (Transaction.query
               .filter_by(doc_upload_id=q.doc_upload_id, source='doc_upload')
@@ -2469,6 +2608,7 @@ def dismiss_suggestion(transaction_id, remember=True, user_id=None):
     t.match_status     = 'unmatched'
     t.match_confidence = None
     t.updated_at       = datetime.utcnow()
+    release(t, why='receipt suggestion dismissed')
     db.session.commit()
     return {'transaction_id': t.id, 'rejected_doc_upload_id': rejected_doc if remember else None}
 
@@ -2498,19 +2638,23 @@ def unmatch_receipt(transaction_id):
     t.match_status     = 'unmatched'
     t.match_confidence = None
     t.updated_at       = datetime.utcnow()
+    _receipt_pid = t.project_id
     if doc_id:
         doc = DocUpload.query.get(doc_id)
         if doc and is_ledger_category(doc.category):
+            _receipt_pid = doc.project_id or _receipt_pid
             has_sister = (Transaction.query
                           .filter_by(doc_upload_id=doc_id, source='doc_upload')
                           .first())
             if not has_sister:
                 db.session.add(Transaction(
-                    project_id=t.project_id, source='doc_upload', doc_upload_id=doc_id,
+                    project_id=_receipt_pid, source='doc_upload', doc_upload_id=doc_id,
                     vendor=doc.vendor, amount=doc.amount,
                     txn_date=doc.doc_date.isoformat() if doc.doc_date else None,
                     is_expense=True, match_status='unmatched'))
                 info["restored_receipt"] = True
+    # The receipt was the only claim → the charge returns to the pool.
+    release(t, why='receipt unmatched')
     db.session.commit()
     return info
 
@@ -2732,15 +2876,16 @@ def _match_cutoff(days=MATCH_LOOKBACK_DAYS, today=None):
 
 
 def open_charges(project_id, days=MATCH_LOOKBACK_DAYS, include_suggested=True):
-    """Charges that want backup: electronic or hand-typed rows of this
-    project with no receipt linked (doc_upload_id NULL, no evidence row),
+    """Charges that want backup: electronic or hand-typed rows in this
+    project's POOL (pool_filter: its own rows + the unclaimed company
+    QuickBooks rows) with no receipt linked (doc_upload_id NULL, no evidence row),
     not excluded, not a backup / split child, dated within `days`. With
     include_suggested the heuristic 'suggested' rows come back too (their
     suggestion is recomputed); AI-made suggestions are left alone."""
     from models import ExpenseEvidence as _EE
     cutoff = _match_cutoff(days)
     q = (Transaction.query
-         .filter(Transaction.project_id == project_id,
+         .filter(pool_filter(project_id),
                  Transaction.not_project_expense == False,            # noqa: E712
                  Transaction.backup_of_txn_id.is_(None),
                  db.or_(Transaction.source.is_(None),
@@ -2836,7 +2981,10 @@ def refresh_match_suggestions(project_id, days=MATCH_LOOKBACK_DAYS):
     Writes match_status='suggested' + match_confidence + doc_upload_id +
     match_source='heuristic' on the charge — NEVER 'confirmed'. Stale
     heuristic suggestions that no longer rank are cleared; AI-made and
-    confirmed links are untouched. Commits. Returns counts."""
+    confirmed links are untouched. Company ledger: a suggestion claims a
+    pooled charge for this project (claim_for); clearing a stale one
+    releases it again when nothing else holds it (release). Commits.
+    Returns counts."""
     try:
         ensure_doc_txns(project_id)
     except Exception as _ee:
@@ -2862,6 +3010,7 @@ def refresh_match_suggestions(project_id, days=MATCH_LOOKBACK_DAYS):
                 t.match_confidence = conf
                 t.match_source = 'heuristic'
                 t.updated_at = now
+            claim_for(t, project_id, why='receipt suggested')
             written += 1
         elif t.doc_upload_id and t.match_status == 'suggested' and (t.match_source or '') != 'ai':
             t.doc_upload_id = None
@@ -2869,6 +3018,7 @@ def refresh_match_suggestions(project_id, days=MATCH_LOOKBACK_DAYS):
             t.match_confidence = None
             t.match_source = None
             t.updated_at = now
+            release(t, why='stale receipt suggestion cleared')
             cleared += 1
     db.session.commit()
     log.info(f"[match] project #{project_id}: {written} suggestions "
@@ -2897,10 +3047,16 @@ def is_duplicate_twin(candidate, other, day_window=None):
     """True when `other` is an existing twin of `candidate` — same |amount|,
     dates within `day_window` (default duplicate_day_window: 3 days for two
     QuickBooks rows, same day otherwise), same vendor (vendor_match_key) or
-    same card, a different id and a DIFFERENT QuickBooks id (the same id in
-    two projects is a sibling, not a duplicate). Deleting a 'duplicate' bank
-    row is only allowed when such a twin survives; without one the charge
-    would simply vanish from the ledger."""
+    same card, a different id and a DIFFERENT QuickBooks id (one QuickBooks
+    id is one row company-wide since the ledger; two flagged rows with the
+    same id are a claim conflict, not a duplicate). When both rows carry a
+    QuickBooks payee (qbo_entity_ref — the EntityRef / VendorRef) that
+    payee decides: different payees are NEVER twins, whatever the vendor
+    text or card says (Joel Knutson vs Ryan Mauskopf, $4,500 a day apart,
+    where a receipt had renamed one row); the same payee counts as the
+    same vendor. Deleting a 'duplicate' bank row is only allowed when such
+    a twin survives; without one the charge would simply vanish from the
+    ledger."""
     if other is None or candidate is None:
         return False
     if getattr(other, 'id', None) == getattr(candidate, 'id', None):
@@ -2924,6 +3080,10 @@ def is_duplicate_twin(candidate, other, day_window=None):
             return False
     elif abs((d1 - d2).days) > day_window:
         return False
+    e1 = str(getattr(candidate, 'qbo_entity_ref', None) or '').strip()
+    e2 = str(getattr(other, 'qbo_entity_ref', None) or '').strip()
+    if e1 and e2:
+        return e1 == e2
     v1 = vendor_match_key(getattr(candidate, 'vendor', None))
     v2 = vendor_match_key(getattr(other, 'vendor', None))
     c1 = (getattr(candidate, 'card_last4', None) or '').strip()
@@ -3105,7 +3265,7 @@ TXN_SNAPSHOT_FIELDS = ('project_id', 'source', 'vendor', 'amount', 'is_expense',
                        'match_source', 'qbo_txn_id', 'qbo_txn_type', 'qbo_account_id',
                        'qbo_category', 'qbo_entity_ref', 'not_project_expense',
                        'no_charge_reason', 'payment_method', 'paid_by_crew_member_id',
-                       'payee_id', 'payee_source', 'claimed_by_project_id',
+                       'payee_id', 'payee_source', 'claim_conflict', 'claim_conflict_reason',
                        'suggested_budget_line_id', 'suggested_account_code',
                        'excluded_reason', 'excluded_by_user_id', 'parent_transaction_id',
                        'backup_of_txn_id', 'split_group', 'activated_at', 'excluded_at')

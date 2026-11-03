@@ -10,8 +10,9 @@ another app-booting module in this process already opened) and walks:
   2. link_transaction_to_line stamps 'line', a re-code moves it, a shared
      line clears it, a 'manual' value survives everything
   3. paid_by_payee prefers payee_id over the doc / line inference
-  4. sync_project with a stubbed QuickBooks pull keeps EntityRef and
-     attributes 'qbo' through CrewMember.qbo_vendor_id
+  4. sync_company with a stubbed QuickBooks pull keeps EntityRef and
+     attributes 'qbo' through CrewMember.qbo_vendor_id (the rows land in
+     the company pool, project_id NULL — company ledger 2026-11-03)
   5. sync_vendors with a stubbed pull: refreshes a linked payee, links an
      exact DisplayName, leaves an ambiguous one, writes the mirror and the
      watermark, and the next run is CDC
@@ -248,7 +249,7 @@ def test_03_paid_by_payee_prefers_explicit_attribution(ctx):
         db.session.commit()
 
 
-# ── 4. sync_project keeps EntityRef and attributes 'qbo' ──────────────────
+# ── 4. sync_company keeps EntityRef and attributes 'qbo' ──────────────────
 
 def _conn():
     conn = QBOConnection.query.first()
@@ -260,7 +261,7 @@ def _conn():
     return conn
 
 
-def test_04_sync_project_attributes_from_entity_ref(ctx, mp):
+def test_04_sync_company_attributes_from_entity_ref(ctx, mp):
     rows = [
         {"qbo_txn_id": "9001", "qbo_txn_type": "Purchase", "qbo_account_id": "41", "qbo_category": None,
          "txn_date": "2026-06-01", "vendor": "Harborlight Camera LLC", "amount": 300.0, "is_expense": True,
@@ -275,18 +276,20 @@ def test_04_sync_project_attributes_from_entity_ref(ctx, mp):
     with ctx["app"].app_context():
         CrewMember.query.get(S["vega"]).qbo_vendor_id = "88"
         db.session.commit()
-        r = qbo_sync.sync_project(ProjectSheet.query.get(S["pid"]), _conn(), db)
+        r = qbo_sync.sync_company(_conn(), db)
         assert r["imported"] == 2 and r["attributed"] == 1
         a = Transaction.query.filter_by(qbo_txn_id="9001").first()
         b = Transaction.query.filter_by(qbo_txn_id="9002").first()
         assert (a.payee_id, a.payee_source, a.qbo_entity_ref) == (S["vega"], 'qbo', "88")
         assert (b.payee_id, b.qbo_entity_ref) == (None, "77")
+        assert a.project_id is None and b.project_id is None, "synced rows land in the company pool"
         S["t_9002"] = b.id
         # a person's pick survives the next sync; a 'qbo' value follows QuickBooks
         a.payee_id, a.payee_source = S["theo"], 'manual'
         db.session.commit()
-        qbo_sync.sync_project(ProjectSheet.query.get(S["pid"]), _conn(), db)
+        qbo_sync.sync_company(_conn(), db)
         assert Transaction.query.filter_by(qbo_txn_id="9001").first().payee_id == S["theo"]
+        assert Transaction.query.filter_by(qbo_txn_id="9001").count() == 1
 
 
 # ── 5. sync_vendors ───────────────────────────────────────────────────────
