@@ -275,7 +275,7 @@ bottom under "Recent Pushes".
 | ✅ | Verify against Dropbox | Background check on every "Filed" row; missing files → red banner |
 | ✅ | Scan Dropbox (reconcile) | Super-admin tool: walks the project's doc folders and creates DocUpload rows for any orphan files |
 | ✅ | Duplicate routing | Same content uploaded twice → second copy routes to `/_DUPLICATES/` subfolder, original stays clean |
-| ✅ | Wipe all (testing) | Super-admin tool: clears every DocUpload + moves filed files to `/_TRASH/{date}/` |
+| ✅ | Wipe all (testing) | Super-admin tool on Admin → Maintenance (Cleanup E): clears every DocUpload on a project + moves filed files to `/_TRASH/{date}/` |
 
 ---
 
@@ -366,15 +366,26 @@ bottom under "Recent Pushes".
 
 ---
 
+## Admin hub, Maintenance, navigation (Cleanup E, 2026-11-02)
+
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Admin hub `/admin` | One place for everything company-wide: Users (accounts, project access) · Company (production company profile; QuickBooks Connect / Disconnect with realm, last sync and token expiry; Dropbox, Veryfi and AI status with Test buttons; cron token) · Libraries · Maintenance · Errors (recent errors, Sentry test). Admins see Users and Libraries; Company, Maintenance and Errors are super-admin |
+| ✅ | Maintenance page `/admin/maintenance` | Every company-wide maintenance and diagnostic tool as a card: what it does, when it last ran (where logged), a Preview / Run button that confirms before changing data. Dropbox checks and scan, find a document, errored-row cleanup, reprocess receipts, project wipe (test), trash purge, transactions backup, chart-of-accounts audit, QuickBooks refund repair and purge, non-ledger rows, claim backfill, ghost-vendor audit, catalog stats, sub-budget / meal status, crew lookup, line and budget calc traces, split-labor, resync-all. Nobody types a `/admin/...` URL |
+| ✅ | Top nav | Projects · Payees (admins) · Libraries ▾ (Fringes, Templates, Locations) · Upload · Admin (admins) · My Profile · Logout |
+| ✅ | Company-wide = Admin | QuickBooks connect lives on the hub (the Actuals screen keeps Sync now); the company profile is super-admin only; the fringe library is viewable by everyone and editable by admins; the Gut Check button is super-admin only and off until Settings → Display → Show Gut Check |
+| ✅ | Budget page: Import & Templates | The old Tools tab, now under More ▾ with Import CSV and Save as Template only (Export is the header's Export ▾ menu). Project viewers see neither it nor Settings |
+| 🗑️ | One-shot repairs | Catalog reseed / purge-legacy-duplicates / rehouse-staff / wipe-and-reseed / repair-codes, repair-date-years, repair-extensions, backfill-card4, relabel-subtype, reconcile-filing, reset-person-invoices, veryfi/classify, from-template, set-active, budget-level estimate shares, notify-preview, gantt/expand, callsheet/contacts, the mobile `/docs/<uid>/status` — removed (already run or never used) |
+
 ## Admin / Catalog
 
 | Status | Feature | Plain English |
 |---|---|---|
 | ✅ | Global Quick Entry catalog | Super-admin manages the curated list of common roles + items shown in QE |
 | ✅ | Bulk operations | Multi-select catalog items → delete or move to another category |
-| ✅ | Code repair tool | Super-admin: re-map account codes when COA changes |
-| ✅ | Veryfi diagnostic | Super-admin status page for OCR config |
-| ✅ | Dropbox diagnostic | Super-admin status page for filing path config |
+| 🗑️ | Code repair tool | Removed in Cleanup E (the 2026-04 renumber repair has run) |
+| ✅ | Veryfi diagnostic | Admin hub → Company → Integrations → Test |
+| ✅ | Dropbox diagnostic | Admin hub → Company → Integrations → Test; the Dropbox listing is on Maintenance |
 
 ---
 

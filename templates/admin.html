@@ -61,14 +61,15 @@
     display: inline-block; padding: .2rem .65rem; border-radius: 20px;
     font-size: .72rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
   }
-  .role-super_admin  { background:rgba(124,58,237,.2); color:#c4b5fd; border:1px solid rgba(124,58,237,.4); }
-  .role-admin        { background:rgba(79,70,229,.2);  color:#a5b4fc; border:1px solid rgba(79,70,229,.4); }
-  .role-line_producer{ background:rgba(2,132,199,.2);  color:#7dd3fc; border:1px solid rgba(2,132,199,.4); }
-  .role-dept_head    { background:rgba(8,145,178,.2);  color:#67e8f9; border:1px solid rgba(8,145,178,.4); }
-  .role-docs_only    { background:rgba(16,185,129,.15); color:#6ee7b7; border:1px solid rgba(16,185,129,.35); }
+  /* Theme tokens so both themes hold (Cleanup E). */
+  .role-super_admin  { background:color-mix(in srgb, var(--accent) 16%, var(--bg-2)); color:var(--accent); border:1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
+  .role-admin        { background:color-mix(in srgb, var(--blue) 14%, var(--bg-2));   color:var(--blue);   border:1px solid color-mix(in srgb, var(--blue) 40%, transparent); }
+  .role-line_producer{ background:color-mix(in srgb, var(--blue) 10%, var(--bg-2));   color:var(--blue);   border:1px solid color-mix(in srgb, var(--blue) 30%, transparent); }
+  .role-dept_head    { background:color-mix(in srgb, var(--green) 12%, var(--bg-2));  color:var(--green);  border:1px solid color-mix(in srgb, var(--green) 35%, transparent); }
+  .role-docs_only    { background:color-mix(in srgb, var(--green) 10%, var(--bg-2));  color:var(--green);  border:1px solid color-mix(in srgb, var(--green) 30%, transparent); }
   .status-dot { display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:.35rem; }
-  .dot-active   { background:#22c55e;box-shadow:0 0 5px #22c55e80; }
-  .dot-inactive { background:#6b7280; }
+  .dot-active   { background:var(--green); }
+  .dot-inactive { background:var(--text-muted); }
   .action-row { display:flex;gap:.3rem;flex-wrap:wrap; }
   .btn-xs {
     padding:.22rem .55rem;font-size:.75rem;border-radius:5px;
@@ -76,8 +77,8 @@
     color:var(--text);cursor:pointer;transition:all .12s;line-height:1.4;
   }
   .btn-xs:hover { background:var(--border); }
-  .btn-xs.danger { color:#f87171;border-color:rgba(248,113,113,.35); }
-  .btn-xs.danger:hover { background:rgba(248,113,113,.12); }
+  .btn-xs.danger { color:var(--red);border-color:color-mix(in srgb, var(--red) 35%, transparent); }
+  .btn-xs.danger:hover { background:color-mix(in srgb, var(--red) 12%, var(--bg-2)); }
   .btn-xs:disabled { opacity:.3;cursor:not-allowed; }
   .create-form { display:grid;grid-template-columns:1fr 1fr;gap:1rem; }
   .create-form .full { grid-column:1/-1; }
@@ -97,14 +98,14 @@
   .access-chips { display:flex;flex-wrap:wrap;gap:.35rem;flex:1; }
   .access-chip {
     display:inline-flex;align-items:center;gap:.3rem;
-    background:rgba(79,70,229,.12);border:1px solid rgba(79,70,229,.3);
-    color:#a5b4fc;padding:.18rem .6rem;border-radius:20px;font-size:.78rem;
+    background:color-mix(in srgb, var(--accent) 12%, var(--bg-2));border:1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    color:var(--accent);padding:.18rem .6rem;border-radius:20px;font-size:.78rem;
   }
   .access-chip.role-docs_only {
-    background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.3);color:#6ee7b7;
+    background:color-mix(in srgb, var(--green) 10%, var(--bg-2));border-color:color-mix(in srgb, var(--green) 30%, transparent);color:var(--green);
   }
-  .access-chip .chip-role { color:#64748b;font-size:.7rem; }
-  .access-chip button { background:none;border:none;color:#f87171;cursor:pointer;font-size:.78rem;padding:0;line-height:1; }
+  .access-chip .chip-role { color:var(--text-muted);font-size:.7rem; }
+  .access-chip button { background:none;border:none;color:var(--red);cursor:pointer;font-size:.78rem;padding:0;line-height:1; }
   .add-row { display:flex;gap:.4rem;align-items:center;flex-wrap:wrap; }
   .add-row select {
     padding:.32rem .6rem;border:1px solid var(--border);border-radius:6px;

@@ -59,6 +59,12 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   `DOCUMENT_TYPES` / `DOC_TYPE_LABELS`, `PAYMENT_METHODS`, `MODE_META` —
   never a private copy. The lists reach templates through
   `app.inject_globals` and JS through `window.__FP_*` in base.html.
+- Company-wide = Admin (Cleanup E, 2026-11-02): the company profile,
+  QuickBooks connection, integrations status and every maintenance /
+  diagnostic tool live on `/admin` and `/admin/maintenance`
+  (`routes/admin_maintenance.py` TOOLS registry), never typed URLs and
+  never inside a project. A new admin tool = a route + a TOOLS entry. The
+  one-shot repairs that already ran are deleted; do not resurrect them.
 
 ## Splitting app.py (M1, ongoing)
 Route slices move to `routes/<name>.py` — plain modules using `@app.route` on

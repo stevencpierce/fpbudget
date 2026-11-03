@@ -3774,7 +3774,12 @@ def enforce_project_access():
         abort(403)
     if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
         role = 'editor' if pa.role == 'collaborator' else (pa.role or '')
+        # actuals_line_totals_batch is a READ that takes its id list in a
+        # POST body (fail-open, no writes) — a viewer's budget page needs it
+        # for the Actual cells (Cleanup E, 2026-11-02: it 403'd and left a
+        # console error on every viewer page load).
         if (role in ('viewer', 'docs_only')
+                and request.endpoint != 'actuals_line_totals_batch'
                 and not (request.endpoint or '').startswith(('docs', 'api_docs'))):
             abort(403)
 
