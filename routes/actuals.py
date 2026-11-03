@@ -25,7 +25,8 @@ from sqlalchemy import (func, text)
 
 from app import (app, _absorb_receipt_as_backup, _actuals_vendor_suggestions, _ai_clean_transaction, _ai_coa_taxonomy, _ai_known_vendors, _ai_match_batch, _ai_past_corrections, _ai_suggest_code_for_txn, _bg_run_all_scans, _clear_ai_code_suggestion, _delete_evidence_for_txns, _exclude_estimate_linked_txns_clause, _line_picker_groups, _log_activity, _parse_bank_csv, _require_project_role, _run_budget_mismatch_scan, _run_double_coded_scan, _run_duplicate_receipt_scan, _run_people_line_scan, _section_name, _signed_amount, _split_parent_id_set, _txn_is_split_parent, _validate_upload_file)
 from models import (Budget, BudgetLine, DocUpload, ProjectAccess, ProjectSheet, Transaction, TransactionDupDismissal, TransactionSplit, User, db)
-from actuals import (ClaimError, claim_for, pool_filter, pool_txn, release)
+from actuals import (ClaimError, claim_for, pool_filter, pool_txn, release, mark_not_project,
+                     undismiss, pool_dismissal, dismissed_pool_rows, is_qbo_row)
 
 
 def _pool_txn_or_404(pid, tid):
@@ -337,9 +338,27 @@ def actuals_link_split(pid):
     return jsonify({"ok": True, "linked": linked, "folded": folded, "split_group": sg})
 
 
+def _dismissal_info(d):
+    """The who / when / why of a pool dismissal (Not project for this
+    project only), in _txn_excluded_info's shape."""
+    _by = None
+    if d.created_by:
+        try:
+            _u = User.query.get(d.created_by)
+            _by = (_u.name or _u.email) if _u else None
+        except Exception:
+            _by = None
+    return {"at": d.created_at.isoformat(timespec='minutes') if d.created_at else None,
+            "by_user_id": d.created_by, "by": _by, "reason": d.reason,
+            "pool": True}
+
+
 def _txn_excluded_info(txn):
     """The who / when / why of a Not-project exclusion, for JSON payloads.
     None when the row is not excluded."""
+    _d = getattr(txn, '_pool_dismissal', None)
+    if _d is not None:
+        return _dismissal_info(_d)
     if not getattr(txn, 'not_project_expense', False):
         return None
     _by = None
@@ -405,24 +424,27 @@ def actuals_mark_not_project(pid, tid):
                    'excluded_at': None, 'excluded_by_user_id': None,
                    'excluded_reason': None,
                    'splits': _old_splits}
+    if is_qbo_row(txn):
+        _before_npe['doc_upload_id'] = txn.doc_upload_id
+        _before_npe['pool_dismissed'] = False
     _now = datetime.utcnow()
-    txn.not_project_expense = True
-    txn.excluded_at         = _now
-    txn.excluded_by_user_id = current_user.id
-    txn.excluded_reason     = _reason
-    txn.budget_line_id      = None
-    txn.account_code        = None
-    txn.account_code_name   = None
-    txn.match_status        = 'unmatched'
-    txn.updated_at          = _now
-    if _old_splits:
-        TransactionSplit.query.filter_by(transaction_id=txn.id).delete(synchronize_session=False)
-    # Excluding is a claim: the charge is this project's to exclude.
+    # THE rule (actuals.mark_not_project, 2026-11-04): a QuickBooks row is
+    # dismissed for THIS project only (released first when this project
+    # held it) — it stays in the pool for every other project; a row born
+    # here is excluded as before.
     try:
-        claim_for(txn, pid, why='marked not a project expense')
+        _mode = mark_not_project(txn, pid, _reason, current_user.id)
     except ClaimError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 409
+    if _mode == 'excluded':
+        txn.budget_line_id      = None
+        txn.account_code        = None
+        txn.account_code_name   = None
+        txn.match_status        = 'unmatched'
+        if _old_splits:
+            TransactionSplit.query.filter_by(transaction_id=txn.id).delete(synchronize_session=False)
+    txn.updated_at = _now
     db.session.commit()
     _act = None
     try:
@@ -433,16 +455,21 @@ def actuals_mark_not_project(pid, tid):
             entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
             project_id=pid,
             before=_before_npe,
-            after={'not_project_expense': True, 'account_code': None,
-                   'account_code_name': None, 'budget_line_id': None,
-                   'match_status': 'unmatched',
-                   'excluded_at': _now.isoformat(timespec='minutes'),
-                   'excluded_by_user_id': current_user.id,
-                   'excluded_reason': _reason, 'splits': []},
+            after=({'pool_dismissed': True, 'account_code': None,
+                    'account_code_name': None, 'budget_line_id': None, 'doc_upload_id': None,
+                    'match_status': 'unmatched', 'excluded_reason': _reason, 'splits': []}
+                   if _mode == 'dismissed' else
+                   {'not_project_expense': True, 'account_code': None,
+                    'account_code_name': None, 'budget_line_id': None,
+                    'match_status': 'unmatched',
+                    'excluded_at': _now.isoformat(timespec='minutes'),
+                    'excluded_by_user_id': current_user.id,
+                    'excluded_reason': _reason, 'splits': []}),
             note=f'Marked ${_amt:,.2f} as not a project expense'
+                 + (' for this project (stays in the company pool for the others)' if _mode == 'dismissed' else '')
                  + (f' — {_reason}' if _reason else ''))
     except Exception: pass
-    return jsonify({"ok": True, "transaction_id": tid,
+    return jsonify({"ok": True, "transaction_id": tid, "mode": _mode,
                     "activity_id": (_act.id if _act else None),
                     "transaction": _txn_state_json(txn)})
 
@@ -455,9 +482,28 @@ def actuals_recover_not_project(pid, tid):
     to the Unclaimed list, logs with an undo payload and returns the row's
     new state. A QuickBooks row with no other claim signal goes back to
     the company pool (actuals.release) — it reappears in Unclaimed here
-    and in every other project."""
-    txn = _pool_txn_or_404(pid, tid)
+    and in every other project. A pool row this project dismissed is
+    restored by deleting the dismissal (TransactionPoolDismissal)."""
+    txn = pool_txn(pid, tid, include_dismissed=True)
+    if txn is None:
+        abort(404)
     _require_project_role(pid, 'editor')
+    _dis = pool_dismissal(txn.id, pid) if txn.project_id is None else None
+    if _dis is not None:
+        _before_d = {'pool_dismissed': True, 'excluded_reason': _dis.reason}
+        undismiss(txn, pid)
+        db.session.commit()
+        _act = None
+        try:
+            _act = _log_activity(
+                action='update', entity_type='transaction', entity_id=txn.id,
+                entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
+                project_id=pid, before=_before_d, after={'pool_dismissed': False},
+                note=f'Restored ${float(txn.amount or 0):,.2f} — back in Unclaimed for this project')
+        except Exception: pass
+        return jsonify({"ok": True, "transaction_id": tid, "restored_dismissal": True,
+                        "activity_id": (_act.id if _act else None),
+                        "transaction": _txn_state_json(txn)})
     if not txn.not_project_expense:
         return jsonify({"ok": True, "already": True,
                         "transaction": _txn_state_json(txn)})
@@ -517,6 +563,9 @@ def actuals_not_project_json(pid):
             _pp = ProjectSheet.query.get(_p)
             _proj_names[_p] = _pp.name if _pp else f'project #{_p}'
         return _proj_names[_p]
+    for _t, _d in dismissed_pool_rows(pid):
+        _t._pool_dismissal = _d
+        rows.append(_t)
     from actuals import signed_amount_value as _sav_np
     not_project, claimed_elsewhere = [], []
     for t in rows:
@@ -1521,8 +1570,13 @@ def actuals_set_coa(pid, tid):
                    'account_code_name': txn.account_code_name,
                    'not_project_expense': bool(txn.not_project_expense)}
 
+    _np_mode = None
     if code_raw == "not_project":
-        txn.not_project_expense = True
+        try:
+            _np_mode = mark_not_project(txn, pid, None, current_user.id)
+        except ClaimError as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 409
         txn.budget_line_id      = None
         txn.account_code        = None
         txn.account_code_name   = None
@@ -1572,10 +1626,9 @@ def actuals_set_coa(pid, tid):
     # Company ledger: a section or a not-project mark claims the charge for
     # this project; a clear with nothing else on the row releases it.
     try:
-        if txn.account_code or txn.not_project_expense:
-            claim_for(txn, pid, why=('marked not a project expense' if txn.not_project_expense
-                                     else 'coded to a section'))
-        else:
+        if txn.account_code:
+            claim_for(txn, pid, why='coded to a section')
+        elif _np_mode != 'dismissed':
             release(txn, why='section coding cleared')
     except ClaimError as e:
         db.session.rollback()
@@ -3895,6 +3948,14 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
                                Transaction.backup_of_txn_id.is_(None))
                        .all())
     txns = txns + _activated_docs
+    # Pool rows this project marked Not project (company ledger dismissals,
+    # 2026-11-04): they stay in the pool for everyone else and show here
+    # under Not project with Restore.
+    _dismissed_ids = set()
+    for _t, _d in dismissed_pool_rows(pid):
+        _t._pool_dismissal = _d
+        txns.append(_t)
+        _dismissed_ids.add(_t.id)
     txn_ids = [t.id for t in txns]
     # Splits, evidence, itemized children, crew names — bulk reads.
     splits_by_txn = {}
@@ -3925,7 +3986,7 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
     # otherwise, DIFFERENT QuickBooks ids) with the keeper rule. "Keep both"
     # is remembered in transaction_dup_dismissal under the group key.
     dismissed = {d.dup_key for d in TransactionDupDismissal.query.filter_by(project_id=pid).all()}
-    _dup_groups = find_duplicate_groups(txns, dismissed)
+    _dup_groups = find_duplicate_groups([t for t in txns if t.id not in _dismissed_ids], dismissed)
     dup_group_of = {}
     for _g in _dup_groups:
         for _m in _g["members"]:
@@ -4023,7 +4084,7 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
             "possible_duplicate": t.id in dup_ids,
             "voided": (getattr(t, 'no_charge_reason', None) == VOIDED_IN_QBO_REASON),
             "payment_method": getattr(t, 'payment_method', None),
-            "not_project_expense": bool(t.not_project_expense),
+            "not_project_expense": bool(t.not_project_expense or t.id in _dismissed_ids),
         }
         flags = compute_row_flags(flag_input)
         excluded = _txn_excluded_info(t)
@@ -4063,7 +4124,7 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
             "dup_group": dup_group_of.get(t.id),
             "voided": bool(flag_input["voided"]),
         }
-        if t.not_project_expense:
+        if t.not_project_expense or t.id in _dismissed_ids:
             not_project.append(row)
         else:
             transactions.append(row)

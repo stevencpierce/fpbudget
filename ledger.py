@@ -163,43 +163,129 @@ def _split_parent_ids(ids):
 
 
 def _signals(t, split_parents):
+    """The four claim signals (2026-11-04): line, section, split, receipt.
+    "Not project" is NOT a claim — in the old per-project model it mostly
+    meant "not THIS project's" (the sibling propagation stamped it on every
+    copy to hide it); it becomes a per-project dismissal instead."""
     return {
         'line': bool(t.budget_line_id),
         'section': bool(t.account_code) and not t.budget_line_id,
         'split': t.id in split_parents,
         'receipt': bool(t.doc_upload_id),
-        'not_project': bool(t.not_project_expense),
     }
 
 
+def _is_claimed_row(t, split_parents):
+    return any(_signals(t, split_parents).values())
+
+
 def _qbo_payee_for_group(members, vendor_names):
-    """The payee QuickBooks names for this charge: the mirrored vendor by
-    EntityRef when any member carries one, else the vendor on a plain
-    qbo_sync member (the receipt never touched that string)."""
+    """(name, from_ref) — the payee QuickBooks names for this charge. From
+    the mirrored vendor by EntityRef, or the vendor on a plain qbo_sync
+    member that carries an EntityRef (QuickBooks' VendorRef name): a real
+    vendor or person, from_ref=True. Else the raw text on a plain qbo_sync
+    member (often card-processor noise — "TST*RIVER BAR"), from_ref=False."""
     for m in members:
         ref = getattr(m, 'qbo_entity_ref', None)
         if ref and vendor_names.get(str(ref)):
-            return vendor_names[str(ref)]
+            return vendor_names[str(ref)], True
+    for m in members:
+        if m.source == 'qbo_sync' and getattr(m, 'qbo_entity_ref', None) and vendor_is_real(m.vendor):
+            return m.vendor, True
     for m in members:
         if m.source == 'qbo_sync' and vendor_is_real(m.vendor):
-            return m.vendor
-    return None
+            return m.vendor, False
+    return None, False
+
+
+def _is_processor_noise(v):
+    from actuals import strip_processor_prefix
+    s = (v or '').strip()
+    return bool(s) and strip_processor_prefix(s) != s
+
+
+def payee_flag_applies(receipt_vendor, qbo_payee, from_ref):
+    """Flag "receipt payee differs from QuickBooks" only when QuickBooks
+    names a real vendor / person (EntityRef / VendorRef) — never against
+    raw card-processor text (TST*, SQ *, AMAZON MKTPL* …) — and the two
+    names share no word."""
+    if not from_ref or not qbo_payee or _is_processor_noise(qbo_payee):
+        return False
+    return payees_differ(receipt_vendor, qbo_payee)
+
+
+def _vendor_user_set(t):
+    return (vendor_is_real(t.vendor)
+            and (t.source in ('reconciled', 'manual_entry', 'doc_upload')
+                 or bool(getattr(t, 'ai_cleaned_at', None))))
+
+
+def _vendor_weak(v):
+    return not vendor_is_real(v) or _is_processor_noise(v)
 
 
 def _keep_pick(members):
-    """0 claimed: a real vendor name over a blank one, then the newest id."""
-    return sorted(members, key=lambda m: (0 if vendor_is_real(m.vendor) else 1, -m.id))[0]
+    """0 claimed: a reconciled row over a bare qbo_sync one, a person-set
+    vendor over a raw one, a real vendor name over a blank one, then the
+    newest id."""
+    return sorted(members, key=lambda m: (0 if m.source == 'reconciled' else 1,
+                                          0 if _vendor_user_set(m) else 1,
+                                          0 if vendor_is_real(m.vendor) else 1,
+                                          -m.id))[0]
 
 
-def analyze(db_):
-    """Group every QuickBooks row by identity and decide. Returns
-    {groups, dup_groups, keep, delete, conflicts, payee_flags, decisions}
-    where decisions is a list of per-group dicts (what / why), bounded for
-    display, and the id lists are complete."""
-    rows = (Transaction.query
-            .filter(Transaction.qbo_txn_id.isnot(None))
-            .order_by(Transaction.qbo_txn_id, Transaction.qbo_txn_type, Transaction.id)
-            .all())
+def _carry_plan(keeper, copy):
+    """What a copy about to be deleted hands to the keeper so no person's
+    data is lost (2026-11-04): a vendor name a person set (reconciled /
+    manual / AI-cleaned) when the keeper's is blank, "—" or processor
+    noise; a note when the keeper has none (appended when both differ);
+    card, payee, QuickBooks category / entity ref when the keeper has
+    none. Pure: returns {field: value}."""
+    out = {}
+    if _vendor_user_set(copy) and _vendor_weak(keeper.vendor) and copy.vendor != keeper.vendor:
+        out['vendor'] = copy.vendor
+    cn, kn = (copy.note or '').strip(), (keeper.note or '').strip()
+    if cn and not kn:
+        out['note'] = copy.note
+    elif cn and cn != kn and cn not in kn:
+        out['note'] = (kn + f" [from copy #{copy.id}] " + cn)[:2000]
+    for f in ('card_last4', 'qbo_category', 'qbo_entity_ref', 'qbo_account_id'):
+        if getattr(copy, f, None) and not getattr(keeper, f, None):
+            out[f] = getattr(copy, f)
+    if getattr(copy, 'payee_id', None) and not getattr(keeper, 'payee_id', None):
+        out['payee_id'] = copy.payee_id
+        out['payee_source'] = copy.payee_source
+    return out
+
+
+def _np_reason(t):
+    return (t.excluded_reason or t.no_charge_reason
+            or 'Not project (marked before the company ledger)')[:300]
+
+
+def analyze(db_, keys=None):
+    """Group every QuickBooks row by identity and decide (2026-11-04 rule).
+    Claim signals are line, section, split, receipt — never not_project.
+
+      1 real claimer (or several in ONE project) → keep it, delete the
+              other copies
+      0 real claimers → keep ONE row in the pool (a reconciled row over a
+              bare qbo_sync one); delete the rest
+      2+ real claimers in different projects → keep each, flag conflict
+      every not_project mark on any copy → a dismissal for that copy's
+              project, on the kept row
+      a deleted copy's person-set vendor / note → carried to the keeper
+              when the keeper's is blank or processor noise
+
+    `keys` narrows to a set of (qbo_txn_id, qbo_txn_type) (tests, a
+    targeted re-run). Returns the id lists plus per-group decisions for
+    the preview."""
+    q = Transaction.query.filter(Transaction.qbo_txn_id.isnot(None))
+    if keys is not None:
+        q = q.filter(Transaction.qbo_txn_id.in_([k[0] for k in keys] or ['']))
+    rows = q.order_by(Transaction.qbo_txn_id, Transaction.qbo_txn_type, Transaction.id).all()
+    if keys is not None:
+        rows = [t for t in rows if (t.qbo_txn_id, t.qbo_txn_type) in set(keys)]
     groups = {}
     for t in rows:
         groups.setdefault((t.qbo_txn_id, t.qbo_txn_type), []).append(t)
@@ -210,92 +296,135 @@ def analyze(db_):
         vendor_names = {}
     pnames = {p.id: p.name for p in ProjectSheet.query.all()}
 
+    def _pn(pid):
+        return pnames.get(pid, '—' if pid is None else f'#{pid}')
+
     keep_ids, delete_pairs, conflict_ids, payee_flags, decisions = [], [], [], [], []
-    unclaim_ids = []
+    unclaim_ids, dismissals, carries = [], [], []
+    by_project = {}
+
+    def _bp(pid, k, n=1):
+        d = by_project.setdefault(_pn(pid), {"kept_claimed": 0, "deleted": 0, "released_to_pool": 0,
+                                             "conflicts": 0, "dismissals": 0, "payee_flags": 0})
+        d[k] += n
+
     dup_groups = 0
     for key, members in groups.items():
-        claimed = [m for m in members if any(_signals(m, split_parents).values())]
-        qbo_payee = _qbo_payee_for_group(members, vendor_names)
+        claimed = [m for m in members if _is_claimed_row(m, split_parents)]
+        qbo_payee, from_ref = _qbo_payee_for_group(members, vendor_names)
         if len(members) > 1:
             dup_groups += 1
-        if len(claimed) == 0:
+        actions = {}     # id -> (action, why)
+        kept_list = []
+        if not claimed:
             keep = _keep_pick(members)
-            keep_ids.append(keep.id)
+            kept_list = [keep]
             if keep.project_id is not None:
                 unclaim_ids.append(keep.id)
-            losers = [m for m in members if m.id != keep.id]
-            delete_pairs.extend((m.id, keep.id, 'unclaimed twin') for m in losers)
-            what = 'keep one, release to the pool'
-            kept_list = [keep]
-        elif len(claimed) == 1:
-            keep = claimed[0]
-            keep_ids.append(keep.id)
-            losers = [m for m in members if m.id != keep.id]
-            delete_pairs.extend((m.id, keep.id, 'twin of a claimed row') for m in losers)
-            what = 'keep the claimed row'
-            kept_list = [keep]
-            # The Joel / Ryan case: a receipt row matched to a payment
-            # QuickBooks says went to somebody else.
-            if keep.doc_upload_id and qbo_payee and payees_differ(keep.vendor, qbo_payee):
-                payee_flags.append((keep.id, qbo_payee))
-        else:
-            projects = {m.project_id for m in claimed}
-            if len(projects) == 1:
-                # Two claimed copies in the SAME project (a doc row and a
-                # qbo row that both carry the id, say) — keep the one with
-                # the most signals; nothing to review across projects.
-                claimed.sort(key=lambda m: (-sum(_signals(m, split_parents).values()), m.id))
-                keep = claimed[0]
-                keep_ids.append(keep.id)
-                losers = [m for m in members if m.id != keep.id]
-                delete_pairs.extend((m.id, keep.id, 'twin of a claimed row (same project)') for m in losers)
-                what = 'keep the fuller claimed row (same project)'
-                kept_list = [keep]
-                if keep.doc_upload_id and qbo_payee and payees_differ(keep.vendor, qbo_payee):
-                    payee_flags.append((keep.id, qbo_payee))
+                _bp(keep.project_id, "released_to_pool")
+                actions[keep.id] = ('keep', 'no line, section, split or receipt anywhere — released to the pool'
+                                    + (' (preferred: reconciled)' if keep.source == 'reconciled' else ''))
             else:
-                kept_list = list(claimed)
-                keep_ids.extend(m.id for m in claimed)
-                conflict_ids.extend(m.id for m in claimed)
-                losers = [m for m in members if m not in claimed]
-                delete_pairs.extend((m.id, claimed[0].id, 'unclaimed twin of conflicting rows') for m in losers)
-                what = 'claimed by two projects — keep all, flag'
-        if len(members) > 1 or len(claimed) > 1 or any(f[0] in {k.id for k in kept_list} for f in payee_flags):
+                actions[keep.id] = ('keep', 'already in the pool')
+            what = 'nobody claims it: keep one row in the pool'
+        elif len({m.project_id for m in claimed}) == 1:
+            claimed.sort(key=lambda m: (-sum(_signals(m, split_parents).values()), m.id))
+            keep = claimed[0]
+            kept_list = [keep]
+            _bp(keep.project_id, "kept_claimed")
+            actions[keep.id] = ('keep', 'the one project that claims it ('
+                                + ', '.join(k for k, v in _signals(keep, split_parents).items() if v) + ')')
+            what = f'claimed by {_pn(keep.project_id)} only: keep that row'
+            if keep.doc_upload_id and payee_flag_applies(keep.vendor, qbo_payee, from_ref):
+                payee_flags.append((keep.id, qbo_payee))
+                _bp(keep.project_id, "payee_flags")
+        else:
+            kept_list = list(claimed)
+            keep = claimed[0]
+            for m in claimed:
+                conflict_ids.append(m.id)
+                _bp(m.project_id, "conflicts")
+                actions[m.id] = ('conflict', 'claims it too (' + ', '.join(
+                    k for k, v in _signals(m, split_parents).items() if v) + ') — review')
+            what = 'claimed by two projects: keep each claim, flag for review'
+        keep_ids.extend(m.id for m in kept_list)
+        kept_set = {m.id for m in kept_list}
+        for m in members:
+            if m.id in kept_set:
+                continue
+            why = ('only a Not project mark — becomes a dismissal for ' + _pn(m.project_id)
+                   if m.not_project_expense else
+                   'a copy with no claim' + (f' ({m.source})' if m.source != 'qbo_sync' else ''))
+            delete_pairs.append((m.id, keep.id, ('copy: ' + why)[:120]))
+            _bp(m.project_id, "deleted")
+            actions[m.id] = ('delete', why)
+            plan = _carry_plan(keep, m)
+            if plan:
+                carries.append((keep.id, m.id, plan))
+                actions[m.id] = ('delete', why + '; carries ' + ', '.join(
+                    f"{k} '{v}'" if k == 'vendor' else k for k, v in plan.items()) + f' to #{keep.id}')
+        # every not_project mark becomes a dismissal for that copy's project
+        seen_np = set()
+        for m in members:
+            if m.not_project_expense and m.project_id is not None and m.project_id not in seen_np:
+                if m.id in kept_set and m.id not in unclaim_ids:
+                    continue          # a claimed row's own exclusion stays as it is
+                if claimed and m.project_id in {c.project_id for c in kept_list}:
+                    continue          # the claiming project holds the row itself
+                seen_np.add(m.project_id)
+                dismissals.append((keep.id, m.project_id, _np_reason(m),
+                                   m.excluded_by_user_id, m.excluded_at))
+                _bp(m.project_id, "dismissals")
+        if len(members) > 1 or len(claimed) > 1 or any(f[0] in kept_set for f in payee_flags) \
+                or (kept_list and kept_list[0].id in unclaim_ids and kept_list[0].not_project_expense):
+            parts = []
+            for m in members:
+                a, why = actions.get(m.id, ('keep', ''))
+                parts.append(f"{a} #{m.id} ({_pn(m.project_id)}, {m.source}, '{m.vendor or '—'}'): {why}")
             decisions.append({
                 "qbo_txn_type": key[1], "qbo_txn_id": key[0],
                 "amount": float(members[0].amount or 0), "date": members[0].txn_date,
-                "what": what,
-                "qbo_payee": qbo_payee,
-                "rows": [{"id": m.id, "project_id": m.project_id,
-                          "project": pnames.get(m.project_id, '—' if m.project_id is None else f'#{m.project_id}'),
+                "what": what + ' — ' + '; '.join(parts),
+                "qbo_payee": qbo_payee, "qbo_payee_from_quickbooks_vendor": from_ref,
+                "dismissals": sorted({_pn(m.project_id) for m in members
+                                      if m.not_project_expense and m.project_id in seen_np}),
+                "rows": [{"id": m.id, "project_id": m.project_id, "project": _pn(m.project_id),
                           "vendor": m.vendor, "source": m.source,
                           "signals": [k for k, v in _signals(m, split_parents).items() if v],
-                          "keep": m in kept_list,
-                          "conflict": (len(kept_list) > 1 and m in kept_list),
+                          "not_project_mark": bool(m.not_project_expense),
+                          "action": actions.get(m.id, ('keep', ''))[0],
+                          "why": actions.get(m.id, ('keep', ''))[1],
+                          "keep": m.id in kept_set,
+                          "conflict": (len(kept_list) > 1 and m.id in kept_set),
                           "payee_differs": any(f[0] == m.id for f in payee_flags)}
                          for m in members],
             })
     return {"rows": len(rows), "groups": len(groups), "dup_groups": dup_groups,
             "keep": keep_ids, "unclaim": unclaim_ids, "delete": delete_pairs,
             "conflicts": conflict_ids, "payee_flags": payee_flags,
-            "decisions": decisions}
+            "dismissals": dismissals, "carries": carries,
+            "by_project": by_project, "decisions": decisions}
 
 
-def preflight(db_=None):
-    """The report the Maintenance page shows before the run. Counts first,
-    then the decisions (every group with more than one row, every
-    conflict, every payee flag). Read-only."""
-    a = analyze(db)
+def preflight(db_=None, keys=None):
+    """The report the Maintenance page shows before the run. Counts first
+    (with a per-project breakdown), then the decisions: every group with
+    more than one row, every conflict, every payee flag, every released
+    Not-project row — each row with its action and why. Read-only."""
+    a = analyze(db, keys=keys)
     counts = {"qbo_rows": a["rows"], "groups": a["groups"],
               "groups_with_copies": a["dup_groups"],
               "to_delete": len(a["delete"]),
               "to_release_to_pool": len(a["unclaim"]),
               "conflicts_two_projects": len(a["conflicts"]),
-              "payee_differs": len(a["payee_flags"])}
+              "payee_differs": len(a["payee_flags"]),
+              "dismissals_to_create": len(a["dismissals"]),
+              "vendor_or_note_carried": len(a["carries"])}
     log.info("[ledger preflight] %s", counts)
     done = marker_done()
     return {"ok": True, "already_run": done, "counts": counts,
-            "decisions": a["decisions"][:400],
+            "by_project": dict(sorted(a["by_project"].items())),
+            "decisions": a["decisions"][:600],
             "decisions_total": len(a["decisions"]),
             "index_sql": COMPANY_INDEX_SQL}
 
@@ -427,7 +556,7 @@ def seed_company_accounts():
     return ids
 
 
-def run_migration(user_id=None):
+def run_migration(user_id=None, keys=None):
     """The collapse: one transaction, marker + advisory lock, idempotent
     (a second run finds nothing to do and reports that). Returns the
     report dict. Raises on a failure after rolling everything back."""
@@ -438,10 +567,21 @@ def run_migration(user_id=None):
         if not got:
             raise RuntimeError("Another worker is running the ledger migration — try again in a minute.")
     try:
-        a = analyze(db)
+        a = analyze(db, keys=keys)
         pnames = {p.id: p.name for p in ProjectSheet.query.all()}
         by_id = {t.id: t for t in Transaction.query.filter(Transaction.qbo_txn_id.isnot(None)).all()}
         deleted, released, flagged, moved_total = 0, 0, 0, {}
+        # 1. person-set data on the copies goes to the keeper first
+        carried = 0
+        for kept_id, copy_id, plan in a["carries"]:
+            k = by_id.get(kept_id)
+            if k is None:
+                continue
+            for f, v in plan.items():
+                if f == 'vendor' and not _vendor_weak(k.vendor):
+                    continue      # an earlier copy already gave it a name
+                setattr(k, f, v)
+            carried += 1
         for removed_id, kept_id, reason in a["delete"]:
             t = by_id.get(removed_id)
             if t is None:
@@ -456,6 +596,12 @@ def run_migration(user_id=None):
                 pid = t.project_id
                 t.project_id = None
                 t.match_status = 'unmatched'
+                # a Not project mark is a dismissal now (written below), never
+                # a company-wide exclusion of a pool row
+                t.not_project_expense = False
+                t.excluded_at = t.excluded_by_user_id = t.excluded_reason = None
+                if t.source == 'reconciled' and not t.doc_upload_id:
+                    t.source = 'qbo_sync'
                 t.updated_at = datetime.utcnow()
                 released += 1
                 _log('release', t.id, pid, t.vendor,
@@ -477,6 +623,17 @@ def run_migration(user_id=None):
                 _log('claim_conflict', t.id, t.project_id, t.vendor,
                      f"Company ledger: receipt payee '{t.vendor}' differs from QuickBooks payee "
                      f"'{qbo_payee}' on {t.qbo_txn_type}/{t.qbo_txn_id} — review")
+        # every legacy not_project mark → a dismissal for that copy's project
+        from models import TransactionPoolDismissal as _TPD
+        n_dis = 0
+        for kept_id, pid, reason, uid, at in a["dismissals"]:
+            if by_id.get(kept_id) is None and Transaction.query.get(kept_id) is None:
+                continue
+            if _TPD.query.filter_by(transaction_id=kept_id, project_id=pid).first():
+                continue
+            db.session.add(_TPD(transaction_id=kept_id, project_id=pid, reason=reason,
+                                created_at=at or datetime.utcnow(), created_by=uid))
+            n_dis += 1
         accounts = seed_company_accounts()
         db.session.flush()
         remaining = db.session.execute(text(DUP_GROUPS_SQL)).scalar()
@@ -486,7 +643,8 @@ def run_migration(user_id=None):
             db.session.execute(text(COMPANY_INDEX_SQL))
             index_created = True
         summary = (f"groups {a['groups']}, copies {a['dup_groups']}; deleted {deleted}, "
-                   f"released {released}, flagged {flagged}; accounts {len(accounts)}; "
+                   f"released {released}, flagged {flagged}, dismissals {n_dis}, "
+                   f"carried {carried}; accounts {len(accounts)}; "
                    f"index {'created' if index_created else 'NOT created — ' + str(remaining) + ' duplicate groups remain'}")
         db.session.execute(text(
             "INSERT INTO system_task_log (task_name, last_run_at, last_result) "
@@ -496,7 +654,7 @@ def run_migration(user_id=None):
         db.session.commit()
         log.info("[ledger migration] %s", summary)
         return {"ok": True, "deleted": deleted, "released": released, "flagged": flagged,
-                "moved": moved_total, "accounts": accounts, "index_created": index_created,
+                "dismissals": n_dis, "carried": carried, "moved": moved_total, "accounts": accounts, "index_created": index_created,
                 "remaining_duplicate_groups": int(remaining or 0), "summary": summary}
     except Exception:
         db.session.rollback()
@@ -655,7 +813,7 @@ def conflicts(project_id=None):
     for key, ms in sorted(members.items(), key=lambda kv: (kv[1][0].txn_date or '', kv[0])):
         if project_id is not None and not any(m.project_id == project_id for m in ms):
             continue
-        qbo_payee = _qbo_payee_for_group(ms, vendor_names)
+        qbo_payee, _from_ref = _qbo_payee_for_group(ms, vendor_names)
         reasons = {m.claim_conflict_reason for m in ms if m.claim_conflict_reason}
         if qbo_payee is None:
             # The migration wrote the QuickBooks name into the reason …

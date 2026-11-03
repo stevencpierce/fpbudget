@@ -98,6 +98,17 @@ the two $4,500 bill payments released to unclaimed with their invoices back
 to Receipts to place) are applied BY HAND on /admin/ledger/conflicts and the
 "Release a charge to unclaimed" tool after the run — never by the migration.
 
+### Claim rule fix (2026-11-04)
+The production preview counted "Not project" as a claim. The rule now: claim
+signals are line / section / split / receipt only; a legacy not_project mark
+on any QuickBooks copy becomes a `transaction_pool_dismissal` for that copy's
+project on the one kept pool row; a deleted copy's person-set vendor / note
+moves to the keeper when the keeper's is blank or processor noise; a
+reconciled row is preferred over a bare qbo_sync row when nobody claims the
+charge; payee-differs is flagged only against a real QuickBooks vendor
+(EntityRef), never processor text. Preview adds `by_project`,
+`dismissals_to_create` and a per-row action + why.
+
 ## QuickBooks sync
 
 The sync already does what the request asks, with one limit worth stating plainly: the QuickBooks Online API exposes only transactions that have been accepted into the books. Bank-feed items still sitting in QuickBooks' For Review tab are not reachable by any API, so a charge appears in FPBudget only after someone (or a QuickBooks bank rule) accepts it. Accepting is enough; it does not need to be categorized correctly in QuickBooks, because FPBudget assigns the budget line.
