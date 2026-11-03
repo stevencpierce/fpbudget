@@ -289,6 +289,24 @@ class TransactionSplit(db.Model):
     created_by_user_id = db.Column(db.Integer, nullable=True)
 
 
+class TransactionPoolDismissal(db.Model):
+    """"Not a project expense" for ONE project on a company-pool QuickBooks
+    row (2026-11-04). In the company ledger an unclaimed charge is visible
+    to every project; a project that says "not ours" hides it from its OWN
+    Unclaimed view only — it stays in the pool for everyone else. Restore
+    deletes the row. Read through actuals.pool_filter (which leaves the
+    project's dismissed rows out) and actuals.mark_not_project /
+    actuals.undismiss (the ONE write path)."""
+    __tablename__ = "transaction_pool_dismissal"
+    id             = db.Column(db.Integer, primary_key=True)
+    transaction_id = db.Column(db.Integer, nullable=False, index=True)
+    project_id     = db.Column(db.Integer, nullable=False, index=True)
+    reason         = db.Column(db.String(300), nullable=True)
+    created_at     = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by     = db.Column(db.Integer, nullable=True)
+    __table_args__ = (db.UniqueConstraint('transaction_id', 'project_id', name='uq_pool_dismissal'),)
+
+
 class TransactionMergeLog(db.Model):
     """Every twin row the company-ledger migration (or a conflict
     resolution) removed, with the whole row as JSON so it can be put back

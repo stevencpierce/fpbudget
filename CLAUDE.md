@@ -102,6 +102,16 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   `claim_conflict` and settled on /admin/ledger/conflicts; every removal,
   demotion or release goes through `transaction_merge_log` + "Undo a
   ledger merge".
+- Claim signals are line, section, split, receipt — NEVER "Not project"
+  (fix 2026-11-04: counting it made 577 fake conflicts and deleted real
+  rows). "Not project" on a QuickBooks row is a per-project
+  `transaction_pool_dismissal` (`actuals.mark_not_project` — the ONE write;
+  on a row this project held it releases first): the charge leaves only
+  that project's Unclaimed, stays in the pool for the rest, Restore deletes
+  the dismissal. `pool_filter` leaves dismissed rows out
+  (`include_dismissed=True` for the Not project tab / Restore). Never set
+  `not_project_expense` on a QuickBooks row; `release` turns a legacy mark
+  into a dismissal.
 
 ## Splitting app.py (M1, ongoing)
 Route slices move to `routes/<name>.py` — plain modules using `@app.route` on

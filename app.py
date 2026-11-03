@@ -12940,19 +12940,18 @@ def anomaly_resolve(pid, fid):
                     tx.account_code_name = None
                     tx.budget_line_id = None
                     tx.match_status = 'unmatched'
-                    if action == 'mark_not_project':
-                        tx.not_project_expense = True
-                        applied = f'marked charge #{tid} not a project expense'
-                    else:
-                        applied = f'un-coded charge #{tid}'
                     try:
-                        from actuals import claim_for as _cf_rq, release as _rel_rq
-                        if tx.not_project_expense:
-                            _cf_rq(tx, pid, why='marked not a project expense')
+                        from actuals import mark_not_project as _mnp_rq, release as _rel_rq
+                        if action == 'mark_not_project':
+                            _mnp_rq(tx, pid, 'review queue',
+                                    current_user.id if current_user.is_authenticated else None)
+                            applied = f'marked charge #{tid} not a project expense'
                         else:
                             _rel_rq(tx, why='un-coded from the review queue')
+                            applied = f'un-coded charge #{tid}'
                     except Exception:
-                        pass
+                        applied = f'could not update charge #{tid}'
+
         f.resolved = True
         f.resolution = action or 'resolved'
         f.resolved_by = current_user.id if current_user.is_authenticated else None
@@ -20105,7 +20104,9 @@ def activity_undo(pid, bid, aid):
     elif row.entity_type == 'transaction':
         # Coding (set-line / set-coa / clear / edit): restore the before-snapshot
         # the action logged. (User 2026-06-16.)
-        txn = Transaction.query.filter_by(id=row.entity_id, project_id=pid).first()
+        from actuals import pool_filter as _pf_un
+        txn = (Transaction.query.filter(Transaction.id == row.entity_id,
+                                        _pf_un(pid, include_dismissed=True)).first())
         if not txn and row.action == 'delete' and before and before.get('source'):
             # Actuals Phase 5 (2026-11-03): a duplicate deleted from the
             # Duplicates view (or a row QuickBooks voided) comes back from
@@ -20174,6 +20175,26 @@ def activity_undo(pid, bid, aid):
                 db.session.rollback()
                 return jsonify({"ok": False, "error": f"Could not restore the split: {_spe}"}), 400
         txn.updated_at = datetime.utcnow()
+        # Pool dismissals (Not project for this project only, 2026-11-04):
+        # undoing a mark deletes the dismissal, undoing a Restore puts it back.
+        if 'pool_dismissed' in before:
+            try:
+                from actuals import dismiss_for as _df_u, undismiss as _ud_u
+                if before.get('pool_dismissed'):
+                    _df_u(txn, pid, before.get('excluded_reason'), current_user.id)
+                else:
+                    _ud_u(txn, pid)
+                    # the receipt row a release put back goes away again
+                    if before.get('doc_upload_id'):
+                        for _sis in Transaction.query.filter(
+                                Transaction.doc_upload_id == before['doc_upload_id'],
+                                Transaction.source == 'doc_upload',
+                                Transaction.id != txn.id,
+                                Transaction.activated_at.is_(None),
+                                Transaction.budget_line_id.is_(None)).all():
+                            db.session.delete(_sis)
+            except Exception:
+                pass
         # Coding / exclusion changed → the row's claim follows its signals
         # (company ledger): claimed when any is back, released when none.
         try:
@@ -28753,6 +28774,20 @@ def _web_worker_essential_columns():
                 "ALTER TABLE qbo_connection ADD COLUMN IF NOT EXISTS sync_through VARCHAR(10)",
                 "ALTER TABLE qbo_connection ADD COLUMN IF NOT EXISTS last_synced TIMESTAMP",
                 "ALTER TABLE qbo_connection ADD COLUMN IF NOT EXISTS last_cdc_sync TIMESTAMP",
+                # Per-project "Not project" on a company-pool row (2026-11-04,
+                # alembic 0026 — mirrored per CLAUDE.md).
+                """CREATE TABLE IF NOT EXISTS transaction_pool_dismissal (
+                     id             SERIAL PRIMARY KEY,
+                     transaction_id INTEGER NOT NULL,
+                     project_id     INTEGER NOT NULL,
+                     reason         VARCHAR(300),
+                     created_at     TIMESTAMP,
+                     created_by     INTEGER
+                   )""",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_pool_dismissal "
+                "  ON transaction_pool_dismissal (transaction_id, project_id)",
+                "CREATE INDEX IF NOT EXISTS ix_transaction_pool_dismissal_project_id "
+                "  ON transaction_pool_dismissal (project_id)",
                 """CREATE TABLE IF NOT EXISTS transaction_merge_log (
                      id                 SERIAL PRIMARY KEY,
                      qbo_txn_id         VARCHAR(50),
@@ -31178,12 +31213,19 @@ def docs_inbox_batch(pid):
                 if txn is None:
                     skipped.append({"id": did, "reason": "no transaction to exclude"})
                     continue
-                # Same write path as /mark-not-project.
-                txn.not_project_expense = True
-                txn.budget_line_id      = None
-                txn.account_code        = None
-                txn.account_code_name   = None
-                txn.match_status        = 'unmatched'
+                # Same write path as /mark-not-project (actuals.mark_not_project).
+                try:
+                    from actuals import mark_not_project as _mnp_d
+                    _mode_d = _mnp_d(txn, pid, None, current_user.id)
+                except Exception as _me:
+                    db.session.rollback()
+                    skipped.append({"id": did, "reason": str(_me)[:120]})
+                    continue
+                if _mode_d == 'excluded':
+                    txn.budget_line_id      = None
+                    txn.account_code        = None
+                    txn.account_code_name   = None
+                    txn.match_status        = 'unmatched'
                 txn.updated_at          = datetime.utcnow()
                 db.session.commit()
                 try:

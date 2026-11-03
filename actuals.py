@@ -744,13 +744,40 @@ class ClaimError(ValueError):
     """The row is claimed by a different project (the UI never offers that)."""
 
 
-def pool_filter(project_id):
+def _dismissed_by(project_id):
+    """Correlated NOT-EXISTS-ready criterion: this project dismissed the row."""
+    from models import TransactionPoolDismissal as _TPD
+    return db.exists().where(db.and_(_TPD.transaction_id == Transaction.id,
+                                     _TPD.project_id == project_id))
+
+
+def pool_filter(project_id, include_dismissed=False):
     """SQLAlchemy criterion: the rows a project's Actuals works with — its
-    own rows plus every unclaimed QuickBooks row in the company pool. A
-    row claimed by another project never satisfies it."""
-    return db.or_(Transaction.project_id == project_id,
-                  db.and_(Transaction.project_id.is_(None),
-                          Transaction.qbo_txn_id.isnot(None)))
+    own rows plus every unclaimed QuickBooks row in the company pool that
+    this project has NOT dismissed ("Not project" for this project only —
+    TransactionPoolDismissal). A row claimed by another project never
+    satisfies it. include_dismissed=True adds the dismissed pool rows back
+    (the Not project tab and its Restore)."""
+    pooled = db.and_(Transaction.project_id.is_(None), Transaction.qbo_txn_id.isnot(None))
+    if not include_dismissed:
+        pooled = db.and_(pooled, ~_dismissed_by(project_id))
+    return db.or_(Transaction.project_id == project_id, pooled)
+
+
+def dismissed_pool_rows(project_id):
+    """[(Transaction, TransactionPoolDismissal)] — the pool rows this
+    project marked Not project, newest first."""
+    from models import TransactionPoolDismissal as _TPD
+    return (db.session.query(Transaction, _TPD)
+            .join(_TPD, _TPD.transaction_id == Transaction.id)
+            .filter(_TPD.project_id == project_id, Transaction.project_id.is_(None))
+            .order_by(_TPD.created_at.desc().nullslast(), _TPD.id.desc())
+            .all())
+
+
+def pool_dismissal(txn_id, project_id):
+    from models import TransactionPoolDismissal as _TPD
+    return _TPD.query.filter_by(transaction_id=txn_id, project_id=project_id).first()
 
 
 def in_pool(txn, project_id):
@@ -759,12 +786,14 @@ def in_pool(txn, project_id):
         return False
     if txn.project_id == project_id:
         return True
-    return txn.project_id is None and bool(txn.qbo_txn_id)
+    return (txn.project_id is None and bool(txn.qbo_txn_id)
+            and pool_dismissal(txn.id, project_id) is None)
 
 
-def pool_txn(project_id, tid):
+def pool_txn(project_id, tid, include_dismissed=False):
     """The transaction by id if it is in this project's pool, else None."""
-    return Transaction.query.filter(Transaction.id == tid, pool_filter(project_id)).first()
+    return Transaction.query.filter(Transaction.id == tid,
+                                    pool_filter(project_id, include_dismissed)).first()
 
 
 def is_qbo_row(txn):
@@ -772,7 +801,11 @@ def is_qbo_row(txn):
 
 
 def claim_signals(txn, has_splits=None):
-    """Which claim signals the row carries right now. has_splits may be
+    """Which claim signals the row carries right now: a line, a section, a
+    split, a receipt — the ONLY four (2026-11-04). "Not project" is NOT a
+    claim: in the pool it is a per-project dismissal, and the legacy
+    not_project_expense flag on a QuickBooks copy mostly meant "not THIS
+    project's" (the old sibling propagation stamped it). has_splits may be
     passed when the caller already knows (bulk reads); else it is queried."""
     from models import TransactionSplit
     if has_splits is None:
@@ -783,7 +816,6 @@ def claim_signals(txn, has_splits=None):
         'section':     bool(txn.account_code) and not txn.budget_line_id,
         'split':       bool(has_splits),
         'receipt':     bool(txn.doc_upload_id),
-        'not_project': bool(txn.not_project_expense),
     }
 
 
@@ -805,11 +837,101 @@ def _ledger_log(action, txn, project_id, note):
         log.info("[ledger] activity log skipped for txn %s", getattr(txn, 'id', None), exc_info=True)
 
 
+def dismiss_for(txn, project_id, reason=None, user_id=None, at=None):
+    """Write (or refresh) this project's dismissal of a pool row. Does not
+    commit. Returns the dismissal."""
+    from models import TransactionPoolDismissal as _TPD
+    d = pool_dismissal(txn.id, project_id)
+    if d is None:
+        d = _TPD(transaction_id=txn.id, project_id=int(project_id), reason=(reason or None),
+                 created_at=at or datetime.utcnow(), created_by=user_id)
+        db.session.add(d)
+    elif reason:
+        d.reason = reason[:300]
+    db.session.flush()
+    return d
+
+
+def undismiss(txn, project_id):
+    """Restore: delete this project's dismissal. True when one existed."""
+    d = pool_dismissal(txn.id, project_id)
+    if d is None:
+        return False
+    db.session.delete(d)
+    db.session.flush()
+    return True
+
+
+def mark_not_project(txn, project_id, reason=None, user_id=None):
+    """THE "Not a project expense" write (2026-11-04). Returns the mode:
+
+      'dismissed' — a QuickBooks row. In the pool it gets a dismissal for
+                    this project only (it stays visible to every other
+                    project); claimed by this project it is RELEASED to the
+                    pool first (coding, splits and the receipt link go —
+                    the receipt back to Receipts to place) and then
+                    dismissed. not_project_expense is never set on a
+                    QuickBooks row.
+      'excluded'  — a row born in this project (receipt / manual / CSV):
+                    not_project_expense + the excluded_* audit columns, as
+                    before.
+
+    Raises ClaimError for a QuickBooks row another project holds. The
+    caller clears coding / splits on 'excluded' rows as it always did and
+    commits."""
+    from models import TransactionSplit
+    if is_qbo_row(txn):
+        if txn.project_id not in (None, project_id):
+            other = ProjectSheet.query.get(txn.project_id)
+            raise ClaimError(f"This charge is claimed by "
+                             f"{(other.name if other else f'project #{txn.project_id}')} — "
+                             f"it is not in this project's pool.")
+        if txn.project_id == project_id:
+            TransactionSplit.query.filter_by(transaction_id=txn.id).delete(synchronize_session=False)
+            txn.budget_line_id = None
+            txn.account_code = None
+            txn.account_code_name = None
+            if txn.doc_upload_id:
+                _restore_receipt_row(txn)
+            txn.doc_upload_id = None
+            txn.not_project_expense = False
+            txn.excluded_at = txn.excluded_by_user_id = txn.excluded_reason = None
+            release(txn, why='marked Not project here', has_splits=False)
+        dismiss_for(txn, project_id, reason, user_id)
+        _ledger_log('update', txn, project_id,
+                    f"Not a project expense here (the charge stays in the company pool for "
+                    f"other projects){' — ' + reason if reason else ''}")
+        return 'dismissed'
+    txn.not_project_expense = True
+    txn.excluded_at = datetime.utcnow()
+    txn.excluded_by_user_id = user_id
+    txn.excluded_reason = reason
+    return 'excluded'
+
+
+def _restore_receipt_row(txn):
+    """The receipt a charge carried goes back to its project's Receipts to
+    place as its own doc-born row (when it has none). No commit."""
+    doc = DocUpload.query.get(txn.doc_upload_id) if txn.doc_upload_id else None
+    if doc is None or not is_ledger_category(doc.category):
+        return False
+    if Transaction.query.filter_by(doc_upload_id=doc.id, source='doc_upload').first():
+        return False
+    db.session.add(Transaction(
+        project_id=doc.project_id or txn.project_id, source='doc_upload', doc_upload_id=doc.id,
+        vendor=doc.vendor, amount=doc.amount,
+        txn_date=doc.doc_date.isoformat() if doc.doc_date else None,
+        card_last4=getattr(doc, 'card_last4', None),
+        is_expense=True, match_status='unmatched'))
+    return True
+
+
 def claim_for(txn, project_id, why='coded'):
     """Set project_id = project_id on a QuickBooks row that is unclaimed or
     already this project's. Raises ClaimError when another project holds
-    it. Returns True when the row changed hands. Does not commit — the
-    caller's write path does, as it always did."""
+    it. Returns True when the row changed hands. Claiming drops this
+    project's own dismissal of the row (it is ours now). Does not commit —
+    the caller's write path does, as it always did."""
     if txn is None or not project_id:
         return False
     project_id = int(project_id)
@@ -823,6 +945,10 @@ def claim_for(txn, project_id, why='coded'):
             f"resolve it there (or in Admin → Maintenance → Claimed in two projects).")
     txn.project_id = project_id
     txn.updated_at = datetime.utcnow()
+    try:
+        undismiss(txn, project_id)
+    except Exception:
+        log.info("[ledger] undismiss skipped for txn %s", txn.id, exc_info=True)
     _ledger_log('claim', txn, project_id,
                 f"Claimed QuickBooks {txn.qbo_txn_type or 'charge'}/{txn.qbo_txn_id or '?'} "
                 f"for this project ({why})")
@@ -831,14 +957,24 @@ def claim_for(txn, project_id, why='coded'):
 
 def release(txn, why='last claim signal removed', has_splits=None):
     """Return a QuickBooks row to the company pool when no claim signal is
-    left on it (no line, no section, no splits, no receipt, not excluded).
-    A row born in a project (receipt / manual / CSV) is never released.
-    Returns True when it was released. Does not commit."""
+    left on it (no line, no section, no splits, no receipt). A row born in
+    a project (receipt / manual / CSV) is never released. A legacy
+    not_project_expense mark on the row becomes this project's dismissal
+    (the pool row must not read as excluded for everyone). A reconciled
+    row whose receipt is gone goes back to source qbo_sync. Returns True
+    when it was released. Does not commit."""
     if txn is None or not is_qbo_row(txn) or txn.project_id is None:
         return False
     if is_claimed(txn, has_splits):
         return False
     pid = txn.project_id
+    if txn.not_project_expense:
+        dismiss_for(txn, pid, txn.excluded_reason or txn.no_charge_reason,
+                    txn.excluded_by_user_id, txn.excluded_at)
+        txn.not_project_expense = False
+        txn.excluded_at = txn.excluded_by_user_id = txn.excluded_reason = None
+    if txn.source == 'reconciled' and not txn.doc_upload_id:
+        txn.source = 'qbo_sync'
     txn.project_id = None
     txn.match_status = 'unmatched'
     txn.match_confidence = None
@@ -2638,6 +2774,11 @@ def unmatch_receipt(transaction_id):
     t.match_status     = 'unmatched'
     t.match_confidence = None
     t.updated_at       = datetime.utcnow()
+    # A QuickBooks row is no longer 'reconciled' once its receipt is gone —
+    # leaving it stamped was how rows ended up "reconciled" with no receipt
+    # and no coding (9 of them in the 2026-11-03 production preview).
+    if t.qbo_txn_id and t.source == 'reconciled':
+        t.source = 'qbo_sync'
     _receipt_pid = t.project_id
     if doc_id:
         doc = DocUpload.query.get(doc_id)
