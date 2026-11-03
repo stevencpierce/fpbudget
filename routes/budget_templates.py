@@ -8,6 +8,7 @@ from flask import render_template, request, jsonify, flash, redirect, url_for
 from flask_login import login_required
 
 from app import app, _require_global_editor
+from budget_calc import FP_COA_SECTIONS
 from models import db, BudgetTemplate, BudgetTemplateLine
 
 @app.route("/budget-templates")
