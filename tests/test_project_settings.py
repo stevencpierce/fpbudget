@@ -1,80 +1,78 @@
 """
-Project Settings tab tests: #tab-settings inside the budget page.
-Budget info, display, payroll, production details.
+Project Settings pane tests: #tab-settings inside the budget page —
+Budget Info, Display, Payroll and fees, Project Fringes, Maintenance
+(regrouped in Cleanup C; company-wide settings moved to Admin in Cleanup E).
 """
 
-import time
-import allure
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.conftest import BASE_URL
-from tests.utils.helpers import (
-    create_project, delete_project, go_to_projects, open_project_by_name,
-    take_step_screenshot,
-)
-
-pytestmark = allure.suite("Project Settings")
-
-PROJECT_NAME = f"ProjSettingsTest-{int(time.time()) % 100000}"
+from tests.utils.helpers import take_step_screenshot
 
 
 @pytest.fixture
-def settings_tab_page(admin_page: Page) -> Page:
-    page = admin_page
-    create_project(page, PROJECT_NAME, template="FP Standard")
-    open_project_by_name(page, PROJECT_NAME)
-    page.wait_for_timeout(2000)
-    page.locator('button.tab-btn:has-text("Settings")').first.click()
-    page.wait_for_timeout(1000)
-    yield page
-    go_to_projects(page)
-    delete_project(page, PROJECT_NAME)
-
-
-@allure.title("Settings tab activates and shows Project Settings heading")
-def test_settings_tab_activates(settings_tab_page: Page):
-    page = settings_tab_page
+def settings_page(project) -> Page:
+    page = project.page
+    page.goto(f"{project.budget_url}?tab=settings", wait_until="networkidle")
     expect(page.locator("#tab-settings.active")).to_be_visible(timeout=10_000)
-    expect(page.locator("h2.settings-heading").first).to_be_visible()
+    return page
+
+
+def test_settings_tab_activates(project):
+    page = project.page
+    page.goto(project.budget_url, wait_until="networkidle")
+    page.click('.tab-btn.tab-settings')
+    expect(page.locator("#tab-settings.active")).to_be_visible(timeout=10_000)
+    for heading in ("Budget Info", "Project Fringes", "Maintenance"):
+        expect(page.locator(f"#tab-settings h3:has-text('{heading}')").first).to_be_visible()
     take_step_screenshot(page, "settings-tab-active")
 
 
-@allure.title("Settings tab has budget name input")
-def test_settings_budget_name_input(settings_tab_page: Page):
-    page = settings_tab_page
-    expect(page.locator("#set-name")).to_be_visible(timeout=5000)
+def test_settings_points_company_wide_things_at_admin(settings_page: Page):
+    page = settings_page
+    link = page.locator('#tab-settings a:has-text("Open Admin")').first
+    expect(link).to_be_visible()
+    assert "/admin" in (link.get_attribute("href") or "")
+
+
+def test_settings_budget_name_input(settings_page: Page):
+    page = settings_page
+    expect(page.locator("#set-name")).to_be_visible()
     assert page.locator("#set-name").input_value() != "", "Budget name should be populated"
 
 
-@allure.title("Settings tab has fee and workers-comp rate inputs")
-def test_settings_fee_inputs(settings_tab_page: Page):
-    page = settings_tab_page
-    for input_id in ("#set-fee", "#set-workers-comp", "#set-payroll-fee"):
-        expect(page.locator(input_id)).to_be_visible(timeout=5000)
+def test_settings_payroll_and_fee_inputs(settings_page: Page):
+    page = settings_page
+    for input_id in ("#set-workers-comp", "#set-payroll-fee"):
+        expect(page.locator(input_id)).to_be_visible()
 
 
-@allure.title("Settings tab has timezone and payroll profile selects")
-def test_settings_display_selects(settings_tab_page: Page):
-    page = settings_tab_page
-    expect(page.locator("#set-timezone")).to_be_visible(timeout=5000)
-    expect(page.locator("#set-payroll-profile")).to_be_visible(timeout=5000)
-    expect(page.locator("#set-payroll-week-start")).to_be_visible(timeout=5000)
+def test_settings_display_selects(settings_page: Page):
+    page = settings_page
+    for sel in ("#set-timezone", "#set-payroll-profile", "#set-payroll-week-start"):
+        expect(page.locator(sel)).to_be_visible()
+    assert page.locator("#set-payroll-profile option").count() >= 1
 
 
-@allure.title("Settings tab has production details section")
-def test_settings_production_details(settings_tab_page: Page):
-    page = settings_tab_page
+def test_settings_production_details(settings_page: Page):
+    page = settings_page
     for input_id in ("#set-client-name", "#set-prepared-by", "#set-prepared-by-email"):
-        expect(page.locator(input_id)).to_be_visible(timeout=5000)
+        expect(page.locator(input_id)).to_be_visible()
 
 
-@allure.title("Can edit the budget name in Settings")
-def test_settings_edit_budget_name(settings_tab_page: Page):
-    page = settings_tab_page
+def test_settings_save_budget_name_round_trips(project):
+    page = project.page
+    page.goto(f"{project.budget_url}?tab=settings", wait_until="networkidle")
     name_input = page.locator("#set-name")
+    expect(name_input).to_be_visible(timeout=10_000)
     original = name_input.input_value()
     new_name = original + " [edited]"
     name_input.fill(new_name)
-    page.wait_for_timeout(500)
-    assert name_input.input_value() == new_name
+    page.click("#btn-save-settings")
+    page.wait_for_timeout(800)
+    page.goto(f"{project.budget_url}?tab=settings", wait_until="networkidle")
+    expect(page.locator("#set-name")).to_have_value(new_name, timeout=10_000)
+    # put it back so the other modules' assumptions about the name hold
+    page.locator("#set-name").fill(original)
+    page.click("#btn-save-settings")
+    page.wait_for_timeout(800)

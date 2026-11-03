@@ -1,146 +1,90 @@
 """
-Collaboration tests: two browsers editing the same budget in real-time.
+Collaboration tests: a project shared with the non-admin test user, two
+browsers on the same budget, Socket.IO presence (collab.js → join_budget →
+presence_update → #collab-viewers avatars), and the python-socketio client.
+
+Needs TEST_EMAIL / TEST_PASSWORD (the seeded app has local-editor@thefp.tv).
 """
 
 import re
 import time
-import allure
+
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.conftest import BASE_URL, ADMIN_EMAIL, TEST_EMAIL
+from tests.conftest import BASE_URL, TEST_EMAIL
 from tests.utils.helpers import (
     create_project, delete_project, find_project_card, go_to_projects,
-    open_project_by_name, take_step_screenshot,
+    take_step_screenshot,
 )
 from tests.utils.socket_client import BudgetSocketClient
 
-pytestmark = [
-    allure.suite("Collaboration"),
-    pytest.mark.collab,
-    pytest.mark.skip(
-        reason="Test user account is locked in 'Please set a new password' mode; "
-        "needs a dedicated test user with a stable password to run collab tests."
-    ),
-]
+pytestmark = pytest.mark.collab
 
 PROJECT_NAME = f"CollabTest-{int(time.time()) % 100000}"
 
 
 @pytest.fixture
 def shared_budget(collab_pages: tuple[Page, Page]):
-    """
-    Create a project with admin, share it, open the budget in both browsers.
-    Returns (admin_page, test_user_page).
-    """
+    """Admin creates a project, shares it with the test user, both open it.
+    Yields (admin_page, test_user_page, pid)."""
     admin_page, test_page = collab_pages
-
-    # Admin creates the project
     create_project(admin_page, PROJECT_NAME, template="FP Standard")
+    m = re.search(r"/projects/(\d+)/budget", admin_page.url)
+    assert m, admin_page.url
+    pid = int(m.group(1))
 
-    # Share with test user
     go_to_projects(admin_page)
     card = find_project_card(admin_page, PROJECT_NAME)
-    share_btn = card.locator("text=Share").first
-    if share_btn.is_visible(timeout=5000):
-        share_btn.click()
-        admin_page.fill('input[placeholder="collaborator@email.com"]', TEST_EMAIL)
-        admin_page.click('button:has-text("Add")')
-        admin_page.wait_for_timeout(2000)
-        admin_page.click('button:has-text("Close")')
+    card.locator("text=Share").first.click()
+    expect(admin_page.locator("#share-modal")).to_be_visible()
+    admin_page.fill("#share-email-input", TEST_EMAIL)
+    admin_page.click('#share-modal button:has-text("Add")')
+    expect(admin_page.locator("#share-collaborators")).to_contain_text(TEST_EMAIL, timeout=10_000)
+    admin_page.click('#share-modal button:has-text("Close")')
 
-    # Both users navigate to the budget
-    for page in [admin_page, test_page]:
-        go_to_projects(page)
-        page.wait_for_timeout(1000)
-        try:
-            open_project_by_name(page, PROJECT_NAME)
-            page.wait_for_timeout(2000)
-        except Exception:
-            # Test user may not have access if share failed
-            pass
+    for page in (admin_page, test_page):
+        page.goto(f"{BASE_URL}/projects/{pid}/budget", wait_until="networkidle")
+        expect(page.locator("#budget-name-heading")).to_be_visible(timeout=15_000)
 
-    yield admin_page, test_page
+    yield admin_page, test_page, pid
 
-    # Cleanup
     go_to_projects(admin_page)
     delete_project(admin_page, PROJECT_NAME)
 
 
-# ---------------------------------------------------------------------------
-# Real-time sync tests
-# ---------------------------------------------------------------------------
-
-@allure.title("Both users can see the same budget")
-def test_both_users_see_budget(shared_budget: tuple[Page, Page]):
-    admin_page, test_page = shared_budget
-    expect(admin_page).to_have_url(re.compile(r"/projects/\d+/budget"))
-    expect(test_page).to_have_url(re.compile(r"/projects/\d+/budget"))
-    take_step_screenshot(admin_page, "collab-admin-view")
+def test_both_users_see_budget(shared_budget):
+    admin_page, test_page, pid = shared_budget
+    for page in (admin_page, test_page):
+        expect(page).to_have_url(re.compile(rf"/projects/{pid}/budget"))
+        expect(page.locator("#budget-name-heading")).to_contain_text(PROJECT_NAME)
     take_step_screenshot(test_page, "collab-test-user-view")
 
 
-@allure.title("Edit by admin is reflected in test user's view")
-def test_admin_edit_syncs_to_test_user(shared_budget: tuple[Page, Page]):
-    admin_page, test_page = shared_budget
-
-    # Admin edits a numeric field
-    numeric = admin_page.locator('input[type="number"], input.amount').first
-    if numeric.is_visible(timeout=5000):
-        numeric.click()
-        numeric.fill("7777")
-        numeric.press("Tab")
-        admin_page.wait_for_timeout(3000)
-
-        # Check if test user's page reflects the change
-        take_step_screenshot(test_page, "collab-sync-after-admin-edit")
-        content = test_page.content()
-        allure.attach(
-            f"Looking for '7777' in test user's page: {'7777' in content}",
-            name="sync-check",
-            attachment_type=allure.attachment_type.TEXT,
-        )
+def test_presence_shows_both_viewers(shared_budget):
+    admin_page, test_page, pid = shared_budget
+    # Each page joined the budget room on load; presence_update rebuilds the
+    # avatar strip (OTHER viewers only), so each page shows one avatar — the
+    # other user.
+    for page in (admin_page, test_page):
+        expect(page.locator("#collab-viewers .collab-avatar")).to_have_count(1, timeout=15_000)
+    admin_sees = admin_page.locator("#collab-viewers .collab-avatar").first.get_attribute("title") or ""
+    user_sees = test_page.locator("#collab-viewers .collab-avatar").first.get_attribute("title") or ""
+    assert admin_sees.endswith("is viewing") and user_sees.endswith("is viewing"), (admin_sees, user_sees)
+    assert admin_sees != user_sees, "each page should show the OTHER viewer"
+    take_step_screenshot(admin_page, "collab-presence")
 
 
-@allure.title("Edit by test user is reflected in admin's view")
-def test_test_user_edit_syncs_to_admin(shared_budget: tuple[Page, Page]):
-    admin_page, test_page = shared_budget
-
-    numeric = test_page.locator('input[type="number"], input.amount').first
-    if numeric.is_visible(timeout=5000):
-        numeric.click()
-        numeric.fill("3333")
-        numeric.press("Tab")
-        test_page.wait_for_timeout(3000)
-
-        take_step_screenshot(admin_page, "collab-sync-after-test-user-edit")
-        content = admin_page.content()
-        allure.attach(
-            f"Looking for '3333' in admin's page: {'3333' in content}",
-            name="sync-check",
-            attachment_type=allure.attachment_type.TEXT,
-        )
-
-
-# ---------------------------------------------------------------------------
-# WebSocket client tests
-# ---------------------------------------------------------------------------
-
-@allure.title("WebSocket client can connect and receive events")
-def test_socket_client_connects(admin_page: Page):
-    """Test the python-socketio client independently."""
+def test_socket_client_connects_and_joins(admin_page: Page):
+    """The python-socketio client, with the browser's session cookie."""
     cookie = BudgetSocketClient.extract_session_cookie(admin_page)
     client = BudgetSocketClient(BASE_URL, session_cookie=cookie)
     try:
         client.connect(timeout=15.0)
         assert client.sio.connected, "Socket client failed to connect"
-        allure.attach(
-            f"Connected: {client.sio.connected}",
-            name="socket-status",
-            attachment_type=allure.attachment_type.TEXT,
-        )
-    except Exception as e:
-        allure.attach(str(e), name="socket-error", attachment_type=allure.attachment_type.TEXT)
-        pytest.skip(f"WebSocket connection not available: {e}")
+        client.sio.emit("join_budget", {"budget_id": 1, "user_id": 1, "user_name": "e2e"})
+        evt = client.wait_for_event("presence_update", timeout=10.0)
+        assert evt is not None, f"no presence_update after join_budget; got {client.get_events()}"
+        assert any(v.get("user_name") == "e2e" for v in evt["data"].get("viewers", [])), evt
     finally:
         client.disconnect()

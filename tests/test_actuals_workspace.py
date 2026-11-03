@@ -1,7 +1,7 @@
 """
 Actuals workspace E2E (ACTUALS_HANDOFF Phase 3, 2026-11-01):
 /projects/<pid>/actuals — the two-pane screen that replaced /register and
-the legacy #tab-actuals.
+the legacy #tab-actuals (both routes are gone since Cleanup B).
 
 Each test module run creates ONE throwaway project through the UI, seeds a
 few hand-typed charges through POST .../actuals/manual-expense (the only
@@ -17,7 +17,6 @@ super_admin.
 import re
 import time
 
-import allure
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -25,8 +24,6 @@ from tests.conftest import BASE_URL, DEFAULT_TIMEOUT
 from tests.utils.helpers import (
     create_project, delete_project, go_to_projects, take_step_screenshot,
 )
-
-pytestmark = allure.suite("Actuals workspace")
 
 PROJECT_NAME = f"ActualsWS-{int(time.time()) % 100000}"
 VIEWS = ["unclaimed", "assigned", "needs_backup", "receipts", "not_project", "sync"]
@@ -107,7 +104,6 @@ def _reload_ws(page: Page, pid: int, view: str = "unclaimed"):
     page.wait_for_timeout(400)
 
 
-@allure.title("Workspace loads with the six views and the budget pane")
 def test_page_loads_with_six_views(ws):
     page, pid = ws
     for v in VIEWS:
@@ -118,19 +114,6 @@ def test_page_loads_with_six_views(ws):
     take_step_screenshot(page, "actuals-ws-loaded")
 
 
-@allure.title("/register redirects to the workspace")
-def test_register_redirects(ws):
-    page, pid = ws
-    r = _fetch(page, f"/projects/{pid}/register", "GET", None, "manual")
-    # fetch() with redirect:'manual' yields an opaque redirect (status 0);
-    # either way, following it must land on the workspace.
-    assert r["status"] in (0, 302), r
-    page.goto(f"{BASE_URL}/projects/{pid}/register", wait_until="networkidle")
-    assert re.search(rf"/projects/{pid}/actuals$", page.url), page.url
-    _reload_ws(page, pid)
-
-
-@allure.title("Select two rows and drag them onto a line: both assigned")
 def test_drag_two_rows_to_line(ws):
     page, pid = ws
     _reload_ws(page, pid)
@@ -154,7 +137,6 @@ def test_drag_two_rows_to_line(ws):
     take_step_screenshot(page, "actuals-ws-dragged")
 
 
-@allure.title("Mark not project, see it under Not project, Recover it back to Unclaimed")
 def test_not_project_then_recover(ws):
     page, pid = ws
     _reload_ws(page, pid)
@@ -177,7 +159,6 @@ def test_not_project_then_recover(ws):
     expect(page.locator("#aw-table .aw-row[data-tid]", has_text=vendor)).to_have_count(1)
 
 
-@allure.title("A split that does not sum is refused and the remainder shows")
 def test_split_must_sum(ws):
     page, pid = ws
     _reload_ws(page, pid)
@@ -212,7 +193,6 @@ def test_split_must_sum(ws):
     expect(page.locator("#aw-table .aw-row[data-tid] .aw-chip.solid", has_text="Split")).to_have_count(1)
 
 
-@allure.title("Needs-backup flag clears after link-doc")
 def test_needs_backup_clears_after_link_doc(ws):
     page, pid = ws
     _reload_ws(page, pid, "receipts")
@@ -243,7 +223,6 @@ def test_needs_backup_clears_after_link_doc(ws):
     expect(row.locator(".aw-flag.green, .aw-flag.yellow")).to_have_count(1)
 
 
-@allure.title("Admin pool shows a claimed row with the project name")
 @pytest.mark.admin
 def test_admin_pool_shows_claimed_row(ws):
     page, pid = ws
