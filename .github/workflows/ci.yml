@@ -28,6 +28,12 @@ jobs:
           node-version: "22"
       - name: Python compile
         run: python -m py_compile app.py models.py budget_calc.py actuals.py ai_layer.py fp_analyzer.py qbo_sync.py external_export.py wsgi.py scripts/seed_local.py
+      - name: Undefined names (pyflakes)
+        # A NameError that only fires on some projects' data shipped twice
+        # (Nov 2026: '_w_rollup' 500'd every budget with a dispersed fee).
+        run: |
+          pip install pyflakes --quiet
+          python -m pyflakes app.py models.py budget_calc.py actuals.py ai_layer.py fp_analyzer.py qbo_sync.py external_export.py routes/*.py | grep "undefined name" && exit 1 || echo "no undefined names"
       - name: Jinja parse all templates
         run: |
           pip install jinja2 --quiet

@@ -8828,7 +8828,11 @@ def budget_view(pid, bid):
             _wpseudo = [(round(working_gross_labor * _wc_pct, 2), COA_CODE_INSURANCE),
                         (_pi_amount, COA_CODE_INSURANCE),
                         (round(working_gross_labor * _pf_pct, 2), COA_CODE_ADMIN)]
-            if _w_rollup and not _wfee_exclude_fringes:
+            # Phase 4: fringes always roll up (the old _w_rollup flag is gone —
+            # its leftover reference 500'd every budget with a DISPERSED fee:
+            # GINTS 2026 and Ventana, Nov 2-3). The pots take a fee share
+            # only when fringes are not excluded from the fee base.
+            if not _wfee_exclude_fringes:
                 _wpseudo += [(round(_wfv, 2), _wfs)
                              for _wfs, _wfv in working_section_fringe.items() if _wfv]
             for _pamt, _psec in _wpseudo:

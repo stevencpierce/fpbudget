@@ -6,6 +6,7 @@ Owner: Steven Pierce (steven@thefp.tv), non-programmer — live production syste
 
 ## Verify before every deploy (CI runs these too — .github/workflows/ci.yml)
 1. `python -m py_compile app.py models.py budget_calc.py actuals.py`
+   then `python -m pyflakes app.py actuals.py budget_calc.py qbo_sync.py routes/*.py | grep "undefined name"` must print nothing (a NameError on one project's data shipped twice)
 2. Jinja-parse changed templates
 3. `python scripts/route_audit.py app.py routes/*.py`   (route-stealing + duplicate-URL guard)
 4. `python scripts/js_check.py`             (inline-JS syntax)
