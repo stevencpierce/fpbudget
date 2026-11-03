@@ -137,6 +137,15 @@ def seed(db, models, budget_calc):
         ai_code_confidence=Decimal("0.88"))
     txn("Wrapbook Payroll", 6218.40, "2026-10-20", source="qbo_sync", qbo_txn_id="18790",
         qbo_txn_type="BillPayment", note="week ending Oct 18")
+    # Phase 5 (Nov 3): the same $4,500 BillPayment that posted twice a day
+    # apart (Ryan Mauskopf, Oct 19 / Oct 20) — the Duplicates view's case —
+    # and a Lyft charge with its receipt waiting in the inbox (strong match).
+    txn("Ryan Mauskopf", 4500.00, "2026-10-19", source="qbo_sync", qbo_txn_id="1300000319",
+        qbo_txn_type="BillPayment", note="invoice 2026-10 · ACH")
+    txn("Ryan Mauskopf", 4500.00, "2026-10-20", source="qbo_sync", qbo_txn_id="1300000322",
+        qbo_txn_type="BillPayment", note="invoice 2026-10 · ACH")
+    txn("LYFT *RIDE SUN 9PM", 88.44, "2026-09-28", source="qbo_sync", qbo_txn_id="18402",
+        qbo_txn_type="Purchase", card_last4="4417")
     t6 = txn("Sweetgreen", 186.30, "2026-10-19", source="qbo_sync", qbo_txn_id="18780",
              qbo_txn_type="Purchase", card_last4="4417", suggested_budget_line_id=meals.id,
              ai_code_confidence=Decimal("0.95"))
@@ -205,7 +214,11 @@ def seed(db, models, budget_calc):
                    filed_filename="2026-10-19_RECEIPT_Meals_Sweetgreen_186.30.pdf", status="filed",
                    vendor="Sweetgreen", amount=Decimal("186.30"), doc_date=date(2026, 10, 19),
                    category="receipt", content_type="image/jpeg")
-    db.session.add_all([d1, d2, d3])
+    d4 = DocUpload(project_id=p.id, uploader_id=u.id, original_filename="lyft-sep28.png",
+                   filed_filename="2026-09-28_RECEIPT_Travel_Lyft_88.44.pdf", status="filed",
+                   vendor="Lyft", amount=Decimal("88.44"), doc_date=date(2026, 9, 28),
+                   category="receipt", content_type="image/png", card_last4="4417")
+    db.session.add_all([d1, d2, d3, d4])
     db.session.flush()
     t11.doc_upload_id = d2.id
     db.session.add(ExpenseEvidence(transaction_id=t11.id, doc_upload_id=d2.id, kind="primary"))

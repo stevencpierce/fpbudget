@@ -20096,6 +20096,29 @@ def activity_undo(pid, bid, aid):
         # Coding (set-line / set-coa / clear / edit): restore the before-snapshot
         # the action logged. (User 2026-06-16.)
         txn = Transaction.query.filter_by(id=row.entity_id, project_id=pid).first()
+        if not txn and row.action == 'delete' and before and before.get('source'):
+            # Actuals Phase 5 (2026-11-03): a duplicate deleted from the
+            # Duplicates view (or a row QuickBooks voided) comes back from
+            # the full snapshot actuals.txn_snapshot logged — same id, every
+            # column, its splits — so "Delete the extra" is never final.
+            from actuals import TXN_SNAPSHOT_FIELDS as _SNAP_F
+            txn = Transaction(id=row.entity_id, project_id=pid)
+            for k in _SNAP_F:
+                if k in ('project_id',) or k not in before:
+                    continue
+                v = before.get(k)
+                if k in ('activated_at', 'excluded_at') and v:
+                    try:
+                        v = datetime.fromisoformat(v)
+                    except Exception:
+                        v = None
+                try:
+                    setattr(txn, k, v)
+                except Exception:
+                    pass
+            txn.created_at = txn.updated_at = datetime.utcnow()
+            db.session.add(txn)
+            db.session.flush()
         if not txn:
             return jsonify({"ok": False, "error": "That transaction no longer exists."}), 400
         if not before:
@@ -20106,7 +20129,9 @@ def activity_undo(pid, bid, aid):
                   # Recoverable Not-project audit columns (Phase 1,
                   # 2026-10-30): undoing a Recover puts the exclusion back
                   # with its who / when / why; undoing a mark clears them.
-                  'excluded_by_user_id', 'excluded_reason'):
+                  'excluded_by_user_id', 'excluded_reason',
+                  # Phase 5: the Voided-in-QuickBooks flag rides here too.
+                  'no_charge_reason', 'payment_method', 'paid_by_crew_member_id'):
             if k in before:
                 try:
                     setattr(txn, k, before[k])
@@ -30769,11 +30794,17 @@ def docs_inbox_json(pid):
                     _amt = None
                 if _amt is not None:
                     _lbl_parts.append(f"${_amt:,.2f}")
+                try:
+                    from actuals import score_match as _sm_inbx
+                    _why = (_sm_inbx(txn, d) or {}).get("reasons") or []
+                except Exception:
+                    _why = []
                 suggested_charge = {
                     "id":         txn.id,
                     "label":      " · ".join(_lbl_parts) if _lbl_parts else f"Txn #{txn.id}",
                     "confidence": (float(txn.match_confidence)
                                    if txn.match_confidence is not None else None),
+                    "reasons":    _why,     # Phase 5: the engine's why, for the tooltip
                 }
             # Deterministic person/PO line suggestion (owner ask 2026-07): when a
             # charge is still uncoded but carries a stored suggested budget line
@@ -31641,6 +31672,20 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
                             f"upload #{upload.id}: {_te}")
             db.session.rollback()
             auto_txn = None
+        # Actuals Phase 5 (2026-11-03): THE matching engine runs after EVERY
+        # upload (this is the one ingest path: web, mobile, Dropbox sweep,
+        # zip) so a receipt meets its charge the moment it lands. Suggested,
+        # never confirmed. Fail-open — an engine error never blocks a file.
+        if auto_txn is not None:
+            try:
+                from actuals import refresh_match_suggestions as _rms_u
+                _rms_u(pid)
+            except Exception as _me:
+                logging.warning(f"[docs/upload] matching after upload #{upload.id} failed: {_me}")
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
 
     # Activity log
     try:
@@ -32151,6 +32196,17 @@ def _qbo_auto_sync_loop():
                         n_proj += 1
                         r = _sp(prj, qconn, db) or {}
                         n_rows += int(r.get('imported', 0) or 0) + int(r.get('cdc_additions', 0) or 0)
+                        # Phase 5: THE matching engine after every sync —
+                        # suggestions only, never confirmed. Fail-open.
+                        try:
+                            from actuals import refresh_match_suggestions as _rms
+                            _rms(prj.id)
+                        except Exception as _me:
+                            logging.warning(f"[qbo-auto] matching for project {prj.id} failed: {_me}")
+                            try:
+                                db.session.rollback()
+                            except Exception:
+                                pass
                     except Exception as _pe:
                         n_err += 1
                         logging.warning(f"[qbo-auto] project {prj.id} failed: {_pe}")

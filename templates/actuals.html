@@ -29,7 +29,7 @@
     --aw-bar-bg: var(--bg-3); --aw-bar-fg: var(--text);
     --aw-bar-border: var(--border);
     --aw-cols: 40px 84px minmax(180px, 1fr) 110px 74px 80px minmax(200px, 1fr) 160px;
-    --aw-rcols: 48px 80px minmax(170px, 1.2fr) 100px minmax(170px, 1fr) 340px;
+    --aw-rcols: 48px 80px minmax(160px, 1fr) 96px minmax(230px, 1.4fr) 300px;
     --aw-ncols: 40px 84px minmax(180px, 1fr) 110px 74px 80px minmax(220px, 1.2fr) 110px;
     --aw-nums: 76px 76px 70px;
     color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.4;
@@ -137,7 +137,7 @@
   /* ── Table ── */
   .aw-tablewrap { margin-top: 12px; overflow: auto; flex: 1 1 auto; min-height: 0; padding-bottom: 84px; }
   .aw-table { min-width: 900px; }
-  .aw-table.receipts { min-width: 860px; }
+  .aw-table.receipts { min-width: 900px; }
   .aw-hrow, .aw-row { display: grid; grid-template-columns: var(--aw-cols); align-items: center; }
   .aw-table.receipts .aw-hrow, .aw-table.receipts .aw-row { grid-template-columns: var(--aw-rcols); }
   .aw-table.notproject .aw-hrow, .aw-table.notproject .aw-row { grid-template-columns: var(--aw-ncols); }
@@ -175,8 +175,9 @@
   .aw-hint { margin: 10px 24px 0; font-size: 12px; color: var(--text-muted); }
   .aw-thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border);
               background: var(--bg-3); display: block; }
-  .aw-table.receipts .aw-row { height: 44px; }
-  .aw-table.receipts .aw-cell { height: 44px; }
+  .aw-table.receipts .aw-row { height: 56px; }
+  .aw-table.receipts .aw-cell { height: 56px; }
+  .aw-table.receipts .aw-thumb { width: 44px; height: 44px; }
   .aw-row.excluded .vendor { text-decoration: line-through; color: var(--text-muted); }
   .aw-row.excluded { color: var(--text-muted); }
 
@@ -358,6 +359,84 @@
 
   #aw-reason, #aw-backup { width: 460px; }
 
+  /* ── Phase 5: matches, candidate panel, duplicates ── */
+  .aw-count.yellow { padding: 1px 6px; border-radius: 10px; background: var(--aw-yellow-soft); color: var(--yellow); }
+  .aw-reviewchip { cursor: pointer; height: 26px; border-radius: 13px; }
+  .aw-reviewchip[hidden] { display: none; }
+  .aw-reviewchip:hover { background: var(--aw-accent-soft-2); }
+  .aw-table.receipts .aw-row[aria-selected="true"] { background: var(--aw-accent-soft-2); box-shadow: inset 3px 0 0 var(--accent); }
+  .aw-table.receipts .aw-row { cursor: pointer; }
+  .aw-match { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; max-width: 100%; min-width: 0; }
+  .aw-match .aw-chip { cursor: default; max-width: 100%; }
+  .aw-match .acts { display: flex; gap: 4px; }
+  .aw-table.unclaimed .aw-match, .aw-table.assigned .aw-match, .aw-table.needs_backup .aw-match { flex-direction: row; align-items: center; gap: 6px; }
+  .aw-match .aw-chip.strong { border-color: var(--green); color: var(--green); background: var(--aw-green-soft); }
+  .aw-flag.yellow.linky { cursor: pointer; border: 0; background: transparent; padding: 0; font: inherit; }
+  .aw-flag.yellow.linky:hover { text-decoration: underline; }
+  .aw-panel { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+  .aw-panel[hidden] { display: none; }
+  .aw-right.panel-open .aw-bhead, .aw-right.panel-open .aw-budget, .aw-right.panel-open .aw-bfoot { display: none; }
+  .aw-phead { padding: 14px 20px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+  .aw-phead .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .aw-phead h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .aw-phead .sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .aw-phead .aw-thumb { width: 44px; height: 44px; }
+  .aw-phead .facts { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .aw-phead input[type="search"] { width: 100%; }
+  .aw-plist2 { flex: 1 1 auto; overflow-y: auto; min-height: 0; padding: 6px 12px 20px; display: flex; flex-direction: column; gap: 6px; }
+  .aw-pgrp2 { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); padding: 8px 8px 2px; }
+  .aw-cand { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--border);
+             border-radius: 8px; background: var(--bg-2); cursor: pointer; }
+  .aw-cand:hover { background: color-mix(in srgb, var(--bg-3) 50%, var(--bg-2)); }
+  .aw-cand.picked { border-color: var(--accent); background: var(--aw-accent-soft); }
+  .aw-cand.strong { border-left: 3px solid var(--green); }
+  .aw-cand .main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .aw-cand .l1 { display: flex; align-items: center; gap: 8px; font-size: 13px; min-width: 0; }
+  .aw-cand .l1 .vendor { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .aw-cand .l1 .amt { font-weight: 600; margin-left: auto; white-space: nowrap; }
+  .aw-cand .l2 { font-size: 11px; color: var(--text-muted); display: flex; gap: 8px; flex-wrap: wrap; }
+  .aw-cand .conf { font-size: 12px; font-weight: 600; color: var(--aw-text-2); white-space: nowrap; }
+  .aw-cand .conf.strong { color: var(--green); }
+  .aw-cand .acts2 { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .aw-panel .aw-empty { margin: 14px 20px; }
+  .aw-pfoot { padding: 10px 20px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); flex-shrink: 0; }
+  /* Review matches */
+  #aw-review { width: 1040px; }
+  .aw-review { display: flex; flex-direction: column; max-height: calc(100vh - 48px - 64px - 68px); overflow-y: auto; }
+  .aw-rpair { display: grid; grid-template-columns: 48px minmax(0, 1.2fr) 24px minmax(0, 1.2fr) 150px 190px; gap: 12px; align-items: center;
+              padding: 10px 24px; border-bottom: 1px solid var(--aw-row-border); }
+  .aw-rpair.strong { box-shadow: inset 3px 0 0 var(--green); }
+  .aw-rpair .side { min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+  .aw-rpair .side .v { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .aw-rpair .side .m { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .aw-rpair .arrow { color: var(--text-muted); text-align: center; }
+  .aw-rpair .why { font-size: 11px; color: var(--text-muted); display: flex; flex-direction: column; gap: 2px; }
+  .aw-rpair .why .pct { font-size: 14px; font-weight: 600; color: var(--aw-text-2); }
+  .aw-rpair.strong .why .pct { color: var(--green); }
+  .aw-rpair .acts { display: flex; gap: 6px; justify-content: flex-end; }
+  .aw-rhead { padding: 8px 24px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); background: var(--bg); position: sticky; top: 0; }
+  /* Duplicates view */
+  .aw-table.duplicates { min-width: 920px; }
+  .aw-drow .vendor { flex: 0 1 auto; }
+  .aw-drow .sub { flex: 1 1 60px; }
+  .aw-dgrp { display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 12px; background: var(--bg); border-top: 1px solid var(--border); border-bottom: 1px solid var(--aw-row-border); font-size: 13px; }
+  .aw-dgrp .v { font-weight: 600; }
+  .aw-dgrp .k { font-size: 12px; color: var(--text-muted); }
+  .aw-dgrp .acts { margin-left: auto; display: flex; gap: 6px; }
+  .aw-drow { display: grid; grid-template-columns: 40px 76px minmax(170px, 1.1fr) 100px 64px 56px minmax(170px, 1fr) 250px; align-items: center; height: 40px;
+             border-bottom: 1px solid var(--aw-row-border); background: var(--bg-2); }
+  .aw-drow.keeper { background: var(--aw-green-soft); }
+  .aw-drow .aw-cell { height: 40px; }
+  .aw-drow .acts { display: flex; gap: 6px; justify-content: flex-end; }
+  .aw-badge { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 4px; background: var(--green); color: #fff; }
+  .aw-badge.extra { background: var(--bg-3); color: var(--aw-text-2); }
+  .aw-badge.red { background: var(--aw-red-soft); color: var(--red); }
+  .aw-dupcmp { display: flex; flex-direction: column; gap: 6px; }
+  .aw-dupcmp .r { display: grid; grid-template-columns: 70px 84px 1fr 100px 120px; gap: 10px; align-items: center; font-size: 13px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
+  .aw-dupcmp .r.keep { border-color: var(--green); background: var(--aw-green-soft); }
+  .aw-dupcmp .r.gone { border-color: color-mix(in srgb, var(--red) 40%, var(--border)); }
+  #aw-dupdel { width: 680px; }
+
   /* Row menu */
   .aw-menu { position: fixed; z-index: 70; min-width: 200px; padding: 4px; background: var(--bg-2); border: 1px solid var(--border);
              border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.18); display: none; }
@@ -418,6 +497,7 @@
           <button type="button" class="aw-view" data-view="assigned">Assigned <span class="aw-count" data-count="assigned">0</span></button>
           <button type="button" class="aw-view" data-view="needs_backup">Needs backup <span class="aw-count red" data-count="needs_backup">0</span></button>
           <button type="button" class="aw-view" data-view="receipts">Receipts <span class="aw-count" data-count="receipts">0</span></button>
+          <button type="button" class="aw-view" data-view="duplicates">Duplicates <span class="aw-count yellow" data-count="duplicates">0</span></button>
           <button type="button" class="aw-view" data-view="not_project">Not project <span class="aw-count" data-count="not_project">0</span></button>
           <button type="button" class="aw-view" data-view="sync">Sync</button>
         </nav>
@@ -431,6 +511,11 @@
           <label for="aw-to" class="vis-hidden">To date</label>
           <input id="aw-to" type="date" title="To date">
           <span class="spacer"></span>
+          {# Phase 5: every receipt↔charge suggestion waits here for a click —
+             the Review-matches dialog (Approve / Not a match / Approve all strong). #}
+          <button type="button" class="aw-chip info aw-reviewchip" id="aw-reviewchip" data-act="review-matches" hidden title="Suggested receipt matches — approve, or say not a match">
+            <span><span data-count="matches_to_review">0</span> matches to review</span>
+          </button>
           <span class="aw-summary num" id="aw-summary"></span>
         </div>
         <div class="aw-recent" id="aw-recent"></div>
@@ -455,7 +540,11 @@
     </section>
 
     <aside class="aw-right" aria-label="Budget lines">
-      <div class="aw-bhead">
+      {# Phase 5: the candidate panel takes the budget pane's place while a
+         receipt is selected (ranked charges) or Find backup is open on a
+         charge (ranked receipts). static/actuals-js/a04.js renders it. #}
+      <section class="aw-panel" id="aw-panel" aria-label="Match candidates" hidden></section>
+      <div class="aw-bhead" id="aw-bhead">
         <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
           <h2 id="aw-btitle">Working budget</h2>
           <span class="hint">Drop a charge on a line or a section header</span>
@@ -656,6 +745,48 @@
   </div>
 </dialog>
 
+{# ── Review matches (Phase 5) ── #}
+<dialog class="aw-dialog aw" id="aw-review" aria-labelledby="aw-review-title">
+  <form method="dialog">
+    <div class="aw-dhead">
+      <div><h2 id="aw-review-title">Review matches</h2><div class="sub" id="aw-review-sub">Receipts the engine paired with charges. Nothing links until you approve it.</div></div>
+      <button type="button" class="aw-close" data-close aria-label="Close"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg></button>
+    </div>
+    <div class="aw-dbody" style="gap:0;padding:0">
+      <div class="aw-review" id="aw-review-list"></div>
+    </div>
+    <div class="aw-dfoot">
+      <span class="note" id="aw-review-note">Strong = at least 85% with no close runner-up.</span>
+      <div class="acts">
+        <button type="button" class="aw-btn lg" data-close>Close</button>
+        <button type="button" class="aw-btn lg primary" id="aw-review-allstrong" data-act="approve-all-strong">Approve all strong</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+{# ── Delete the extra (Phase 5 duplicates) ── #}
+<dialog class="aw-dialog aw" id="aw-dupdel" aria-labelledby="aw-dupdel-title">
+  <form method="dialog">
+    <div class="aw-dhead">
+      <div><h2 id="aw-dupdel-title">Delete the extra charge</h2><div class="sub" id="aw-dupdel-sub"></div></div>
+      <button type="button" class="aw-close" data-close aria-label="Close"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg></button>
+    </div>
+    <div class="aw-dbody" style="gap:12px">
+      <div class="aw-dupcmp" id="aw-dupdel-rows"></div>
+      <div class="help" style="font-size:12px;color:var(--text-muted)" id="aw-dupdel-help"></div>
+      <div class="aw-err" id="aw-dupdel-err"></div>
+    </div>
+    <div class="aw-dfoot">
+      <span class="note">Undo is in the toast and the activity log.</span>
+      <div class="acts">
+        <button type="button" class="aw-btn lg" data-close>Cancel</button>
+        <button type="button" class="aw-btn lg danger" id="aw-dupdel-go">Delete the extra</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
 <script>
 window.__AJ = window.__AJ || {};
 __AJ.pid = {{ project.id }};
@@ -678,4 +809,5 @@ __AJ.urls = {
 <script src="{{ url_for('static', filename='actuals-js/a01.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="{{ url_for('static', filename='actuals-js/a02.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="{{ url_for('static', filename='actuals-js/a03.js') }}?v={{ APP_COMMIT }}"></script>
+<script src="{{ url_for('static', filename='actuals-js/a04.js') }}?v={{ APP_COMMIT }}"></script>
 {% endblock %}

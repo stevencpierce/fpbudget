@@ -772,3 +772,72 @@ def admin_transactions_page():
     return render_template("admin_transactions.html", rows=rows, total=total,
                            filters=p, projects=projects, syncing=syncing,
                            net=net, cards=cards)
+
+
+# ═══ Phase 5 — Reconcile with QuickBooks (Maintenance tool, 2026-11-03) ═══
+
+@app.route("/admin/qbo-reconcile-deletions", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_qbo_reconcile_deletions():
+    """Maintenance → "Reconcile with QuickBooks". For one project
+    (?project=<pid>) or every active project with QuickBooks accounts
+    (?project=all), re-fetch by id the QuickBooks records FPBudget holds
+    from the last 120 days (?days=) and report the ones QuickBooks no
+    longer returns — voided or deleted after import. Dry run by default;
+    ?apply=1 applies THE deletion rule (qbo_sync.apply_qbo_deletions /
+    actuals.qbo_deletion_action): uncoded + no receipt → deleted (logged,
+    undoable); coded or with a receipt → kept, excluded, flagged
+    'Voided in QuickBooks'. Fail-open: an API error on one project is
+    reported, the others still run."""
+    from models import QBOConnection
+    from qbo_sync import reconcile_qbo_deletions
+    import json as _json
+    conn = QBOConnection.query.first()
+    if not conn or not conn.refresh_token:
+        return jsonify({"error": "QuickBooks not connected. Connect it on the Admin hub first.",
+                        "needs_oauth": True}), 400
+    apply = (request.args.get('apply') == '1')
+    scope = (request.args.get('project') or request.args.get('pid') or 'all').strip()
+    try:
+        days = max(7, min(400, int(request.args.get('days') or 120)))
+    except (TypeError, ValueError):
+        days = 120
+    if scope in ('', 'all'):
+        projects = [p for p in ProjectSheet.query.filter(ProjectSheet.status == 'active').all()
+                    if _json.loads(p.qbo_account_ids or '[]')]
+    else:
+        try:
+            p = ProjectSheet.query.get(int(scope))
+        except (TypeError, ValueError):
+            p = None
+        if p is None:
+            return jsonify({"error": f"project {scope} not found"}), 404
+        projects = [p]
+    report, errors = [], []
+    for p in projects:
+        try:
+            report.append(reconcile_qbo_deletions(p, conn, db, days=days, apply=apply))
+        except Exception as e:
+            db.session.rollback()
+            logging.warning(f"[qbo-reconcile] project {p.id} failed: {e}")
+            errors.append({"project_id": p.id, "project": p.name, "error": str(e)[:300]})
+    n_missing = sum(len(r["missing"]) for r in report)
+    n_deleted = sum(len((r.get("applied") or {}).get("deleted") or []) for r in report)
+    n_voided = sum(len((r.get("applied") or {}).get("voided") or []) for r in report)
+    if apply and (n_deleted or n_voided):
+        try:
+            _log_activity(action='update', entity_type='qbo_sync', entity_id=0,
+                          entity_label='Reconcile with QuickBooks',
+                          after={"deleted": n_deleted, "voided": n_voided, "days": days},
+                          note=f'Reconcile with QuickBooks: {n_deleted} removed, {n_voided} flagged voided '
+                               f'across {len(report)} project(s)')
+        except Exception:
+            pass
+    return jsonify({"ok": True, "dry": not apply, "days": days,
+                    "projects": len(report), "missing": n_missing,
+                    "deleted": n_deleted, "voided": n_voided,
+                    "report": report, "errors": errors,
+                    "note": ("Dry run — nothing changed. Apply removes uncoded rows with no receipt "
+                             "and flags the rest 'Voided in QuickBooks' (both undoable)." if not apply
+                             else "Applied.")})

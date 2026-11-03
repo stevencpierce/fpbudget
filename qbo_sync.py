@@ -494,32 +494,28 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
     return out
 
 
-def fetch_transactions_cdc(conn, db, account_ids, changed_since,
-                           skip_keys=None, account_meta=None):
-    """Fetch via QBO Change Data Capture (LastUpdatedTime). Catches
-    bank-feed items accepted into QBO long after their TxnDate.
+CDC_ENTITIES = ("Purchase", "Deposit", "BillPayment", "CreditCardCredit")
 
-    Returns (rows, server_time)."""
-    token     = get_valid_token(conn, db)
+
+def parse_cdc_payload(payload, account_ids, account_meta=None, skip_keys=None):
+    """Pure: read one QuickBooks ChangeDataCapture response. Returns
+    (rows, deleted, server_time) where rows are _extract_txn_fields dicts
+    for the selected accounts and `deleted` lists {"qbo_txn_id",
+    "qbo_txn_type"} for every entity QuickBooks reports with
+    status "Deleted" (a voided or deleted record comes back as a stub —
+    Id, status, MetaData — with no account, so it is read BEFORE the
+    account filter; Actuals Phase 5, 2026-11-03)."""
     skip_keys = skip_keys or set()
-    iso       = changed_since.strftime("%Y-%m-%dT%H:%M:%S")
-    resp      = requests.get(
-        f"{_qbo_base_url()}/{conn.realm_id}/cdc",
-        headers=_headers(token),
-        params={"entities": "Purchase,Deposit,BillPayment,CreditCardCredit",
-                "changedSince": iso},
-        timeout=60,
-    )
-    if resp.status_code != 200:
-        log.warning(f"[qbo] CDC failed: {resp.status_code} {resp.text[:200]}")
-        return [], None
-    payload     = resp.json()
-    server_time = _parse_qbo_timestamp(payload.get("time"))
-    out         = []
-    for response_block in payload.get("CDCResponse", []):
-        for query_resp in response_block.get("QueryResponse", []):
-            for entity in ("Purchase", "Deposit", "BillPayment", "CreditCardCredit"):
-                for txn in query_resp.get(entity, []):
+    account_ids = set(str(a) for a in (account_ids or ()))
+    rows, deleted = [], []
+    for response_block in (payload or {}).get("CDCResponse", []) or []:
+        for query_resp in response_block.get("QueryResponse", []) or []:
+            for entity in CDC_ENTITIES:
+                for txn in query_resp.get(entity, []) or []:
+                    if (txn.get("status") or '').lower() == 'deleted':
+                        if txn.get("Id"):
+                            deleted.append({"qbo_txn_id": str(txn["Id"]), "qbo_txn_type": entity})
+                        continue
                     if entity == "Deposit":
                         acct_ref = (txn.get("DepositToAccountRef") or {}).get("value")
                     elif entity == "BillPayment":
@@ -535,8 +531,183 @@ def fetch_transactions_cdc(conn, db, account_ids, changed_since,
                         continue
                     if (fields["qbo_txn_id"], fields["qbo_txn_type"]) in skip_keys:
                         continue
-                    out.append(fields)
-    return out, server_time
+                    rows.append(fields)
+    return rows, deleted, _parse_qbo_timestamp((payload or {}).get("time"))
+
+
+def fetch_transactions_cdc(conn, db, account_ids, changed_since,
+                           skip_keys=None, account_meta=None, deleted_out=None):
+    """Fetch via QBO Change Data Capture (LastUpdatedTime). Catches
+    bank-feed items accepted into QBO long after their TxnDate, and —
+    when the caller passes a `deleted_out` list — the records QuickBooks
+    deleted or voided since (parse_cdc_payload).
+
+    Returns (rows, server_time)."""
+    token     = get_valid_token(conn, db)
+    iso       = changed_since.strftime("%Y-%m-%dT%H:%M:%S")
+    resp      = requests.get(
+        f"{_qbo_base_url()}/{conn.realm_id}/cdc",
+        headers=_headers(token),
+        params={"entities": ",".join(CDC_ENTITIES),
+                "changedSince": iso},
+        timeout=60,
+    )
+    if resp.status_code != 200:
+        log.warning(f"[qbo] CDC failed: {resp.status_code} {resp.text[:200]}")
+        return [], None
+    rows, deleted, server_time = parse_cdc_payload(resp.json(), account_ids, account_meta, skip_keys)
+    if deleted_out is not None:
+        deleted_out.extend(deleted)
+    return rows, server_time
+
+
+def apply_qbo_deletions(db, project_id, deleted, source='sync'):
+    """Honour QuickBooks deletions / voids on this project's rows, keyed on
+    (qbo_txn_id, qbo_txn_type) — never on a per-project copy. ONE rule,
+    actuals.qbo_deletion_action: an uncoded row with no receipt is deleted
+    (with a full snapshot in the activity log, so Undo brings it back); a
+    row carrying coding or a receipt is KEPT, excluded as not-project with
+    no_charge_reason = 'voided in QuickBooks' and shown red under
+    Duplicates → Voided for the person to decide. Fail-open per row.
+    Commits. Returns {"deleted": [...ids], "voided": [...ids]}."""
+    from models import Transaction, TransactionSplit, ExpenseEvidence
+    from actuals import qbo_deletion_action, txn_snapshot, VOIDED_IN_QBO_REASON
+    try:
+        from app import _log_activity, _delete_evidence_for_txns
+    except Exception:            # pure-test context: no app
+        _log_activity = lambda **kw: None            # noqa: E731
+        _delete_evidence_for_txns = lambda ids: ExpenseEvidence.query.filter(   # noqa: E731
+            ExpenseEvidence.transaction_id.in_(ids)).delete(synchronize_session=False)
+    out = {"deleted": [], "voided": []}
+    for d in deleted or []:
+        qid, qtype = str(d.get("qbo_txn_id") or ''), d.get("qbo_txn_type")
+        if not qid or not qtype:
+            continue
+        rows = (Transaction.query
+                .filter(Transaction.qbo_txn_id == qid, Transaction.qbo_txn_type == qtype)
+                .filter(Transaction.project_id == project_id)
+                .all()) if project_id is not None else (Transaction.query
+                .filter(Transaction.qbo_txn_id == qid, Transaction.qbo_txn_type == qtype).all())
+        for t in rows:
+            try:
+                t.has_splits = TransactionSplit.query.filter_by(transaction_id=t.id).first() is not None
+                t.has_evidence = ExpenseEvidence.query.filter_by(transaction_id=t.id).first() is not None
+                if t.no_charge_reason == VOIDED_IN_QBO_REASON:
+                    continue                       # already handled
+                action = qbo_deletion_action(t)
+                label = (t.vendor or f'Txn #{t.id}')[:80]
+                amt = float(t.amount or 0)
+                if action == 'delete':
+                    snap = txn_snapshot(t)
+                    snap["splits"] = []
+                    Transaction.query.filter_by(parent_transaction_id=t.id).update(
+                        {"parent_transaction_id": None}, synchronize_session=False)
+                    Transaction.query.filter_by(backup_of_txn_id=t.id).update(
+                        {"backup_of_txn_id": None}, synchronize_session=False)
+                    _delete_evidence_for_txns([t.id])
+                    tid, pidx = t.id, t.project_id
+                    db.session.delete(t)
+                    db.session.flush()
+                    _log_activity(action='delete', entity_type='transaction', entity_id=tid,
+                                  entity_label=label, project_id=pidx, before=snap,
+                                  dollar_delta=-amt,
+                                  note=f'QuickBooks deleted {qtype} #{qid}: removed {label} '
+                                       f'${amt:,.2f} ({source})')
+                    out["deleted"].append(tid)
+                else:
+                    before = {"not_project_expense": bool(t.not_project_expense),
+                              "no_charge_reason": t.no_charge_reason,
+                              "excluded_reason": t.excluded_reason,
+                              "excluded_at": (t.excluded_at.isoformat() if t.excluded_at else None),
+                              "excluded_by_user_id": t.excluded_by_user_id}
+                    t.not_project_expense = True
+                    t.no_charge_reason = VOIDED_IN_QBO_REASON
+                    t.excluded_reason = 'Voided in QuickBooks'
+                    t.excluded_at = datetime.datetime.utcnow()
+                    t.updated_at = datetime.datetime.utcnow()
+                    db.session.flush()
+                    _log_activity(action='update', entity_type='transaction', entity_id=t.id,
+                                  entity_label=label, project_id=t.project_id, before=before,
+                                  after={"not_project_expense": True,
+                                         "no_charge_reason": VOIDED_IN_QBO_REASON},
+                                  note=f'QuickBooks voided {qtype} #{qid}: kept {label} '
+                                       f'${amt:,.2f} (it carries coding or a receipt) — review it under Duplicates')
+                    out["voided"].append(t.id)
+            except Exception as _de:
+                db.session.rollback()
+                log.warning(f"[qbo] deletion of {qtype} #{qid} not applied: {_de}")
+    try:
+        db.session.commit()
+    except Exception as _ce:
+        db.session.rollback()
+        log.warning(f"[qbo] apply_qbo_deletions commit failed: {_ce}")
+    return out
+
+
+def fetch_existing_ids(conn, db, entity, ids, chunk=40):
+    """Which of `ids` QuickBooks still returns for `entity` (a voided or
+    deleted record is not returned by a query). Chunked IN queries.
+    Raises on an API error — callers fail open."""
+    token = get_valid_token(conn, db)
+    found = set()
+    ids = [str(i) for i in ids if i]
+    for i in range(0, len(ids), chunk):
+        part = ids[i:i + chunk]
+        q = f"SELECT Id FROM {entity} WHERE Id IN ({', '.join(chr(39) + x + chr(39) for x in part)})"
+        resp = requests.get(f"{_qbo_base_url()}/{conn.realm_id}/query",
+                            headers=_headers(token), params={"query": q}, timeout=60)
+        if resp.status_code != 200:
+            raise RuntimeError(f"{entity} id query failed: {resp.status_code} {resp.text[:200]}")
+        for row in resp.json().get("QueryResponse", {}).get(entity, []) or []:
+            if row.get("Id"):
+                found.add(str(row["Id"]))
+    return found
+
+
+def reconcile_qbo_deletions(project_sheet, conn, db, days=120, apply=False):
+    """Maintenance → "Reconcile with QuickBooks": re-fetch by id every
+    QuickBooks record this project holds from the last `days` and report
+    the ones QuickBooks no longer returns. Dry run by default; apply=True
+    applies apply_qbo_deletions' rules. Fail-open on API errors (raises;
+    the route reports). Returns {"checked", "missing": [...], "applied"}."""
+    from models import Transaction
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    rows = (Transaction.query
+            .filter(Transaction.project_id == project_sheet.id,
+                    Transaction.qbo_txn_id.isnot(None),
+                    Transaction.qbo_txn_type.isnot(None),
+                    Transaction.txn_date >= cutoff)
+            .all())
+    by_type = {}
+    for t in rows:
+        by_type.setdefault(t.qbo_txn_type, {}).setdefault(str(t.qbo_txn_id), []).append(t)
+    from models import TransactionSplit, ExpenseEvidence
+    from actuals import qbo_deletion_action, VOIDED_IN_QBO_REASON
+    missing = []
+    for qtype, by_id in by_type.items():
+        if qtype not in CDC_ENTITIES:
+            continue
+        alive = fetch_existing_ids(conn, db, qtype, list(by_id))
+        for qid, ts in by_id.items():
+            if qid in alive:
+                continue
+            for t in ts:
+                t.has_splits = TransactionSplit.query.filter_by(transaction_id=t.id).first() is not None
+                t.has_evidence = ExpenseEvidence.query.filter_by(transaction_id=t.id).first() is not None
+                missing.append({"id": t.id, "qbo_txn_id": qid, "qbo_txn_type": qtype,
+                                "vendor": t.vendor, "amount": float(t.amount or 0),
+                                "date": t.txn_date, "coded": bool(t.budget_line_id or t.account_code),
+                                "receipt": bool(t.doc_upload_id),
+                                "already_voided": t.no_charge_reason == VOIDED_IN_QBO_REASON,
+                                "action": qbo_deletion_action(t)})
+    applied = None
+    if apply and missing:
+        applied = apply_qbo_deletions(db, project_sheet.id,
+                                      [{"qbo_txn_id": m["qbo_txn_id"], "qbo_txn_type": m["qbo_txn_type"]}
+                                       for m in missing], source='reconcile')
+    return {"project_id": project_sheet.id, "project": project_sheet.name,
+            "checked": len(rows), "since": cutoff, "missing": missing, "applied": applied}
 
 
 def _parse_qbo_timestamp(ts_str):
@@ -842,6 +1013,7 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
     # 6. CDC sweep — by LastUpdatedTime, catches late-accepted items.
     cdc_count       = 0
     cdc_server_time = None
+    cdc_deleted     = []      # QuickBooks deletions / voids (Phase 5)
     try:
         now_utc = dt.datetime.utcnow()
         if project_sheet.last_cdc_sync:
@@ -855,6 +1027,7 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
         cdc_rows, cdc_server_time = fetch_transactions_cdc(
             conn, db, account_ids, cdc_since,
             skip_keys=set(), account_meta=account_meta,
+            deleted_out=cdc_deleted,
         )
         for r in cdc_rows:
             key = (r["qbo_txn_id"], r["qbo_txn_type"])
@@ -1038,6 +1211,19 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
         db.session.add(_new)
         imported += 1
 
+    # 7b. QuickBooks deletions / voids (Actuals Phase 5, 2026-11-03): the
+    # sync used to never remove anything, so a BillPayment voided after
+    # import stayed forever (Ryan Mauskopf's $4,500 twice, Nov 2). One
+    # rule, qbo_sync.apply_qbo_deletions; fail-open.
+    qbo_deleted, qbo_voided = [], []
+    if cdc_deleted:
+        try:
+            db.session.flush()
+            _dr = apply_qbo_deletions(db, project_sheet.id, cdc_deleted)
+            qbo_deleted, qbo_voided = _dr["deleted"], _dr["voided"]
+        except Exception as _de:
+            log.warning(f"[qbo {project_sheet.name}] deletions not applied (non-fatal): {_de}")
+
     # 8. Watermark advance.
     project_sheet.last_synced  = datetime.datetime.utcnow()
     project_sheet.sync_through = safe_end
@@ -1080,6 +1266,8 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
         "reconciled":      reconciled,    # merged into existing doc Transactions
         "cdc_additions":   cdc_count,
         "attributed":      attributed,    # rows given a payee from EntityRef
+        "qbo_deleted":     len(qbo_deleted),   # rows removed because QuickBooks deleted them
+        "qbo_voided":      len(qbo_voided),    # rows kept + flagged "Voided in QuickBooks"
         "sync_through":    safe_end,
         "effective_start": effective_start,
         "effective_end":   safe_end,

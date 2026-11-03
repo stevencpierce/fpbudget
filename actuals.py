@@ -443,33 +443,7 @@ def amount_edit_allowed(txn, new_amount, split_amounts):
     return True, None
 
 
-def is_duplicate_twin(candidate, other):
-    """True when `other` is an existing twin of `candidate` — same |amount|,
-    same date, same vendor (or same card), and a different id. Deleting a
-    'duplicate' bank row is only allowed when such a twin survives; without
-    one the charge would simply vanish from the ledger."""
-    if other is None or candidate is None:
-        return False
-    if getattr(other, 'id', None) == getattr(candidate, 'id', None):
-        return False
-    try:
-        if _cents(getattr(candidate, 'amount', None)) == 0:
-            return False
-        if abs(_cents(getattr(candidate, 'amount', None))) != abs(_cents(getattr(other, 'amount', None))):
-            return False
-    except ValueError:
-        return False
-    if (getattr(candidate, 'txn_date', None) or '')[:10] != (getattr(other, 'txn_date', None) or '')[:10]:
-        return False
-    v1 = _re.sub(r'[^a-z0-9]', '', (getattr(candidate, 'vendor', None) or '').lower())
-    v2 = _re.sub(r'[^a-z0-9]', '', (getattr(other, 'vendor', None) or '').lower())
-    c1 = (getattr(candidate, 'card_last4', None) or '').strip()
-    c2 = (getattr(other, 'card_last4', None) or '').strip()
-    if v1 and v1 == v2:
-        return True
-    if c1 and c1 == c2:
-        return True
-    return False
+# is_duplicate_twin lives in the Phase 5 duplicates section below (one rule).
 
 
 def review_resolve_allowed(action, txn, flag_txn_ids):
@@ -793,6 +767,7 @@ def compute_row_flags(row, *, today=None, date_far_days=7):
       no_line        — not assigned and not split and not excluded
       needs_backup   — assigned (or split) with no evidence and no reason
       split_mismatch — splits exist but do not sum to the amount
+      voided_in_qbo  — QuickBooks voided / deleted the record (Phase 5)
     Yellow:
       possible_duplicate — a suspected duplicate was flagged
       amount_mismatch    — matched receipt amount differs from the charge
@@ -828,6 +803,11 @@ def compute_row_flags(row, *, today=None, date_far_days=7):
             red.append('needs_backup')
     if g('possible_duplicate', False):
         yellow.append('possible_duplicate')
+    # Phase 5: QuickBooks voided / deleted the record after we imported it;
+    # the row was kept because it carried coding or a receipt. Red even
+    # while excluded — the person decides what happens to the work on it.
+    if g('voided', False):
+        red.append('voided_in_qbo')
     ra, ca = g('receipt_amount'), g('amount')
     if ra is not None and ca is not None:
         try:
@@ -2077,260 +2057,15 @@ def ensure_doc_txns(project_id):
 
 
 def run_auto_match(project_id):
-    """Find candidate doc-upload ↔ qbo-sync pairings within a project.
-
-    Pairs an unmatched QBO Transaction with a DocUpload Transaction
-    when:
-      • amount within ±$0.01
-      • txn_date within ±3 days
-      • vendor similarity >= 0.45
-
-    Writes match_status='suggested' + match_confidence + sets
-    qbo_txn.doc_upload_id (TENTATIVELY — user confirms via the row's
-    Confirm button to make it stick; Override clears it).
-
-    Doesn't actually merge rows. The merge happens on confirm:
-      1. The qbo_sync Transaction keeps its identity (it's the row of
-         record from the bank).
-      2. Its doc_upload_id is now permanent.
-      3. The doc_upload Transaction (the receipt's auto-created row)
-         is deleted, since the QBO txn is now the canonical record.
-
-    Returns summary dict.
-    """
-    import datetime as _dt
-    # Every receipt must exist as a matchable row first — see
-    # ensure_doc_txns (2026-10-07). Fail-open: matching still runs on
-    # whatever rows exist.
-    try:
-        ensure_doc_txns(project_id)
-    except Exception as _ee:
-        log.warning(f"[automatch] ensure_doc_txns failed: {_ee}")
-    # Electronic bank-feed rows that want a receipt: QBO pulls AND bank/
-    # credit-card CSV imports. (Previously qbo_sync only, so CSV-imported
-    # charges never got matched to receipts — user 2026-06-02.)
-    qbo_unmatched = (Transaction.query
-                     .filter(Transaction.project_id == project_id,
-                             Transaction.source.in_(('qbo_sync', 'csv_import')),
-                             Transaction.match_status == 'unmatched',
-                             Transaction.doc_upload_id.is_(None),
-                             Transaction.not_project_expense == False)
-                     .all())
-    doc_open = (Transaction.query
-                .filter_by(project_id=project_id, source='doc_upload',
-                           not_project_expense=False)
-                .all())
-    # Never match against receipts flagged as duplicates (pending review still
-    # has a txn; confirmed ones are moved to /_DUPLICATES/). They stay out of
-    # every list until "Keep" pulls them back. (User 2026-06-02.)
-    _dup_doc_ids = {r[0] for r in db.session.query(DocUpload.id)
-                    .filter(DocUpload.project_id == project_id,
-                            db.or_(DocUpload.is_duplicate == True,        # noqa: E712
-                                   DocUpload.status == 'duplicate',
-                                   DocUpload.status == 'deleted')).all()}   # Trash (2026-06-11)
-    if _dup_doc_ids:
-        doc_open = [t for t in doc_open if t.doc_upload_id not in _dup_doc_ids]
-    # Only receipts/invoices are valid spend proof — restrict the receipt pool
-    # to them so estimates/employee-docs/etc. never get matched. (User 2026-06-02.)
-    _proof_doc_ids = {r[0] for r in db.session.query(DocUpload.id)
-                      .filter(DocUpload.project_id == project_id,
-                              DocUpload.category.in_(('receipt', 'invoice'))).all()}
-    doc_open = [t for t in doc_open if t.doc_upload_id in _proof_doc_ids]
-
-    # Receipts already linked to an electronic txn (suggested OR confirmed)
-    # are spoken for — never re-suggest one to a second charge.
-    taken_docs = {t.doc_upload_id for t in Transaction.query.filter(
-        Transaction.project_id == project_id,
-        Transaction.source.in_(('qbo_sync', 'csv_import')),
-        Transaction.doc_upload_id.isnot(None)).all() if t.doc_upload_id}
-
-    # User-rejected pairs ("Not a match") — never propose these again.
-    rejected_pairs = {(r.transaction_id, r.doc_upload_id) for r in
-                      MatchRejection.query.filter_by(project_id=project_id).all()}
-
-    # Pre-parse dates once.
-    q_rows = []
-    for q in qbo_unmatched:
-        if q.amount is None or not q.txn_date:
-            continue
-        try:
-            q_rows.append((q, _dt.date.fromisoformat(q.txn_date[:10])))
-        except (TypeError, ValueError):
-            continue
-    d_rows = []
-    for d in doc_open:
-        if d.amount is None or not d.txn_date:
-            continue
-        try:
-            d_rows.append((d, _dt.date.fromisoformat(d.txn_date[:10])))
-        except (TypeError, ValueError):
-            continue
-
-    suggestions = 0
-    inspected = 0
-
-    def _pass(accept, label):
-        """One matching sweep. `accept(vendor_score, day_gap)` decides
-        eligibility; amount is always gated exact. Strong (vendor-similar)
-        pass runs first so it claims receipts before the looser pass."""
-        nonlocal suggestions, inspected
-        for q, q_dt in q_rows:
-            if q.match_status == 'suggested':     # already matched in pass 1
-                continue
-            best, best_score = None, 0.0
-            for d, d_dt in d_rows:
-                inspected += 1
-                if d.doc_upload_id in taken_docs:
-                    continue
-                if (q.id, d.doc_upload_id) in rejected_pairs:
-                    continue
-                # Gate on MAGNITUDE so refunds match: a refund receipt is stored
-                # negative while its bank credit is the same dollars, opposite
-                # sign. (User 2026-06-17.)
-                if abs(abs(float(d.amount)) - abs(float(q.amount))) > 0.01:
-                    continue
-                day_gap = abs((d_dt - q_dt).days)
-                vendor_score = _vendor_similarity(q.vendor, d.vendor)
-                if not accept(vendor_score, day_gap):
-                    continue
-                date_score = max(0.0, 1.0 - (day_gap / 10.0))
-                # vendor_score still feeds the score, so vendor-less (Tier-2)
-                # matches rank below real name matches in the review list.
-                score = (1.0 + date_score + vendor_score) / 3.0
-                # Prefer a same-sign pair when both exist (a normal expense),
-                # but still allow the opposite-sign refund pairing to win when
-                # it's the only magnitude match.
-                if (float(d.amount) < 0) != (float(q.amount) < 0):
-                    score *= 0.9
-                if score > best_score:
-                    best_score, best = score, d
-            if best:
-                q.doc_upload_id    = best.doc_upload_id
-                q.match_status     = 'suggested'
-                q.match_confidence = round(best_score, 3)
-                q.updated_at       = datetime.utcnow()
-                taken_docs.add(best.doc_upload_id)
-                suggestions += 1
-                log.info(f"[actuals automatch:{label}] txn #{q.id} "
-                         f"({q.vendor!r}, ${q.amount}) → doc upload "
-                         f"#{best.doc_upload_id}, score={best_score:.3f}")
-
-    # Pass 1 — strong: vendor-similar AND within 3 days.
-    _pass(lambda v, g: v >= 0.45 and g <= 3, "strong")
-    # Pass 2 — exact amount + within 5 days, vendor optional. Amount+date is a
-    # solid signal for bank descriptors that don't resemble the receipt's
-    # vendor name (e.g. "SQ *CASA VIDEO"); surfaced as a suggestion to confirm.
-    # (User 2026-06-02.)
-    _pass(lambda v, g: g <= 5, "amt+date")
-    # Pass 2b — exact amount + SAME VENDOR, WIDE date window (≤60d). Travel and
-    # subscriptions post weeks after the receipt date (book a flight 7/1, charged
-    # 7/26), so a same-vendor exact-amount pair shouldn't be rejected just for a
-    # date gap. The vendor gate keeps coincidental same-amounts apart ($20 SaaS
-    # vs $20 FedEx). (User 2026-06-11 — "same amount, similar name, dates just
-    # differ".)
-    _pass(lambda v, g: v >= 0.50 and g <= 60, "amt+vendor-widedate")
-
-    # Pass 2c — UNIQUE exact amount, vendor-FREE, wide window (≤45d). The
-    # invoice-paid-on-terms class (owner 2026-10-30: "receipts and
-    # electronic transactions not finding each other"): an invoice dated
-    # the 1st, paid by ACH on the 20th, under a bank descriptor that looks
-    # nothing like the document's vendor ("TAKEONE NETWORK" vs "Wrapbook").
-    # Pass 2 caps at 5 days and 2b needs a vendor match, so these never
-    # paired. When EXACTLY ONE open charge and EXACTLY ONE open receipt in
-    # the whole project carry the same cent-amount, the pairing is
-    # unambiguous — suggest it regardless of vendor wording.
-    def _pass_unique_amount():
-        nonlocal suggestions, inspected
-        from collections import Counter
-        _q_left = [(q, qd) for q, qd in q_rows if q.match_status != 'suggested']
-        _d_left = [(d, dd) for d, dd in d_rows if d.doc_upload_id not in taken_docs]
-        _qc = Counter(round(abs(float(q.amount)), 2) for q, _ in _q_left)
-        _dc = Counter(round(abs(float(d.amount)), 2) for d, _ in _d_left)
-        for q, q_dt in _q_left:
-            amt = round(abs(float(q.amount)), 2)
-            if _qc[amt] != 1 or _dc.get(amt, 0) != 1:
-                continue          # ambiguous — leave for the AI pass
-            d, d_dt = next(((d, dd) for d, dd in _d_left
-                            if round(abs(float(d.amount)), 2) == amt), (None, None))
-            if d is None or d.doc_upload_id in taken_docs:
-                continue
-            if (q.id, d.doc_upload_id) in rejected_pairs:
-                continue
-            day_gap = abs((d_dt - q_dt).days)
-            if day_gap > 45:
-                continue
-            inspected += 1
-            # 0.52–0.68 band: real suggestion, sorts below vendor-backed ones.
-            score = 0.52 + 0.16 * max(0.0, 1.0 - day_gap / 45.0)
-            q.doc_upload_id    = d.doc_upload_id
-            q.match_status     = 'suggested'
-            q.match_confidence = round(score, 3)
-            q.updated_at       = datetime.utcnow()
-            taken_docs.add(d.doc_upload_id)
-            suggestions += 1
-            log.info(f"[actuals automatch:unique-amt] txn #{q.id} "
-                     f"({q.vendor!r}, ${q.amount}) → doc #{d.doc_upload_id} "
-                     f"(gap {day_gap}d), score={score:.3f}")
-    _pass_unique_amount()
-
-    # Pass 3 — TIP-tolerant. A card charge routinely exceeds the receipt by a
-    # tip (restaurants, rideshare): receipt $40.00 → card $48.00. Passes 1-2
-    # gate amount to the exact penny and miss every one of these. Here the
-    # charge must be the SAME vendor, within +30% of and not below the receipt,
-    # and within 2 days. Lower confidence (amount isn't exact) so it sorts below
-    # exact matches and reads as "eyeball me". (User 2026-06-11.)
-    def _pass_tip():
-        nonlocal suggestions, inspected
-        for q, q_dt in q_rows:
-            if q.match_status == 'suggested':
-                continue
-            best, best_score = None, 0.0
-            for d, d_dt in d_rows:
-                if d.doc_upload_id in taken_docs:
-                    continue
-                if (q.id, d.doc_upload_id) in rejected_pairs:
-                    continue
-                dv, qv = float(d.amount), float(q.amount)
-                if dv <= 0:
-                    continue
-                ratio = qv / dv
-                if ratio < 1.0 or ratio > 1.30:        # charge ≥ receipt, ≤ +30%
-                    continue
-                day_gap = abs((d_dt - q_dt).days)
-                if day_gap > 2:
-                    continue
-                inspected += 1
-                vendor_score = _vendor_similarity(q.vendor, d.vendor)
-                if vendor_score < 0.45:                 # same vendor required here
-                    continue
-                tip_close = max(0.0, 1.0 - (ratio - 1.0) / 0.30)   # 1.0 exact → 0 at +30%
-                # Confidence band ~0.45–0.62: clearly below exact matches.
-                score = 0.45 + 0.10 * vendor_score + 0.07 * tip_close
-                if score > best_score:
-                    best_score, best = score, d
-            if best:
-                q.doc_upload_id    = best.doc_upload_id
-                q.match_status     = 'suggested'
-                q.match_confidence = round(best_score, 3)
-                q.updated_at       = datetime.utcnow()
-                taken_docs.add(best.doc_upload_id)
-                suggestions += 1
-                log.info(f"[actuals automatch:tip] txn #{q.id} ({q.vendor!r}, "
-                         f"${q.amount}) → doc #{best.doc_upload_id} "
-                         f"(receipt ${best.amount}), score={best_score:.3f}")
-    _pass_tip()
-    db.session.commit()
-    log.info(
-        f"[actuals automatch] project #{project_id}: {suggestions} suggestions "
-        f"from {inspected} pair inspections ({len(qbo_unmatched)} unmatched "
-        f"QBO × {len(doc_open)} open docs)"
-    )
-    return {
-        'suggestions':     suggestions,
-        'inspected':       inspected,
-        'qbo_unmatched':   len(qbo_unmatched),
-        'doc_open':        len(doc_open),
-    }
+    """The auto-matcher every path calls after a sync, an upload or a
+    workspace load. Since Phase 5 (2026-11-03) it is a thin name over
+    refresh_match_suggestions — THE matching engine (score_match /
+    rank_candidates / suggest_pairs) — so the chip on a charge, the
+    candidate panel and the Review-matches dialog all agree. Writes
+    'suggested', never 'confirmed'. Returns the engine's counts
+    ({'suggestions', 'cleared', 'inspected', 'qbo_unmatched', 'doc_open',
+    'suggested', 'scanned'})."""
+    return refresh_match_suggestions(project_id)
 
 
 def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
@@ -2790,6 +2525,616 @@ def last_match_for_project(project_id):
             .order_by(Transaction.updated_at.desc().nullslast(),
                       Transaction.id.desc())
             .first())
+
+
+# ═══ Phase 5 — THE matching engine (ACTUALS_HANDOFF, 2026-11-03) ═══════════
+# ONE rule for "does this receipt belong to this charge", used by every path:
+# the auto-matcher after a sync or an upload, the candidate panel on the
+# Receipts view, Find backup on a charge, and the Review-matches dialog.
+# Pure scoring (score_match / rank_candidates / suggest_pairs) with the DB
+# wrappers (match_candidates / refresh_match_suggestions) underneath.
+#
+# Confidence = 0.5 × amount + 0.3 × date + 0.2 × vendor (+ 0.1 same card):
+#   amount  exact 1.0 · tip range (charge above the receipt by ≤ $5 or ≤ 20%)
+#           or within $5 either way 0.7 · else no candidate
+#   date    same day 1.0 · ±3 days 0.8 ("posted later") · ±7 days 0.5 · else 0
+#   vendor  vendor_match_key equal 1.0 · token overlap 0.6 · else 0.2
+# A pair is a SUGGESTION at ≥ 0.55. The top candidate is STRONG at ≥ 0.85
+# when the runner-up trails by ≥ 0.20 (two equal candidates → none strong).
+# Suggestions are written as match_status='suggested'; nothing here ever
+# writes 'confirmed' — a person clicks (Steven, Nov 3: "suggest, let me
+# review, click approve").
+
+MATCH_SUGGEST_MIN   = 0.55
+MATCH_STRONG_MIN    = 0.85
+MATCH_STRONG_GAP    = 0.20
+MATCH_LOOKBACK_DAYS = 400
+MATCH_TIP_DOLLARS   = 5.0
+MATCH_TIP_PCT       = 0.20
+VOIDED_IN_QBO_REASON = 'voided in QuickBooks'
+
+
+def _match_date(v):
+    """A date from a date, a datetime or a 'YYYY-MM-DD…' string; None otherwise."""
+    import datetime as _dt
+    if v is None or v == '':
+        return None
+    if isinstance(v, _dt.datetime):
+        return v.date()
+    if isinstance(v, _dt.date):
+        return v
+    try:
+        return datetime.strptime(str(v)[:10], '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return None
+
+
+def match_facts(obj):
+    """The four facts the engine scores on, read from a Transaction, a
+    DocUpload, a workspace row dict or a plain dict: amount, date (txn_date
+    / doc_date / date), vendor, card (card_last4 / card)."""
+    g = (obj.get if isinstance(obj, dict) else lambda k, d=None: getattr(obj, k, d))
+    amt = g('amount')
+    try:
+        amt = float(amt) if amt is not None else None
+    except (TypeError, ValueError):
+        amt = None
+    date = None
+    for k in ('txn_date', 'doc_date', 'date'):
+        date = _match_date(g(k))
+        if date:
+            break
+    card = (g('card_last4') or g('card') or '')
+    return {"amount": amt, "date": date, "vendor": (g('vendor') or ''),
+            "card": str(card).strip()}
+
+
+def _vendor_tokens(key):
+    return {t for t in (key or '').split() if len(t) >= 3}
+
+
+def vendor_score(a, b):
+    """1.0 same vendor_match_key · 0.6 share a word (or one contains the
+    other) · 0.2 otherwise (unknown vendors score 0.2 too, never 0)."""
+    ka, kb = vendor_match_key(a), vendor_match_key(b)
+    if not ka or not kb:
+        return 0.2, 'vendor unknown'
+    if ka == kb:
+        return 1.0, 'same vendor'
+    if ka in kb or kb in ka or (_vendor_tokens(ka) & _vendor_tokens(kb)):
+        return 0.6, 'vendor words overlap'
+    return 0.2, 'different vendor'
+
+
+def score_match(charge, receipt):
+    """Score one charge ↔ receipt pair. Pure. Returns None when the amounts
+    rule the pair out (or either amount is missing); else
+      {"confidence", "amount_score", "date_score", "vendor_score",
+       "card_bonus", "day_gap", "amount_delta", "reasons": [...]}"""
+    c, r = match_facts(charge), match_facts(receipt)
+    if c["amount"] is None or r["amount"] is None:
+        return None
+    ca, ra = abs(c["amount"]), abs(r["amount"])
+    if ca == 0 or ra == 0:
+        return None
+    reasons = []
+    delta = ca - ra
+    if abs(delta) <= 0.01:
+        a_s = 1.0
+        reasons.append('exact amount')
+    elif 0 < delta <= max(MATCH_TIP_DOLLARS, MATCH_TIP_PCT * ra):
+        a_s = 0.7
+        reasons.append('tip?')
+    elif abs(delta) <= MATCH_TIP_DOLLARS:
+        a_s = 0.7
+        reasons.append('within $5')
+    else:
+        return None
+    if (c["amount"] < 0) != (r["amount"] < 0):
+        reasons.append('refund?')
+    gap = None
+    if c["date"] and r["date"]:
+        gap = (c["date"] - r["date"]).days
+        ag = abs(gap)
+        if ag == 0:
+            d_s = 1.0
+            reasons.append('same day')
+        elif ag <= 3:
+            d_s = 0.8
+            reasons.append('posted later' if gap > 0 else 'posted earlier')
+        elif ag <= 7:
+            d_s = 0.5
+            reasons.append(f'{ag} days apart')
+        else:
+            d_s = 0.0
+            reasons.append(f'{ag} days apart')
+    else:
+        d_s = 0.0
+        reasons.append('no date')
+    v_s, v_why = vendor_score(c["vendor"], r["vendor"])
+    reasons.append(v_why)
+    bonus = 0.0
+    if c["card"] and r["card"] and c["card"] == r["card"]:
+        bonus = 0.1
+        reasons.append('same card')
+    conf = min(1.0, 0.5 * a_s + 0.3 * d_s + 0.2 * v_s + bonus)
+    return {"confidence": round(conf, 3), "amount_score": a_s, "date_score": d_s,
+            "vendor_score": v_s, "card_bonus": bonus, "day_gap": gap,
+            "amount_delta": round(delta, 2), "reasons": reasons}
+
+
+def rank_candidates(target, pool, *, key=None, rejected=frozenset(), limit=None):
+    """Every item of `pool` that is a suggestion for `target`, best first:
+    [{"item", "key", "strong", **score}]. `key(item)` identifies an item
+    for the rejected set (pairs the person already said are not a match).
+    Only the first entry can be strong (≥ MATCH_STRONG_MIN with a runner-up
+    gap ≥ MATCH_STRONG_GAP, or no runner-up at all). Pure."""
+    key = key or (lambda x: getattr(x, 'id', None) if not isinstance(x, dict) else x.get('id'))
+    out = []
+    for item in pool:
+        k = key(item)
+        if k in rejected:
+            continue
+        s = score_match(target, item) if not _is_receipt_like(target) else score_match(item, target)
+        if not s or s["confidence"] < MATCH_SUGGEST_MIN:
+            continue
+        out.append({"item": item, "key": k, "strong": False, **s})
+    out.sort(key=lambda x: (-x["confidence"], abs(x["amount_delta"]), abs(x["day_gap"] or 0)))
+    if out and out[0]["confidence"] >= MATCH_STRONG_MIN:
+        if len(out) == 1 or out[0]["confidence"] - out[1]["confidence"] >= MATCH_STRONG_GAP:
+            out[0]["strong"] = True
+    return out[:limit] if limit else out
+
+
+def _is_receipt_like(obj):
+    """A DocUpload / receipt row (has doc_date or a doc_id) as opposed to a
+    charge — only matters for which side of score_match it lands on
+    (the tip rule is directional: the charge may exceed the receipt)."""
+    g = (obj.get if isinstance(obj, dict) else lambda k, d=None: getattr(obj, k, d))
+    if g('doc_date', None) is not None or g('doc_id', None) is not None:
+        return True
+    if g('txn_date', None) is not None:
+        return False
+    return bool(g('is_receipt', False))
+
+
+def suggest_pairs(charges, receipts, *, rejected=frozenset(), charge_key=None, doc_key=None):
+    """Greedy one-to-one pairing of open charges with open receipts: every
+    scored pair ≥ MATCH_SUGGEST_MIN, best first, each side used once.
+    `rejected` holds (charge_key, doc_key) pairs. Returns
+    [(charge, receipt, score_with_strong)]. Pure; O(charges × receipts)."""
+    charge_key = charge_key or (lambda t: getattr(t, 'id', None))
+    doc_key = doc_key or (lambda d: getattr(d, 'id', None))
+    scored = []
+    per_charge = {}
+    for ch in charges:
+        ck = charge_key(ch)
+        ranked = rank_candidates(ch, receipts, key=doc_key,
+                                 rejected={dk for (cck, dk) in rejected if cck == ck})
+        per_charge[ck] = ranked
+        for r in ranked:
+            scored.append((r["confidence"], ck, r["key"], ch, r["item"], r))
+    scored.sort(key=lambda x: (-x[0], abs(x[5]["amount_delta"]), abs(x[5]["day_gap"] or 0)))
+    used_c, used_d, out = set(), set(), []
+    for conf, ck, dk, ch, doc, s in scored:
+        if ck in used_c or dk in used_d:
+            continue
+        used_c.add(ck); used_d.add(dk)
+        out.append((ch, doc, dict(s)))
+    return out
+
+
+# ── DB wrappers ───────────────────────────────────────────────────────────
+
+def _match_cutoff(days=MATCH_LOOKBACK_DAYS, today=None):
+    import datetime as _dt
+    return ((today or _dt.date.today()) - _dt.timedelta(days=days)).isoformat()
+
+
+def open_charges(project_id, days=MATCH_LOOKBACK_DAYS, include_suggested=True):
+    """Charges that want backup: electronic or hand-typed rows of this
+    project with no receipt linked (doc_upload_id NULL, no evidence row),
+    not excluded, not a backup / split child, dated within `days`. With
+    include_suggested the heuristic 'suggested' rows come back too (their
+    suggestion is recomputed); AI-made suggestions are left alone."""
+    from models import ExpenseEvidence as _EE
+    cutoff = _match_cutoff(days)
+    q = (Transaction.query
+         .filter(Transaction.project_id == project_id,
+                 Transaction.not_project_expense == False,            # noqa: E712
+                 Transaction.backup_of_txn_id.is_(None),
+                 db.or_(Transaction.source.is_(None),
+                        Transaction.source.notin_(('doc_upload', 'invoice_split'))),
+                 db.or_(Transaction.txn_date.is_(None), Transaction.txn_date >= cutoff)))
+    rows = q.all()
+    with_evidence = {r[0] for r in db.session.query(_EE.transaction_id)
+                     .filter(_EE.transaction_id.in_([t.id for t in rows] or [-1])).all()}
+    out = []
+    for t in rows:
+        if t.id in with_evidence:
+            continue
+        if t.doc_upload_id:
+            if not include_suggested or t.match_status != 'suggested' or (t.match_source or '') == 'ai':
+                continue
+        if (t.match_status or '') == 'confirmed' and t.doc_upload_id:
+            continue
+        out.append(t)
+    return out
+
+
+def open_receipts(project_id, days=MATCH_LOOKBACK_DAYS):
+    """Receipts / invoices in the inbox: not a duplicate, not trashed, with
+    an amount, not linked to any charge (no bank row points at them, no
+    evidence row), not turned into an expense (activated) and not excluded.
+    Dated within `days` (undated ones stay — they just score 0 on date)."""
+    from models import ExpenseEvidence as _EE
+    import datetime as _dt
+    cutoff = _dt.date.today() - _dt.timedelta(days=days)
+    docs = (DocUpload.query
+            .filter(DocUpload.project_id == project_id,
+                    DocUpload.category.in_(('receipt', 'invoice')),
+                    DocUpload.amount.isnot(None),
+                    DocUpload.is_duplicate == False,                # noqa: E712
+                    db.or_(DocUpload.status.is_(None),
+                           DocUpload.status.notin_(('duplicate', 'deleted', 'error'))))
+            .all())
+    if not docs:
+        return []
+    ids = [d.id for d in docs]
+    linked = {r[0] for r in db.session.query(Transaction.doc_upload_id)
+              .filter(Transaction.doc_upload_id.in_(ids),
+                      Transaction.source != 'doc_upload',
+                      db.or_(Transaction.match_status == 'confirmed',
+                             Transaction.match_source == 'ai')).all()}
+    linked |= {r[0] for r in db.session.query(_EE.doc_upload_id)
+               .filter(_EE.doc_upload_id.in_(ids)).all()}
+    own = {}
+    for t in Transaction.query.filter(Transaction.doc_upload_id.in_(ids),
+                                      Transaction.source == 'doc_upload').all():
+        own.setdefault(t.doc_upload_id, t)
+    out = []
+    for d in docs:
+        if d.id in linked:
+            continue
+        o = own.get(d.id)
+        if o is not None and (o.activated_at is not None or o.not_project_expense):
+            continue
+        if d.doc_date and d.doc_date < cutoff:
+            continue
+        out.append(d)
+    return out
+
+
+def _rejected_pairs(project_id):
+    return {(r.transaction_id, r.doc_upload_id) for r in
+            MatchRejection.query.filter_by(project_id=project_id).all()}
+
+
+def match_candidates(project_id, txn=None, doc=None, limit=8, days=MATCH_LOOKBACK_DAYS):
+    """THE candidate list for one side. txn → ranked open receipts (incl.
+    unfiled inbox ones); doc → ranked open charges. Each entry is
+    rank_candidates' shape ({"item", "key", "strong", "confidence",
+    "reasons", ...}). Read-only."""
+    rejected = _rejected_pairs(project_id)
+    if txn is not None:
+        pool = open_receipts(project_id, days)
+        return rank_candidates(txn, pool, key=lambda d: d.id,
+                               rejected={dk for (tk, dk) in rejected if tk == txn.id},
+                               limit=limit)
+    if doc is not None:
+        pool = open_charges(project_id, days)
+        return rank_candidates(doc, pool, key=lambda t: t.id,
+                               rejected={tk for (tk, dk) in rejected if dk == doc.id},
+                               limit=limit)
+    return []
+
+
+def refresh_match_suggestions(project_id, days=MATCH_LOOKBACK_DAYS):
+    """Recompute every heuristic receipt↔charge suggestion in a project
+    (bounded to the last `days`): every unmatched receipt against every
+    charge without backup, greedy best-first, one receipt per charge.
+    Writes match_status='suggested' + match_confidence + doc_upload_id +
+    match_source='heuristic' on the charge — NEVER 'confirmed'. Stale
+    heuristic suggestions that no longer rank are cleared; AI-made and
+    confirmed links are untouched. Commits. Returns counts."""
+    try:
+        ensure_doc_txns(project_id)
+    except Exception as _ee:
+        log.warning(f"[match] ensure_doc_txns failed: {_ee}")
+    charges = open_charges(project_id, days, include_suggested=True)
+    receipts = open_receipts(project_id, days)
+    rejected = _rejected_pairs(project_id)
+    pairs = suggest_pairs(charges, receipts, rejected=rejected,
+                          charge_key=lambda t: t.id, doc_key=lambda d: d.id)
+    now = datetime.utcnow()
+    paired = {}
+    for ch, doc, s in pairs:
+        paired[ch.id] = (doc.id, s["confidence"])
+    written = cleared = 0
+    for t in charges:
+        hit = paired.get(t.id)
+        if hit:
+            doc_id, conf = hit
+            if (t.doc_upload_id != doc_id or t.match_status != 'suggested'
+                    or float(t.match_confidence or 0) != conf):
+                t.doc_upload_id = doc_id
+                t.match_status = 'suggested'
+                t.match_confidence = conf
+                t.match_source = 'heuristic'
+                t.updated_at = now
+            written += 1
+        elif t.doc_upload_id and t.match_status == 'suggested' and (t.match_source or '') != 'ai':
+            t.doc_upload_id = None
+            t.match_status = 'unmatched'
+            t.match_confidence = None
+            t.match_source = None
+            t.updated_at = now
+            cleared += 1
+    db.session.commit()
+    log.info(f"[match] project #{project_id}: {written} suggestions "
+             f"({cleared} stale cleared) from {len(charges)} charges × {len(receipts)} receipts")
+    return {'suggestions': written, 'cleared': cleared,
+            'inspected': len(charges) * len(receipts),
+            'qbo_unmatched': len(charges), 'doc_open': len(receipts),
+            'suggested': written, 'scanned': len(charges)}
+
+
+# ═══ Phase 5 — duplicates: one rule for "these two charges are one event" ══
+
+DUP_WINDOW_QBO_DAYS = 3
+
+
+def duplicate_day_window(a, b):
+    """3 days when both rows are QuickBooks records (the same event can post
+    twice a day apart — Ryan Mauskopf's two BillPayments, Oct 19 / Oct 20),
+    0 days (same day only) for CSV / manual rows."""
+    if getattr(a, 'qbo_txn_id', None) and getattr(b, 'qbo_txn_id', None):
+        return DUP_WINDOW_QBO_DAYS
+    return 0
+
+
+def is_duplicate_twin(candidate, other, day_window=None):
+    """True when `other` is an existing twin of `candidate` — same |amount|,
+    dates within `day_window` (default duplicate_day_window: 3 days for two
+    QuickBooks rows, same day otherwise), same vendor (vendor_match_key) or
+    same card, a different id and a DIFFERENT QuickBooks id (the same id in
+    two projects is a sibling, not a duplicate). Deleting a 'duplicate' bank
+    row is only allowed when such a twin survives; without one the charge
+    would simply vanish from the ledger."""
+    if other is None or candidate is None:
+        return False
+    if getattr(other, 'id', None) == getattr(candidate, 'id', None):
+        return False
+    try:
+        if _cents(getattr(candidate, 'amount', None)) == 0:
+            return False
+        if abs(_cents(getattr(candidate, 'amount', None))) != abs(_cents(getattr(other, 'amount', None))):
+            return False
+    except ValueError:
+        return False
+    q1, q2 = getattr(candidate, 'qbo_txn_id', None), getattr(other, 'qbo_txn_id', None)
+    if q1 and q2 and str(q1) == str(q2):
+        return False
+    if day_window is None:
+        day_window = duplicate_day_window(candidate, other)
+    d1 = _match_date(getattr(candidate, 'txn_date', None))
+    d2 = _match_date(getattr(other, 'txn_date', None))
+    if d1 is None or d2 is None:
+        if (getattr(candidate, 'txn_date', None) or '')[:10] != (getattr(other, 'txn_date', None) or '')[:10]:
+            return False
+    elif abs((d1 - d2).days) > day_window:
+        return False
+    v1 = vendor_match_key(getattr(candidate, 'vendor', None))
+    v2 = vendor_match_key(getattr(other, 'vendor', None))
+    c1 = (getattr(candidate, 'card_last4', None) or '').strip()
+    c2 = (getattr(other, 'card_last4', None) or '').strip()
+    if v1 and v1 == v2:
+        return True
+    if c1 and c1 == c2:
+        return True
+    return False
+
+
+def dup_group_key(members):
+    """Stable key for a duplicate group: the sorted member ids. Remembered
+    in transaction_dup_dismissal when the person says Keep both."""
+    return 'dup:' + '-'.join(str(i) for i in sorted(int(getattr(m, 'id')) for m in members))
+
+
+def txn_has_confirmed_receipt(t):
+    return bool(getattr(t, 'doc_upload_id', None)) and (getattr(t, 'match_status', None) == 'confirmed')
+
+
+def txn_is_coded(t):
+    return bool(getattr(t, 'budget_line_id', None) or getattr(t, 'has_splits', False)
+                or getattr(t, 'account_code', None))
+
+
+def pick_keeper(members):
+    """The row to KEEP from a duplicate group, in order: the one with a
+    receipt confirmed; the one coded to a line; the earlier date; the lower
+    id. Returns (keeper, reason). Pure."""
+    def _k(t):
+        return (0 if txn_has_confirmed_receipt(t) else 1,
+                0 if txn_is_coded(t) else 1,
+                (getattr(t, 'txn_date', None) or '9999-99-99')[:10],
+                int(getattr(t, 'id', 0) or 0))
+    keeper = min(members, key=_k)
+    if txn_has_confirmed_receipt(keeper):
+        reason = 'has the receipt'
+    elif txn_is_coded(keeper):
+        reason = 'coded to a line'
+    elif any((getattr(m, 'txn_date', None) or '')[:10] != (getattr(keeper, 'txn_date', None) or '')[:10]
+             for m in members):
+        reason = 'earlier date'
+    else:
+        reason = 'first imported'
+    return keeper, reason
+
+
+def find_duplicate_groups(rows, dismissed=()):
+    """Groups of pool rows that look like one event (is_duplicate_twin,
+    pairwise, union-find). Rows that are excluded, receipt-born, split
+    children or without an amount are ignored. Groups whose key is in
+    `dismissed` (Keep both) are dropped. Returns
+    [{"key", "members": [rows], "keeper": row, "keeper_reason"}], largest
+    amount first. Pure; O(n²) inside each |amount| bucket."""
+    pool = []
+    for t in rows:
+        if getattr(t, 'not_project_expense', False):
+            continue
+        if getattr(t, 'source', None) in ('doc_upload', 'invoice_split'):
+            continue
+        try:
+            if _cents(getattr(t, 'amount', None)) == 0:
+                continue
+        except ValueError:
+            continue
+        pool.append(t)
+    buckets = {}
+    for t in pool:
+        buckets.setdefault(abs(_cents(t.amount)), []).append(t)
+    parent, linked = {}, set()
+
+    def _find(i):
+        while parent.get(i, i) != i:
+            i = parent[i]
+        return i
+
+    def _union(a, b):
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[rb] = ra
+        linked.update((a, b))
+    for members in buckets.values():
+        if len(members) < 2:
+            continue
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                if is_duplicate_twin(members[i], members[j]):
+                    _union(members[i].id, members[j].id)
+    groups = {}
+    for t in pool:
+        if t.id in linked:
+            groups.setdefault(_find(t.id), []).append(t)
+    out = []
+    dismissed = set(dismissed or ())
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        key = dup_group_key(members)
+        if key in dismissed:
+            continue
+        keeper, why = pick_keeper(members)
+        members = sorted(members, key=lambda m: (m.id != keeper.id, (m.txn_date or ''), m.id))
+        out.append({"key": key, "members": members, "keeper": keeper, "keeper_reason": why})
+    out.sort(key=lambda g: (-abs(float(g["members"][0].amount or 0)), g["key"]))
+    return out
+
+
+def duplicate_delete_mode(extra):
+    """How 'Delete the extra' treats a row: 'delete' (hard delete — a
+    qbo_sync / csv_import row with no coding and no receipt) or 'merge'
+    (move its coding, splits, receipt and evidence onto the keeper first,
+    then delete). Pure."""
+    bare = (not txn_is_coded(extra) and not getattr(extra, 'doc_upload_id', None)
+            and not getattr(extra, 'has_evidence', False))
+    if bare and getattr(extra, 'source', None) in ('qbo_sync', 'csv_import'):
+        return 'delete'
+    return 'merge'
+
+
+MERGE_FIELDS = ('budget_line_id', 'account_code', 'account_code_name',
+                'doc_upload_id', 'match_status', 'match_confidence', 'match_source',
+                'no_charge_reason', 'payment_method', 'paid_by_crew_member_id',
+                'payee_id', 'payee_source', 'activated_at', 'card_last4', 'note')
+
+
+def merge_duplicate_into(keeper, extra, splits=(), evidence=()):
+    """Move everything the extra row carries onto the keeper before the
+    extra is deleted: coding (line / section) when the keeper has none,
+    the receipt link + match state when the keeper has none, the
+    missing-backup reason, payment method / payer / payee, the
+    activated stamp, the card and the note (appended), every
+    TransactionSplit and ExpenseEvidence row (re-pointed to the keeper).
+    Pure in the sense of CLAUDE.md: it sets attributes on the objects it is
+    given and touches no session. Returns {"moved": [field names],
+    "splits": n, "evidence": n}."""
+    moved = []
+    keeper_uncoded = (not getattr(keeper, 'budget_line_id', None)
+                      and not getattr(keeper, 'account_code', None)
+                      and not getattr(keeper, 'has_splits', False))
+    if keeper_uncoded:
+        for f in ('budget_line_id', 'account_code', 'account_code_name'):
+            if getattr(extra, f, None) and not getattr(keeper, f, None):
+                setattr(keeper, f, getattr(extra, f))
+                moved.append(f)
+    if getattr(extra, 'doc_upload_id', None) and not getattr(keeper, 'doc_upload_id', None):
+        keeper.doc_upload_id = extra.doc_upload_id
+        keeper.match_status = getattr(extra, 'match_status', None) or 'confirmed'
+        keeper.match_confidence = getattr(extra, 'match_confidence', None)
+        keeper.match_source = getattr(extra, 'match_source', None)
+        moved += ['doc_upload_id', 'match_status']
+    for f in ('no_charge_reason', 'payment_method', 'paid_by_crew_member_id',
+              'payee_id', 'payee_source', 'activated_at', 'card_last4'):
+        if getattr(extra, f, None) and not getattr(keeper, f, None):
+            setattr(keeper, f, getattr(extra, f))
+            moved.append(f)
+    xn = (getattr(extra, 'note', None) or '').strip()
+    kn = (getattr(keeper, 'note', None) or '').strip()
+    if xn and xn not in kn:
+        keeper.note = ((kn + ' | ' if kn else '') + xn)[:500]
+        moved.append('note')
+    n_s = 0
+    for sp in splits or ():
+        sp.transaction_id = keeper.id
+        n_s += 1
+    n_e = 0
+    for ev in evidence or ():
+        ev.transaction_id = keeper.id
+        n_e += 1
+    if n_s and getattr(keeper, 'budget_line_id', None) and 'budget_line_id' in moved:
+        # The extra's coding was its splits: a split parent has no line.
+        keeper.budget_line_id = None
+    return {"moved": moved, "splits": n_s, "evidence": n_e}
+
+
+TXN_SNAPSHOT_FIELDS = ('project_id', 'source', 'vendor', 'amount', 'is_expense', 'txn_date',
+                       'card_last4', 'note', 'account_code', 'account_code_name',
+                       'budget_line_id', 'doc_upload_id', 'match_status', 'match_confidence',
+                       'match_source', 'qbo_txn_id', 'qbo_txn_type', 'qbo_account_id',
+                       'qbo_category', 'qbo_entity_ref', 'not_project_expense',
+                       'no_charge_reason', 'payment_method', 'paid_by_crew_member_id',
+                       'payee_id', 'payee_source', 'claimed_by_project_id',
+                       'suggested_budget_line_id', 'suggested_account_code',
+                       'excluded_reason', 'excluded_by_user_id', 'parent_transaction_id',
+                       'backup_of_txn_id', 'split_group', 'activated_at', 'excluded_at')
+
+
+def txn_snapshot(t):
+    """Every column a deleted transaction needs to come back through Undo
+    (JSON-safe). Pure."""
+    import datetime as _dt
+    from decimal import Decimal as _D
+    out = {}
+    for f in TXN_SNAPSHOT_FIELDS:
+        v = getattr(t, f, None)
+        if isinstance(v, _D):
+            v = float(v)
+        elif isinstance(v, (_dt.datetime, _dt.date)):
+            v = v.isoformat()
+        out[f] = v
+    return out
+
+
+def qbo_deletion_action(txn):
+    """What a QuickBooks deletion / void does to the FPBudget row: 'delete'
+    when the row is uncoded with no receipt (nothing of the person's work
+    is on it), 'void' otherwise (keep it, excluded, flagged 'Voided in
+    QuickBooks', for them to decide). Pure."""
+    if txn_is_coded(txn) or getattr(txn, 'doc_upload_id', None) or getattr(txn, 'has_evidence', False):
+        return 'void'
+    return 'delete'
 
 
 THRESHOLD_FALLBACK_PRE_2026 = 600.0

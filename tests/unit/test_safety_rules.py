@@ -82,7 +82,10 @@ def test_amount_edit_rejects_non_numbers():
 # ── 7. Delete-duplicate needs a twin ─────────────────────────────────────
 def test_twin_requires_same_amount_date_and_vendor_or_card():
     a = _txn(id=1, amount=37.93, vendor="Lyft", txn_date="2026-10-01", card_last4="4821")
-    assert is_duplicate_twin(a, _txn(id=2, amount=37.93, vendor="LYFT *ride", txn_date="2026-10-01", card_last4=None)) is False
+    # Phase 5: the vendor side is vendor_match_key, so "LYFT *ride" IS Lyft;
+    # a different vendor on a different card is not a twin.
+    assert is_duplicate_twin(a, _txn(id=2, amount=37.93, vendor="Uber", txn_date="2026-10-01", card_last4=None)) is False
+    assert is_duplicate_twin(a, _txn(id=2, amount=37.93, vendor="LYFT *ride", txn_date="2026-10-01", card_last4=None)) is True
     assert is_duplicate_twin(a, _txn(id=2, amount=37.93, vendor="Lyft", txn_date="2026-10-01", card_last4=None)) is True
     assert is_duplicate_twin(a, _txn(id=2, amount=-37.93, vendor="Other", txn_date="2026-10-01", card_last4="4821")) is True
     assert is_duplicate_twin(a, _txn(id=2, amount=37.94, vendor="Lyft", txn_date="2026-10-01")) is False

@@ -458,6 +458,12 @@ def actuals_recover_not_project(pid, tid):
                                if txn.excluded_at else None),
                'excluded_by_user_id': txn.excluded_by_user_id,
                'excluded_reason': txn.excluded_reason}
+    # Phase 5: recovering a row QuickBooks voided means "keep it anyway" —
+    # the red Voided flag (carried by no_charge_reason) comes off with it.
+    from actuals import VOIDED_IN_QBO_REASON as _VOID
+    if getattr(txn, 'no_charge_reason', None) == _VOID:
+        _before['no_charge_reason'] = _VOID
+        txn.no_charge_reason = None
     txn.not_project_expense = False
     txn.excluded_at         = None
     txn.excluded_by_user_id = None
@@ -2050,7 +2056,7 @@ def actuals_workspace_page(pid):
     except (TypeError, ValueError):
         focus_txn = None
     view = (request.args.get('view') or '').strip().lower()
-    if view not in ('unclaimed', 'assigned', 'needs_backup', 'receipts', 'not_project', 'sync'):
+    if view not in ('unclaimed', 'assigned', 'needs_backup', 'receipts', 'duplicates', 'not_project', 'sync'):
         view = ''
     return render_template("actuals.html", project=project,
                            budget=_pick_budget,
@@ -2898,75 +2904,207 @@ def actuals_link_existing_doc(pid, tid):
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/receipt-candidates", methods=["GET"])
 @login_required
 def actuals_receipt_candidates(pid, tid):
-    """Ranked unlinked-receipt candidates for ONE transaction — powers the
-    per-row 'Find receipt' picker. Scores by amount (exact = strong signal),
-    vendor similarity, and date proximity; returns the top ~20 best-first so
-    the user clicks instead of dragging. Read-only. (User 2026-06-02.)"""
+    """Ranked inbox receipts for ONE charge — the "Find backup" panel
+    (Phase 5, 2026-11-03). ONE rule: actuals.match_candidates (score_match
+    on amount / date / vendor / card), top `limit` (default 8). ?q= adds a
+    plain search over every open receipt (vendor, amount, date, filename)
+    under `pool`, so a receipt the engine would not rank can still be
+    linked by hand. Read-only."""
     txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
-    from actuals import _vendor_similarity
-    import datetime as _dt
-    t_amt = float(txn.amount) if txn.amount is not None else None
+    from actuals import match_candidates, open_receipts, score_match
     try:
-        t_dt = _dt.date.fromisoformat((txn.txn_date or '')[:10])
+        limit = max(1, min(50, int(request.args.get('limit') or 8)))
     except (TypeError, ValueError):
-        t_dt = None
-    linked = {row[0] for row in db.session.query(Transaction.doc_upload_id)
-              .filter(Transaction.project_id == pid,
-                      Transaction.doc_upload_id.isnot(None)).all() if row[0]}
-    from sqlalchemy.orm import defer as _defer
-    docs = (DocUpload.query
-            .filter(DocUpload.project_id == pid, DocUpload.status != 'error')
-            .options(_defer(DocUpload.veryfi_data)).all())
-    _cents = lambda v: None if v is None else round((abs(v) - int(abs(v))) * 100)
-    t_cents = _cents(t_amt)
-    # Eligible: unlinked, NON-duplicate, and ONLY receipts/invoices — the only
-    # doc types that are proof of an actual spend. Estimates, employee docs,
-    # tax-credit docs, contracts, POs, etc. never participate in Actuals
-    # matching. (User 2026-06-02.)
-    elig = [d for d in docs if d.id not in linked
-            and not d.is_duplicate and d.status != 'duplicate'
-            and (d.category or '') in ('receipt', 'invoice')]
-    # Process-of-elimination: how many unlinked receipts share the charge's
-    # EXACT amount? If exactly one, that one is almost certainly it.
-    exact_pool = 0
-    if t_amt is not None:
-        exact_pool = sum(1 for d in elig
-                         if d.amount is not None and abs(float(d.amount) - t_amt) <= 0.01)
-    out = []
-    for d in elig:
-        d_amt = float(d.amount) if d.amount is not None else None
-        amt_exact = (t_amt is not None and d_amt is not None and abs(d_amt - t_amt) <= 0.01)
-        close = (not amt_exact and t_amt and d_amt is not None
-                 and abs(d_amt - t_amt) <= max(2.0, abs(t_amt) * 0.03))   # OCR misread / tip
-        cents_match = (not amt_exact and t_cents is not None
-                       and _cents(d_amt) == t_cents)                       # handwritten total: cents line up
-        gap = abs((d.doc_date - t_dt).days) if (t_dt and d.doc_date) else None
-        vscore = _vendor_similarity(txn.vendor, d.vendor)
-        only_exact = (amt_exact and exact_pool == 1)
-        score = 0.0
-        if amt_exact:
-            score += 0.5
-        elif close:
-            score += 0.28
-        elif cents_match:
-            score += 0.18        # weak alone, but a strong tiebreaker w/ date+vendor
-        score += 0.3 * vscore
-        if gap is not None:
-            score += 0.2 * max(0.0, 1.0 - gap / 14.0)
-        if only_exact:
-            score += 0.25        # only receipt at this exact amount → almost surely it
-        out.append({"doc_id": d.id, "vendor": d.vendor or '', "amount": d_amt,
-                    "doc_date": d.doc_date.isoformat() if d.doc_date else None,
-                    "filename": d.filed_filename or d.original_filename or f'Upload #{d.id}',
-                    "category": d.category or '',
-                    "is_image": bool(d.content_type and d.content_type.startswith('image/')),
-                    "amt_exact": amt_exact, "close": bool(close), "cents_match": bool(cents_match),
-                    "only_exact": only_exact, "day_gap": gap,
-                    "vendor_score": round(vscore, 2), "score": round(score, 3)})
-    out.sort(key=lambda x: -x["score"])
+        limit = 8
+    q = (request.args.get('q') or '').strip().lower()
+
+    def _brief(d, s=None):
+        return {"doc_id": d.id, "vendor": d.vendor or '', "amount": (float(d.amount) if d.amount is not None else None),
+                "date": d.doc_date.isoformat() if d.doc_date else None,
+                "name": (d.filed_filename or d.original_filename or f'Upload #{d.id}')[:120],
+                "category": d.category or '', "card_last4": d.card_last4,
+                "thumb": f"/docs/upload/{d.id}/thumb",
+                "is_image": bool(d.content_type and d.content_type.startswith('image/')),
+                "confidence": (s or {}).get("confidence"), "reasons": (s or {}).get("reasons") or [],
+                "strong": bool((s or {}).get("strong"))}
+    try:
+        ranked = match_candidates(pid, txn=txn, limit=limit)
+        cands = [_brief(c["item"], c) for c in ranked]
+        pool = []
+        if q:
+            for d in open_receipts(pid):
+                hay = ' '.join([d.vendor or '', (d.filed_filename or d.original_filename or ''),
+                                (d.doc_date.isoformat() if d.doc_date else ''),
+                                ('%.2f' % float(d.amount)) if d.amount is not None else '']).lower()
+                if q in hay:
+                    pool.append(_brief(d, score_match(txn, d)))
+            pool.sort(key=lambda r: (-(r["confidence"] or 0), r["date"] or ''), reverse=False)
+    except Exception as e:
+        logging.exception("[actuals] receipt-candidates failed")
+        return jsonify({"error": str(e)}), 500
     return jsonify({"ok": True,
-                    "txn": {"id": txn.id, "vendor": txn.vendor, "amount": t_amt, "date": txn.txn_date},
-                    "candidates": out[:20], "total_unlinked": len(out)})
+                    "txn": {"id": txn.id, "vendor": txn.vendor, "date": (txn.txn_date or '')[:10],
+                            "amount": (float(txn.amount) if txn.amount is not None else None),
+                            "card_last4": txn.card_last4},
+                    "candidates": cands, "pool": pool[:60]})
+
+
+@app.route("/projects/<int:pid>/actuals/doc/<int:did>/charge-candidates", methods=["GET"])
+@login_required
+def actuals_charge_candidates(pid, did):
+    """Ranked open charges for ONE inbox receipt — the candidate panel the
+    Receipts view opens when a receipt is selected (Phase 5, 2026-11-03).
+    Same engine as receipt-candidates, from the other side; ?q= searches
+    every unmatched charge (vendor / amount / date / last four) under
+    `pool`. Read-only."""
+    doc = DocUpload.query.filter_by(id=did, project_id=pid).first_or_404()
+    from actuals import match_candidates, open_charges, score_match, signed_amount_value
+    try:
+        limit = max(1, min(50, int(request.args.get('limit') or 8)))
+    except (TypeError, ValueError):
+        limit = 8
+    q = (request.args.get('q') or '').strip().lower()
+
+    def _brief(t, s=None):
+        return {"id": t.id, "vendor": t.vendor or '—', "date": (t.txn_date or '')[:10],
+                "amount": signed_amount_value(t.amount, t.is_expense),
+                "card_last4": t.card_last4, "source": t.source,
+                "qbo_txn_type": t.qbo_txn_type,
+                "assigned": bool(t.budget_line_id or t.account_code or getattr(t, 'has_splits', False)),
+                "confidence": (s or {}).get("confidence"), "reasons": (s or {}).get("reasons") or [],
+                "strong": bool((s or {}).get("strong"))}
+    try:
+        ranked = match_candidates(pid, doc=doc, limit=limit)
+        cands = [_brief(c["item"], c) for c in ranked]
+        pool = []
+        if q:
+            for t in open_charges(pid):
+                hay = ' '.join([t.vendor or '', t.txn_date or '', t.card_last4 or '',
+                                ('%.2f' % float(t.amount)) if t.amount is not None else '',
+                                t.note or '']).lower()
+                if q in hay:
+                    pool.append(_brief(t, score_match(t, doc)))
+            pool.sort(key=lambda r: (-(r["confidence"] or 0), r["date"] or ''))
+    except Exception as e:
+        logging.exception("[actuals] charge-candidates failed")
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True,
+                    "doc": {"doc_id": doc.id, "vendor": doc.vendor, "amount": (float(doc.amount) if doc.amount is not None else None),
+                            "date": doc.doc_date.isoformat() if doc.doc_date else None,
+                            "name": (doc.filed_filename or doc.original_filename or f'Upload #{doc.id}')[:120],
+                            "thumb": f"/docs/upload/{doc.id}/thumb"},
+                    "candidates": cands, "pool": pool[:60]})
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/merge-duplicate", methods=["POST"])
+@login_required
+def actuals_merge_duplicate(pid, tid):
+    """Duplicates view → "Delete the extra" (Phase 5, 2026-11-03). <tid> is
+    the EXTRA; body {keeper_id}. The keeper must be a twin of the extra
+    (actuals.is_duplicate_twin — one rule). Then, by
+    actuals.duplicate_delete_mode:
+      delete — a qbo_sync / csv_import row with no coding and no receipt is
+               simply deleted;
+      merge  — everything else first moves its line / section, splits,
+               receipt + evidence, reason, payer and note onto the keeper
+               (actuals.merge_duplicate_into), then is deleted.
+    Both steps are logged (update on the keeper, delete on the extra with a
+    full snapshot) and undoable through the activity log: Undo recreates
+    the extra from the snapshot and puts the keeper's coding back."""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden"}), 403
+    _require_project_role(pid, 'editor')
+    from actuals import (is_duplicate_twin, duplicate_delete_mode, merge_duplicate_into,
+                         txn_snapshot)
+    from models import ExpenseEvidence
+    extra = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    body = request.get_json(silent=True) or {}
+    try:
+        keeper_id = int(body.get('keeper_id'))
+    except (TypeError, ValueError):
+        return jsonify({"error": "keeper_id required"}), 400
+    if keeper_id == tid:
+        return jsonify({"error": "The keeper and the extra must be different rows."}), 400
+    keeper = Transaction.query.filter_by(id=keeper_id, project_id=pid).first()
+    if keeper is None:
+        return jsonify({"error": "Keeper not found on this project."}), 404
+    if extra.source in ('doc_upload', 'invoice_split'):
+        return jsonify({"error": "A receipt's own row or an itemized subline is not a charge — "
+                                 "match or itemize it instead."}), 400
+    extra.has_splits = TransactionSplit.query.filter_by(transaction_id=extra.id).first() is not None
+    keeper.has_splits = TransactionSplit.query.filter_by(transaction_id=keeper.id).first() is not None
+    extra.has_evidence = ExpenseEvidence.query.filter_by(transaction_id=extra.id).first() is not None
+    if not is_duplicate_twin(extra, keeper):
+        return jsonify({"error": "These two rows are not twins (same amount, same vendor or card, "
+                                 "dates within the window, different QuickBooks ids), so the extra "
+                                 "cannot be folded into the keeper."}), 409
+    mode = duplicate_delete_mode(extra)
+    k_before = txn_snapshot(keeper)
+    x_before = txn_snapshot(extra)
+    x_before["splits"] = [{"budget_line_id": sp.budget_line_id, "amount": float(sp.amount or 0),
+                           "note": sp.note}
+                          for sp in TransactionSplit.query.filter_by(transaction_id=tid).all()]
+    moved = {"moved": [], "splits": 0, "evidence": 0}
+    acts = []
+    if mode == 'merge':
+        _k_splits_before = [{"budget_line_id": sp.budget_line_id, "amount": float(sp.amount or 0),
+                             "note": sp.note}
+                            for sp in TransactionSplit.query.filter_by(transaction_id=keeper.id).all()]
+        _splits = TransactionSplit.query.filter_by(transaction_id=tid).all()
+        _evid = ExpenseEvidence.query.filter_by(transaction_id=tid).all()
+        _k_doc_ids = {e.doc_upload_id for e in ExpenseEvidence.query.filter_by(transaction_id=keeper.id).all()}
+        _evid_move, _evid_drop = [], []
+        for e in _evid:
+            (_evid_drop if e.doc_upload_id in _k_doc_ids else _evid_move).append(e)
+        if keeper.has_splits and _splits:
+            # Two split sets cannot both carry the amount — the keeper's win.
+            for sp in _splits:
+                db.session.delete(sp)
+            _splits = []
+        moved = merge_duplicate_into(keeper, extra, splits=_splits, evidence=_evid_move)
+        for e in _evid_drop:
+            db.session.delete(e)
+        keeper.updated_at = datetime.utcnow()
+        try:
+            _ka = _log_activity(action='update', entity_type='transaction', entity_id=keeper.id,
+                                entity_label=(keeper.vendor or f'Txn #{keeper.id}')[:80], project_id=pid,
+                                before={**{k: k_before[k] for k in ('budget_line_id', 'account_code',
+                                                                     'account_code_name', 'doc_upload_id',
+                                                                     'match_status', 'match_confidence',
+                                                                     'no_charge_reason', 'payment_method',
+                                                                     'paid_by_crew_member_id')},
+                                        "splits": _k_splits_before},
+                                after={k: txn_snapshot(keeper)[k] for k in ('budget_line_id', 'account_code',
+                                                                             'doc_upload_id', 'match_status')},
+                                note=f'Duplicate: moved {", ".join(moved["moved"]) or "nothing"} from #{tid} '
+                                     f'onto {(keeper.vendor or "keeper")[:50]}')
+            if _ka:
+                acts.append(_ka.id)
+        except Exception:
+            pass
+    else:
+        _delete_evidence_for_txns([tid])
+        TransactionSplit.query.filter_by(transaction_id=tid).delete(synchronize_session=False)
+    Transaction.query.filter_by(parent_transaction_id=tid).update(
+        {"parent_transaction_id": keeper.id}, synchronize_session=False)
+    Transaction.query.filter_by(backup_of_txn_id=tid).update(
+        {"backup_of_txn_id": keeper.id}, synchronize_session=False)
+    _label = (extra.vendor or f'Txn #{tid}')[:80]
+    _amt = float(extra.amount or 0)
+    db.session.delete(extra)
+    db.session.flush()
+    try:
+        _xa = _log_activity(action='delete', entity_type='transaction', entity_id=tid,
+                            entity_label=_label, project_id=pid, before=x_before, dollar_delta=-_amt,
+                            note=f'Removed duplicate {_label} ${_amt:,.2f} (kept #{keeper.id}'
+                                 + (f'; moved {", ".join(moved["moved"])}' if moved["moved"] else '') + ')')
+        if _xa:
+            acts.append(_xa.id)
+    except Exception:
+        pass
+    db.session.commit()
+    return jsonify({"ok": True, "deleted": tid, "keeper_id": keeper.id, "mode": mode,
+                    "moved": moved, "activity_ids": acts})
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/upload-receipt", methods=["POST"])
@@ -3273,6 +3411,8 @@ def actuals_sync_now(pid):
             _enriched   = int(result.get('enriched') or 0)
             _reconciled = int(result.get('reconciled') or 0)
             _cdc        = int(result.get('cdc_additions') or 0)
+            _qdel       = int(result.get('qbo_deleted') or 0)
+            _qvoid      = int(result.get('qbo_voided') or 0)
             _range   = ''
             if start_date or end_date:
                 _range = f' ({start_date or "…"} → {end_date or "…"})'
@@ -3282,10 +3422,20 @@ def actuals_sync_now(pid):
                 project_id=pid,
                 after={'imported': _imported, 'enriched': _enriched,
                        'reconciled': _reconciled, 'cdc_additions': _cdc,
+                       'qbo_deleted': _qdel, 'qbo_voided': _qvoid,
                        'sync_through': str(result.get('sync_through') or '')},
                 note=f'QBO sync{_range}: +{_imported} new, {_enriched} enriched, '
-                     f'{_reconciled} reconciled to receipts, {_cdc} via change-capture')
+                     f'{_reconciled} reconciled to receipts, {_cdc} via change-capture'
+                     + (f', {_qdel} removed (deleted in QuickBooks)' if _qdel else '')
+                     + (f', {_qvoid} flagged voided' if _qvoid else ''))
         except Exception: pass
+        # Phase 5: every sync re-runs THE matching engine so new charges
+        # meet the receipts already waiting (suggested, never confirmed).
+        try:
+            from actuals import refresh_match_suggestions
+            result['match_suggestions'] = refresh_match_suggestions(pid).get('suggestions', 0)
+        except Exception as _me:
+            logging.warning(f"[actuals] post-sync matching failed (continuing): {_me}")
         # Phase 3: auto-refresh the review queue after ingestion (background).
         _bg_run_all_scans(pid)
         return jsonify({"ok": True, **result})
@@ -3670,7 +3820,9 @@ def actuals_counts(pid):
     out = dict(ws.get("counts") or {})
     out["unclaimed_amount"] = round(sum(
         float(r.get("amount") or 0) for r in rows if 'no_line' in r["flags"]["red"]), 2)
-    out["matches_to_review"] = sum(1 for r in rows if r.get("receipt_suggestion"))
+    # Both directions are the same pairs (a suggestion lives on the charge
+    # and shows on its receipt); the workspace already counted them.
+    out.setdefault("matches_to_review", sum(1 for r in rows if r.get("receipt_suggestion")))
     return out
 
 
@@ -3692,8 +3844,13 @@ def actuals_workspace_json(pid):
       not_project       — this project's excluded rows, newest first.
       claimed_elsewhere — rows another project claimed (project name only).
       sync              — QBO connection / window / last-sync status.
-      counts            — the six views: unclaimed, assigned, needs_backup,
-                          receipts, not_project, sync.
+      duplicates        — groups of charges that look like one event, each
+                          with its suggested keeper (Phase 5; one rule:
+                          actuals.find_duplicate_groups + pick_keeper).
+      voided            — excluded rows QuickBooks voided after import.
+      counts            — the views: unclaimed, assigned, needs_backup,
+                          receipts, duplicates, not_project, sync, plus
+                          matches_to_review / strong_matches.
       budget            — sections and lines of the current Working budget
                           with estimate, actual (counts_as_spend + splits),
                           variance and is_drop_target.
@@ -3710,7 +3867,9 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
     skips the budget-side rollup — both for actuals_counts, which only needs
     the rows and their flags."""
     from actuals import (run_auto_match, counts_as_spend, signed_amount_value,
-                         split_sums_by_line, group_pool_rows, compute_row_flags)
+                         split_sums_by_line, group_pool_rows, compute_row_flags,
+                         find_duplicate_groups, score_match, rank_candidates,
+                         open_receipts, VOIDED_IN_QBO_REASON)
     from models import ExpenseEvidence
     from budget_calc import FP_COA_NAMES as _WS_COA
     if run_matchers:
@@ -3791,29 +3950,21 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
     if _crew_ids:
         from models import CrewMember
         crew_names = {c.id: c.name for c in CrewMember.query.filter(CrewMember.id.in_(list(_crew_ids))).all()}
-    # Possible duplicates: same |amount| + date + vendor + card, undismissed
-    # (the cheap tier of actuals_scan_dup_transactions).
-    import re as _re_ws
-    from collections import defaultdict as _dd_ws
-    dismissed = {d.dup_key for d in TransactionDupDismissal.query.filter_by(project_id=pid).all()}
-    _by_attr = _dd_ws(list)
-    for t in txns:
-        if t.amount is None or not t.txn_date or not t.vendor or not t.card_last4 or t.not_project_expense:
-            continue
-        akey = '%.2f|%s|%s|%s' % (abs(float(t.amount)), t.txn_date[:10],
-                                  _re_ws.sub(r'[^a-z0-9]', '', (t.vendor or '').lower())[:18],
-                                  t.card_last4)
-        _by_attr[akey].append(t)
-    dup_ids = set()
-    for akey, members in _by_attr.items():
-        if len(members) < 2 or ('attr:' + akey) in dismissed:
-            continue
-        if all(m.split_group for m in members) and len({m.split_group for m in members}) == 1:
-            continue
-        dup_ids.update(m.id for m in members)
-
     for t in txns:
         t.has_splits = bool(splits_by_txn.get(t.id))
+        t.has_evidence = t.id in evidence_txn_ids
+    # Possible duplicates — ONE rule (Phase 5, 2026-11-03):
+    # actuals.find_duplicate_groups / is_duplicate_twin (same |amount|, same
+    # vendor or card, within 3 days for two QuickBooks records, same day
+    # otherwise, DIFFERENT QuickBooks ids) with the keeper rule. "Keep both"
+    # is remembered in transaction_dup_dismissal under the group key.
+    dismissed = {d.dup_key for d in TransactionDupDismissal.query.filter_by(project_id=pid).all()}
+    _dup_groups = find_duplicate_groups(txns, dismissed)
+    dup_group_of = {}
+    for _g in _dup_groups:
+        for _m in _g["members"]:
+            dup_group_of[_m.id] = _g["key"]
+    dup_ids = set(dup_group_of)
     grouped = group_pool_rows(txns)
     # A charge whose attached receipt/invoice already has its own coded row
     # (source='doc_upload' on a line) should be told so: that line is the
@@ -3828,6 +3979,11 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
 
     transactions, not_project, claimed_elsewhere = [], [], []
     matched_doc_ids = set()
+    try:
+        _inbox_pool = open_receipts(pid)
+    except Exception as _ope:
+        logging.warning(f"[workspace.json] open_receipts failed: {_ope}")
+        _inbox_pool = []
     for rep, members in grouped:
         t = rep
         _cl = getattr(t, 'claimed_by_project_id', None)
@@ -3856,8 +4012,17 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
                 receipt = _doc_brief(doc)
                 matched_doc_ids.add(doc.id)
             elif t.match_status == 'suggested':
+                # Confidence + the engine's reasons for THIS pair, and
+                # whether it is strong (no other inbox receipt within 0.2):
+                # the Review-matches dialog and the receipt row show them.
+                _sc = score_match(t, doc) or {}
+                _ranked = rank_candidates(t, _inbox_pool, key=lambda d: d.id, limit=2)
+                _strong = bool(_ranked and _ranked[0]["key"] == doc.id and _ranked[0]["strong"])
                 suggestion_doc = {**_doc_brief(doc),
-                                  "confidence": float(t.match_confidence or 0)}
+                                  "confidence": float(t.match_confidence or _sc.get("confidence") or 0),
+                                  "reasons": _sc.get("reasons") or [],
+                                  "strong": _strong,
+                                  "source": t.match_source or 'heuristic'}
         suggested_line = None
         if getattr(t, 'suggested_budget_line_id', None):
             suggested_line = {"id": t.suggested_budget_line_id,
@@ -3898,6 +4063,7 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
             "receipt_date": (receipt or {}).get("date"),
             "txn_date": (t.txn_date or '')[:10] or None,
             "possible_duplicate": t.id in dup_ids,
+            "voided": (getattr(t, 'no_charge_reason', None) == VOIDED_IN_QBO_REASON),
             "payment_method": getattr(t, 'payment_method', None),
             "not_project_expense": bool(t.not_project_expense),
         }
@@ -3932,6 +4098,8 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
             "flags": flags,
             "excluded": excluded,
             "reviewed": bool(getattr(t, 'reviewed_at', None)),
+            "dup_group": dup_group_of.get(t.id),
+            "voided": bool(flag_input["voided"]),
         }
         if t.not_project_expense:
             not_project.append(row)
@@ -3956,13 +4124,20 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
         if dt is not None and (dt.activated_at is not None or dt.not_project_expense):
             continue
         r = {**_doc_brief(d), "txn_id": (dt.id if dt is not None else None),
-             "status": d.status}
-        if dt is not None and dt.match_status == 'suggested' and dt.doc_upload_id == d.id:
-            r["suggested_charge_id"] = None
-        # A charge in this pool pointing at this doc as a suggestion.
+             "status": d.status, "suggested_charge_id": None, "suggested_charge": None}
+        # The charge this receipt is suggested for (Phase 5: the suggestion
+        # shows on BOTH sides — "Matches charge · Lyft · Sep 28 · $88.44 ·
+        # 88%" with Confirm / Not a match on the receipt row too).
         for row in transactions:
-            if row.get("receipt_suggestion") and row["receipt_suggestion"]["doc_id"] == d.id:
+            _rs = row.get("receipt_suggestion")
+            if _rs and _rs["doc_id"] == d.id:
                 r["suggested_charge_id"] = row["id"]
+                r["suggested_charge"] = {"id": row["id"], "vendor": row["vendor"],
+                                         "amount": row["amount"], "date": row["date"],
+                                         "card_last4": row.get("card_last4"),
+                                         "confidence": _rs["confidence"],
+                                         "reasons": _rs.get("reasons") or [],
+                                         "strong": bool(_rs.get("strong"))}
                 break
         _cl = getattr(dt, 'claimed_by_project_id', None) if dt is not None else None
         if _cl and _cl != pid:
@@ -4051,18 +4226,49 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
                               if getattr(_prj, 'last_cdc_sync', None) else None),
             "sync_through": _prj.sync_through,
             "auto": "twice a day"}
+    # Duplicates view (Phase 5): one entry per group with the suggested
+    # keeper and how each extra would be removed (hard delete, or move its
+    # coding to the keeper first), plus the rows QuickBooks voided.
+    from actuals import duplicate_delete_mode as _ddm
+    _row_by_id = {r["id"]: r for r in transactions}
+    duplicates = []
+    for _g in _dup_groups:
+        _members = [_row_by_id[m.id] for m in _g["members"] if m.id in _row_by_id]
+        if len(_members) < 2:
+            continue
+        duplicates.append({
+            "key": _g["key"],
+            "keeper_id": _g["keeper"].id,
+            "keeper_reason": _g["keeper_reason"],
+            "vendor": _g["keeper"].vendor or '—',
+            "amount": abs(float(_g["keeper"].amount or 0)),
+            "members": [{"id": r["id"], "date": r["date"], "vendor": r["vendor"],
+                         "amount": r["amount"], "source": r["source"],
+                         "qbo_txn_id": r.get("qbo_txn_id"), "qbo_txn_type": r.get("qbo_txn_type"),
+                         "card_last4": r.get("card_last4"),
+                         "assigned_line": r.get("assigned_line"), "splits": r.get("splits") or [],
+                         "receipt": r.get("receipt"), "has_backup": r.get("has_backup"),
+                         "delete_mode": _ddm(next(m for m in _g["members"] if m.id == r["id"]))}
+                        for r in _members],
+        })
+    voided = [r for r in not_project if r.get("voided")]
     n_unclaimed = sum(1 for r in transactions if 'no_line' in r["flags"]["red"])
     n_assigned = len(transactions) - n_unclaimed
     n_needs_backup = sum(1 for r in transactions if 'needs_backup' in r["flags"]["red"])
     counts = {"unclaimed": n_unclaimed, "assigned": n_assigned,
               "needs_backup": n_needs_backup, "receipts": len(receipts),
               "not_project": len(not_project),
+              "duplicates": len(duplicates) + len(voided),
+              "matches_to_review": sum(1 for r in transactions if r.get("receipt_suggestion")),
+              "strong_matches": sum(1 for r in transactions
+                                    if (r.get("receipt_suggestion") or {}).get("strong")),
               "sync": (0 if sync["connected"] else 1),
               "claimed_elsewhere": len(claimed_elsewhere)}
     return {"ok": True, "project_id": pid,
             "budget_id": (budget.id if budget else None),
             "transactions": transactions, "receipts": receipts,
             "not_project": not_project,
+            "duplicates": duplicates, "voided": voided,
             "claimed_elsewhere": claimed_elsewhere,
             "sync": sync, "counts": counts,
             "budget": {"sections": sections,
