@@ -2,95 +2,138 @@
 // Jinja values arrive via window.__BJ (set by the inline preamble before this
 // script tag). Classic script, document order — semantics identical to inline.
 
+// ── The ONE row menu (2026-11-03) ───────────────────────────────────────────
+// Every budget row — section header, sub-header, spacer, line — has a single
+// "⋯" button and a single menu, #line-row-menu. Right-click (or a long press
+// on touch) on a row opens the same menu at the cursor. The former "+" menu,
+// the labor right-click menu (b06) and the schedule-line right-click menu
+// (b07) are folded in here; items show / hide by row kind:
+//   .line-menu-line-only     plain lines only (not header / spacer / section)
+//   .line-menu-has-line      rows backed by a BudgetLine (not the section header)
+//   .line-menu-section-only  the section header only
+//   .line-menu-header-only   sub-headers only
+//   .line-menu-labor-only    labor lines only
+//   .line-menu-sync-only     schedule-driven (auto-calc) non-labor lines only
 (function() {
   const _pid = window.__BJ["b12__pid"];
   const _bid = window.__BJ["b12__bid"];
 
-  let _menuLineId  = null;
-  let _menuCode    = null;
+  let _menuLineId  = null;   // the BudgetLine the menu targets (null on a section header)
+  let _menuCode    = null;   // its account section code
+  let _menuKind    = 'line'; // 'line' | 'header' | 'spacer' | 'section'
+  let _menuSecName = '';     // the section's name (section-header menu → Add line modal)
+  let _menuSecCode = null;   // the COA section block the row sits in (.section-block[data-section])
 
-  // Allow the labor right-click menu (a separate IIFE) to target the same
-  // row before invoking the shared lineInsert/lineDuplicate/move helpers,
-  // so labor rows get the same Insert/Spacer/Header/Move actions as
-  // non-labor rows. 2026-05-20.
+  // Lets another module target a row before calling the shared helpers
+  // (lineInsert / lineDuplicate / openLineMoveModal).
   window._setLineMenuTarget = function(id, code) {
     _menuLineId = parseInt(id) || null;
     _menuCode   = (code !== undefined && code !== null && code !== '') ? parseInt(code) : null;
   };
   const _menu = document.getElementById('line-row-menu');
-  const _addMenu = document.getElementById('line-add-menu');
   let _menuOpener = null;   // the button that opened the current menu (focus returns here)
 
-  // Position a menu under its button, right-aligned to it (the artboard's
-  // "+" / "⋯" menus hang off the row's right end), clamped to the viewport.
-  function _placeMenu(menu, btn) {
+  function _visibleItems() {
+    return Array.from(_menu.querySelectorAll('[role="menuitem"]')).filter(el => el.offsetParent !== null);
+  }
+  // Position the menu under its button, right-aligned to it, clamped to the
+  // viewport; or at a point (right-click / long press).
+  function _placeMenu(btn, at) {
     requestAnimationFrame(() => {
-      const rect = btn.getBoundingClientRect();
-      const mw = menu.offsetWidth;
-      const mh = menu.offsetHeight;
-      menu.style.top  = Math.min(rect.bottom + 4, window.innerHeight - mh - 8) + 'px';
-      menu.style.left = Math.max(4, Math.min(rect.right - mw, window.innerWidth - mw - 8)) + 'px';
-      const first = menu.querySelector('[role="menuitem"]:not([style*="display: none"]):not([style*="display:none"])');
-      if (first) first.focus();
+      const mw = _menu.offsetWidth;
+      const mh = _menu.offsetHeight;
+      let top, left;
+      if (at) {
+        top  = Math.min(at.y, window.innerHeight - mh - 8);
+        left = Math.min(at.x, window.innerWidth - mw - 8);
+      } else {
+        const rect = btn.getBoundingClientRect();
+        top  = Math.min(rect.bottom + 4, window.innerHeight - mh - 8);
+        left = Math.max(4, Math.min(rect.right - mw, window.innerWidth - mw - 8));
+      }
+      _menu.style.top  = Math.max(4, top) + 'px';
+      _menu.style.left = Math.max(4, left) + 'px';
+      const first = _visibleItems()[0];
+      if (first && !at) first.focus();
     });
   }
   function _closeMenus(returnFocus) {
-    const wasOpen = !_menu.classList.contains('hidden') || (_addMenu && !_addMenu.classList.contains('hidden'));
+    const wasOpen = !_menu.classList.contains('hidden');
     _menu.classList.add('hidden');
-    if (_addMenu) _addMenu.classList.add('hidden');
     document.querySelectorAll('.line-act-btn[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
     if (returnFocus && wasOpen && _menuOpener) { try { _menuOpener.focus(); } catch (e) {} }
   }
   window._closeLineMenus = _closeMenus;
 
-  function _target(btn) {
-    _menuLineId = parseInt(btn.dataset.id);
-    _menuCode   = parseInt(btn.dataset.code);
-    _menuOpener = btn;
+  // Show / hide the menu's items for one row kind. `row` is the <tr> (or
+  // the .section-header div for a section).
+  function _applyKind(kind, row, btn) {
+    const isLine    = (kind === 'line');
+    const hasLine   = (kind !== 'section');
+    const isLabor   = isLine && !!(row && row.classList.contains('labor-line'));
+    const isSync    = isLine && !isLabor && !!(row && row.classList.contains('sync-line'));
+    const show = (sel, on) => _menu.querySelectorAll(sel).forEach(el => { el.style.display = on ? '' : 'none'; });
+    show('.line-menu-line-only',    isLine);
+    show('.line-menu-has-line',     hasLine);
+    show('.line-menu-section-only', kind === 'section');
+    show('.line-menu-header-only',  kind === 'header');
+    show('.line-menu-labor-only',   isLabor);
+    show('.line-menu-sync-only',    isSync);
+    // Per-row wording.
+    const cgBtn = document.getElementById('line-menu-change-group-btn');
+    if (cgBtn) cgBtn.style.display = (_menuCode === 2000 && isLine) ? '' : 'none';
+    const poLbl = document.getElementById('line-menu-po-label');
+    if (poLbl && btn) poLbl.textContent = (btn.dataset.hasPo === '1') ? 'Change PO…' : 'Attach PO';
+    const lvBtn = document.getElementById('line-menu-lever-btn');
+    if (lvBtn && btn) lvBtn.querySelector('.line-menu-sub').textContent =
+      (btn.dataset.hasLever === '1') ? 'Already a lever — open Assumptions to edit' : 'A cost the client can choose';
+    const syncLbl = document.getElementById('line-menu-sync-label');
+    if (syncLbl && row) syncLbl.textContent =
+      (row.dataset.syncOmit === '1') ? 'Re-enable auto-calc' : 'Omit from auto-calc';
+    const dupLbl = document.getElementById('line-menu-dup-label');
+    if (dupLbl) dupLbl.textContent =
+      kind === 'header' ? 'Duplicate sub-header + its lines'
+      : kind === 'section' ? 'Duplicate section'
+      : kind === 'spacer' ? 'Duplicate spacer' : 'Duplicate line';
+    const delLbl = document.getElementById('line-menu-delete-label');
+    if (delLbl) delLbl.textContent =
+      kind === 'header' ? 'Delete sub-header' : kind === 'spacer' ? 'Delete spacer' : 'Delete line';
+    // A section with no rows yet has nothing to insert next to / duplicate.
+    const emptySection = (kind === 'section' && !_menuLineId);
+    show('.line-menu-needs-row', !emptySection);
+    // A group whose every item is hidden hides with them (its label too).
+    _menu.querySelectorAll('.line-menu-group').forEach(g => {
+      const any = Array.from(g.querySelectorAll('[role="menuitem"]')).some(el => el.style.display !== 'none');
+      g.style.display = any ? '' : 'none';
+    });
   }
 
-  // The row's "+" menu: Line below / Sub-header / Spacer / Duplicate.
-  window.openLineAddMenu = function(btn) {
+  // Open the row menu from its "⋯" button (or at a point for right-click).
+  window.openLineRowMenu = function(btn, at) {
     _closeMenus(false);
-    _target(btn);
-    const kind = btn.dataset.kind || (btn.closest('tr') && btn.closest('tr').dataset.tag) || '';
-    _addMenu.querySelectorAll('.line-menu-line-only').forEach(el => {
-      el.style.display = (kind === 'spacer' || kind === 'header') ? 'none' : '';
-    });
-    _addMenu.classList.remove('hidden');
-    btn.setAttribute('aria-expanded', 'true');
-    _placeMenu(_addMenu, btn);
-  };
-
-  // The row's "⋯" menu: Flag / Note / Line.
-  window.openLineRowMenu = function(btn) {
-    _closeMenus(false);
-    _target(btn);
-    const kind = btn.dataset.kind || (btn.closest('tr') && btn.closest('tr').dataset.tag) || '';
-    const structural = (kind === 'spacer' || kind === 'header');
-    _menu.querySelectorAll('.line-menu-line-only').forEach(el => { el.style.display = structural ? 'none' : ''; });
-    // Show the "Change group…" option only for sections that use role_group
-    // sub-headers (currently just 2000 Production Staff).
-    const cgBtn = document.getElementById('line-menu-change-group-btn');
-    if (cgBtn) cgBtn.style.display = (_menuCode === 2000 && !structural) ? '' : 'none';
-    const poLbl = document.getElementById('line-menu-po-label');
-    if (poLbl) poLbl.textContent = (btn.dataset.hasPo === '1') ? 'Change PO…' : 'Attach PO';
-    const lvBtn = document.getElementById('line-menu-lever-btn');
-    if (lvBtn) lvBtn.querySelector('.line-menu-sub').textContent =
-      (btn.dataset.hasLever === '1') ? 'Already a lever — open Assumptions to edit' : 'A cost the client can choose';
+    const row  = btn.closest('tr.line-row') || btn.closest('.section-header');
+    const kind = btn.dataset.kind || (row && row.dataset.tag) || 'line';
+    _menuKind    = kind;
+    _menuLineId  = parseInt(btn.dataset.id) || null;
+    _menuCode    = parseInt(btn.dataset.code) || null;
+    _menuSecName = btn.dataset.secName || '';
+    const block  = btn.closest('.section-block');
+    _menuSecCode = (block && parseInt(block.dataset.section)) || _menuCode;
+    _menuOpener  = btn;
+    _menu.dataset.kind = kind;
+    _applyKind(kind, row, btn);
     _menu.classList.remove('hidden');
     btn.setAttribute('aria-expanded', 'true');
-    _placeMenu(_menu, btn);
+    _placeMenu(btn, at);
   };
 
-  // Esc closes an open menu and returns focus to its button; arrow keys
-  // walk the items.
+  // Esc closes the menu and returns focus to its button; arrow keys walk
+  // the items.
   document.addEventListener('keydown', e => {
-    const open = [_menu, _addMenu].find(m => m && !m.classList.contains('hidden'));
-    if (!open) return;
+    if (_menu.classList.contains('hidden')) return;
     if (e.key === 'Escape') { e.preventDefault(); _closeMenus(true); return; }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      const items = Array.from(open.querySelectorAll('[role="menuitem"]')).filter(el => el.offsetParent !== null);
+      const items = _visibleItems();
       if (!items.length) return;
       e.preventDefault();
       const i = items.indexOf(document.activeElement);
@@ -99,34 +142,99 @@
     }
   });
 
-  // Right-click on any budget line row opens the same context menu as the
-  // ⋮ button — just faster. Position the menu at the cursor instead of the
-  // button. Per user 2026-05-04: SKIP labor rows here — they have their
-  // own right-click menu (Add Kit Fee / All-in Total / Sync omit) which
-  // is more important for the labor workflow. Insert/Duplicate/Move are
-  // still reachable on labor rows via the ⋮ hamburger button.
+  // Right-click on any row (line, sub-header, spacer, section header) opens
+  // the same menu at the cursor. Cell-level pickers (the Duration unit
+  // button) and kit-fee child rows keep their own behaviour.
+  function _rowMenuButtonFor(target) {
+    if (target.closest('.days-unit-toggle') || target.closest('#line-row-menu')) return null;
+    const row = target.closest('tr.line-row') || target.closest('.section-header');
+    if (!row) return null;
+    if (row.classList && row.classList.contains('kit-fee-row')) return null;
+    if (row.classList && row.classList.contains('work-section-only-row')) return null;
+    return row.querySelector('.line-row-menu-btn');
+  }
   document.addEventListener('contextmenu', function(e) {
-    const row = e.target.closest('.line-row');
-    if (!row) return;
-    // Kit-fee child rows follow their parent — no independent menu.
-    if (row.classList.contains('kit-fee-row')) return;
-    // Labor rows: defer to the kit-fee context menu (registered earlier).
-    if (row.classList.contains('labor-line')) return;
-    const id   = parseInt(row.dataset.id || '0');
-    const code = parseInt(row.dataset.code || '0');
-    if (!id) return;
+    const btn = _rowMenuButtonFor(e.target);
+    if (!btn) return;
     e.preventDefault();
-    // Same menu as the row's ⋯ button, placed at the cursor.
-    const btn = row.querySelector('.line-row-menu-btn');
-    if (btn) { window.openLineRowMenu(btn); }
-    else { _menuLineId = id; _menuCode = code; _menu.classList.remove('hidden'); }
-    requestAnimationFrame(() => {
-      const mw = _menu.offsetWidth;
-      const mh = _menu.offsetHeight;
-      _menu.style.top  = Math.min(e.clientY, window.innerHeight - mh - 8) + 'px';
-      _menu.style.left = Math.min(e.clientX, window.innerWidth - mw - 8) + 'px';
-    });
+    window.openLineRowMenu(btn, { x: e.clientX, y: e.clientY });
   });
+  // Long-press (500ms) on touch devices — the same menu without a right-click.
+  let _lpTimer = null;
+  document.addEventListener('touchstart', function(e) {
+    if (e.target.closest('.editable') || e.target.closest('select') || e.target.closest('input')) return;
+    const btn = _rowMenuButtonFor(e.target);
+    if (!btn) return;
+    const t = e.touches[0];
+    const at = { x: t.clientX, y: t.clientY };
+    _lpTimer = setTimeout(() => { window.openLineRowMenu(btn, at); }, 500);
+  }, { passive: true });
+  document.addEventListener('touchend',  () => { clearTimeout(_lpTimer); _lpTimer = null; });
+  document.addEventListener('touchmove', () => { clearTimeout(_lpTimer); _lpTimer = null; });
+
+  // Close on outside click
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#line-row-menu') && !e.target.closest('.line-row-menu-btn')) {
+      _closeMenus(false);
+    }
+  });
+
+  // ── Add ───────────────────────────────────────────────────────────────
+  // Section header → Add → Line: the section's add-line modal.
+  window.addLineMenuSection = function() {
+    _closeMenus(false);
+    if (!_menuCode) return;
+    if (typeof window.addLineInSection === 'function') window.addLineInSection(_menuCode, _menuSecName);
+  };
+
+  // Insert next to the targeted row. From the section header the reference
+  // row is the section's first row and the new row goes ABOVE it (top of
+  // the section).
+  window.lineInsert = async function(position, kind) {
+    _closeMenus(false);
+    if (!_menuLineId) return;
+    if (_menuKind === 'section') position = 'above';
+    let initialDescription = '';
+    // Header: prompt for the label up front so empty placeholders never
+    // get persisted in the DB (per user 2026-05-04: "make sure that the
+    // temp text never appears if no one uses it"). Cancel or blank
+    // aborts the insert entirely.
+    if (kind === 'header') {
+      const label = prompt('Sub-header label (e.g. "Pre-production", "On-set crew"):', '');
+      if (label === null) return;  // canceled
+      const trimmed = String(label).trim();
+      if (!trimmed) return;        // blank — same as cancel
+      initialDescription = trimmed.slice(0, 200);
+    }
+    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/insert`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        reference_id: _menuLineId,
+        position,
+        line_kind: kind || 'normal',
+        description: initialDescription,
+      })
+    });
+    if (res.ok) reloadWithTab();
+    else alert('Insert failed');
+  };
+
+  // ── Fees (labor rows) / auto-calc (schedule-driven rows) ─────────────
+  window.feeMenuLine = function(tag) {
+    _closeMenus(false);
+    if (!_menuLineId) return;
+    if (tag === 'agent_fee') {
+      if (typeof window.openAgentFeeModalFor === 'function') window.openAgentFeeModalFor(_menuLineId);
+    } else if (typeof window.openFeeModalFor === 'function') {
+      window.openFeeModalFor(_menuLineId, tag);
+    }
+  };
+  window.syncOmitMenuLine = function() {
+    _closeMenus(false);
+    if (!_menuLineId) return;
+    if (typeof window.toggleSyncOmitFor === 'function') window.toggleSyncOmitFor(_menuLineId);
+  };
 
   window.openChangeGroupModal = function() {
     _closeMenus(false);
@@ -181,54 +289,43 @@
     }
   }
 
-  // Close on outside click
-  document.addEventListener('click', e => {
-    if (!e.target.closest('#line-row-menu') && !e.target.closest('#line-add-menu')
-        && !e.target.closest('.line-row-menu-btn') && !e.target.closest('.line-add-btn')) {
-      _closeMenus(false);
+  // The rows a duplicate would copy, from the DOM — used to decide whether
+  // to ask about schedule days. 'line' → the row; 'block' → a sub-header +
+  // the rows under it down to the next sub-header / spacer; 'section' →
+  // every row of the section.
+  function _dupRows(scope) {
+    const row = document.querySelector(`.line-row[data-id="${_menuLineId}"]`);
+    if (scope === 'section') {
+      return Array.from(document.querySelectorAll(`.section-block[data-section="${_menuSecCode}"] tr.line-row`));
     }
-  });
+    if (!row) return [];
+    if (scope !== 'block') return [row];
+    const out = [row];
+    let r = row.nextElementSibling;
+    while (r) {
+      if (r.classList.contains('line-row')) {
+        if (r.classList.contains('header-row') || r.classList.contains('spacer-row')) break;
+        out.push(r);
+      }
+      r = r.nextElementSibling;
+    }
+    return out;
+  }
 
-  window.lineInsert = async function(position, kind) {
+  // Duplicate the targeted row (scope 'line'), a sub-header and its lines
+  // ('block'), or the whole section ('section') — one endpoint, one
+  // transaction server-side. Internal notes copy; Discussion / Lever
+  // flags do not.
+  window.lineDuplicate = async function(scope) {
     _closeMenus(false);
     if (!_menuLineId) return;
-    let initialDescription = '';
-    // Header: prompt for the label up front so empty placeholders never
-    // get persisted in the DB (per user 2026-05-04: "make sure that the
-    // temp text never appears if no one uses it"). Cancel or blank
-    // aborts the insert entirely.
-    if (kind === 'header') {
-      const label = prompt('Sub-header label (e.g. "Pre-production", "On-set crew"):', '');
-      if (label === null) return;  // canceled
-      const trimmed = String(label).trim();
-      if (!trimmed) return;        // blank — same as cancel
-      initialDescription = trimmed.slice(0, 200);
-    }
-    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/insert`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        reference_id: _menuLineId,
-        position,
-        line_kind: kind || 'normal',
-        description: initialDescription,
-      })
-    });
-    if (res.ok) reloadWithTab();
-    else alert('Insert failed');
-  };
-
-  window.lineDuplicate = async function() {
-    _closeMenus(false);
-    if (!_menuLineId) return;
+    scope = scope || (_menuKind === 'header' ? 'block' : _menuKind === 'section' ? 'section' : 'line');
+    const rows = _dupRows(scope);
     // Only labor and location lines have schedules worth asking about.
     // Equipment / expense / admin lines get duplicated silently — there's
     // no schedule to copy or skip, so no dialog.
-    const row = document.querySelector(`.line-row[data-id="${_menuLineId}"]`);
-    const isLabor = !!(row && row.classList.contains('labor-line'));
-    const codeAttr = row && row.dataset && row.dataset.code;
-    const isLocation = (parseInt(codeAttr || '0') === 3300);
-    const promptsSchedule = isLabor || isLocation;
+    const promptsSchedule = rows.some(r =>
+      r.classList.contains('labor-line') || parseInt(r.dataset.code || '0') === 3300);
 
     let dupeSched = false;
     if (promptsSchedule) {
@@ -240,6 +337,9 @@
         // Defensive fallback — shouldn't happen, but don't strand the click.
         dupeSched = window.confirm('Also duplicate the schedule days?');
       } else {
+        const title = document.getElementById('line-duplicate-confirm-title');
+        if (title) title.textContent =
+          scope === 'block' ? 'Duplicate Sub-header + Lines' : scope === 'section' ? 'Duplicate Section' : 'Duplicate Line';
         const choice = await new Promise((resolve) => {
           window._lineDupResolve = (val) => {
             modal.classList.add('hidden');
@@ -254,6 +354,7 @@
     }
 
     const srcId = _menuLineId;
+    const row = rows[0];
     // If the source was schedule-driven and the user picked "No", the
     // duplicate lands in a different mode (use_schedule=false, no days,
     // not checked in the schedule grid). The in-place clone would carry
@@ -265,10 +366,12 @@
     const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/${srcId}/duplicate`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ duplicate_schedule: !!dupeSched })
+      body: JSON.stringify({ duplicate_schedule: !!dupeSched, scope })
     });
     if (res.ok) {
-      if (modeChanged) { reloadWithTab(); return; }
+      // Block / section copies: several rows, re-seated by the server —
+      // reload on the section so the numbering and totals are canonical.
+      if (scope !== 'line' || modeChanged) { reloadWithTab(_menuSecCode || undefined); return; }
       // In-place insert (per user 2026-05-04: avoid the full-page
       // reload "jump" feel). Clone the source row's DOM, retarget all
       // data-id refs to the new line id, drop in immediately after the
@@ -292,6 +395,15 @@
               el.setAttribute('data-id', String(newId));
             }
           });
+          // Flags do not copy: drop the Discussion / Lever chips and the
+          // discussion text from the clone (the server left them off).
+          clone.classList.remove('discussion-row');
+          clone.dataset.discussion = '';
+          clone.querySelectorAll('.line-chip-lever, .discussion-note-text').forEach(el => el.remove());
+          const dflag = clone.querySelector('.discussion-flag');
+          if (dflag) dflag.style.display = 'none';
+          const mb = clone.querySelector('.line-row-menu-btn');
+          if (mb) { mb.dataset.hasLever = '0'; mb.dataset.id = String(newId); }
           // cloneNode(true) doesn't carry live form state (select.value,
           // input.value) — it copies the DOM tree only. So a select the
           // user changed from "Days" to "Weeks" reverts to the default
@@ -420,7 +532,8 @@
     if (!_menuLineId) return;
     const row = document.querySelector(`.line-row[data-id="${_menuLineId}"]`);
     const desc = row && row.querySelector('.editable[data-field="description"]');
-    const label = (desc && desc.textContent.trim()) || 'line';
+    const label = (desc && desc.textContent.trim())
+      || (_menuKind === 'header' ? 'sub-header' : _menuKind === 'spacer' ? 'spacer' : 'line');
     if (typeof window.openComments === 'function') window.openComments(_menuLineId, label.slice(0, 40));
   };
 

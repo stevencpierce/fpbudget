@@ -1742,44 +1742,9 @@ body.gantt-select-mode .gantt-cell {
   position: relative;
 }
 
-/* ── Budget row context menu ─────────────────────────────────────────────────── */
-.budget-ctx-menu {
-  position: fixed;
-  z-index: 500;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  min-width: 190px;
-  padding: .3rem 0;
-}
-.budget-ctx-menu.hidden { display: none; }
-
-/* ── Line row insert/move dropdown ───────────────────────────────────────────── */
-.line-row-menu {
-  position: fixed;
-  z-index: 600;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  min-width: 170px;
-  padding: .3rem 0;
-}
-.line-row-menu.hidden { display: none; }
-.line-row-menu button {
-  display: block;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  padding: .4rem .85rem;
-  font-size: .82rem;
-  color: var(--text);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.line-row-menu button:hover { background: var(--bg-3); color: var(--accent); }
+/* The budget row menus (.budget-ctx-menu, the legacy .line-row-menu block)
+   are ONE menu now — #line-row-menu, styled in the "row menu" block below
+   (2026-11-03). */
 
 .ctx-menu-item {
   display: block;
@@ -6139,14 +6104,17 @@ tr.line-row.discussion-row { background: color-mix(in srgb, var(--accent) 6%, tr
 .line-note-card-head { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
 .line-note-card-meta { font-weight: 500; letter-spacing: 0; text-transform: none; }
 .line-note-card-body { font-size: 13px; line-height: 1.4; color: var(--text); }
-/* The ⋯ menu: Flag / Note / Line groups */
+/* The ONE row menu (⋯ on every row kind): Add / Fees / Flag / Note / Line groups */
 .line-row-menu { position: fixed; z-index: 600; padding: 6px; background: var(--bg-3); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.45); display: flex; flex-direction: column; min-width: 200px; }
 .line-row-menu.hidden { display: none; }
 .line-row-menu-wide { width: 268px; }
 .line-row-menu button {
   min-height: 30px; padding: 4px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text);
-  font: inherit; font-size: 13px; text-align: left; display: flex; align-items: center; gap: 9px; cursor: pointer; width: 100%;
+  font: inherit; font-size: 13px; text-align: left; display: flex; align-items: center; gap: 9px; cursor: pointer; width: 100%; white-space: nowrap;
 }
+.line-row-menu button svg { flex: 0 0 auto; }
+/* The section header's ⋯ sits beside "+ Line"; the row buttons reveal on hover. */
+.section-header .line-row-menu-btn { margin-left: 2px; }
 .line-row-menu button:hover, .line-row-menu button:focus-visible { background: var(--bg-2); color: var(--text); outline: none; }
 .line-row-menu .line-menu-danger { color: var(--red); }
 .line-menu-group + .line-menu-group { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
