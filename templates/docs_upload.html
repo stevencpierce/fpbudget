@@ -3,10 +3,15 @@
 <head>
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <script src="{{ url_for('static', filename='csrf.js') }}?v={{ APP_COMMIT | default('x') }}"></script>
+  <script src="{{ url_for('static', filename='fp-utils.js') }}?v={{ APP_COMMIT | default('x') }}"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Upload — {{ project.name }}</title>
   {% include '_favicon.html' %}
+  {# style.css carries the shared project nav strip's look (.tabs-row /
+     .budget-tabstrip / .project-nav); this page's own rules below win
+     for everything they already set. #}
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ APP_COMMIT | default('x') }}">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -186,27 +191,13 @@
   </div>
 </div>
 
-{% if budget and not current_user.is_docs_only %}
-<div class="tabs-row" style="background:var(--bg-nav,#161920);border-bottom:1px solid var(--border,#2a2d36);padding:0 16px;">
-  <div class="tabs">
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=topsheet">Dashboard</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=topsheet-detail">Top Sheet</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=working">Budget</a>
-    <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=budget.id) }}">Schedule</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=travel">Travel</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=catering">Catering</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=contacts">People</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=locations">Locations</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=assumptions">Assumptions</a>
-    <a class="tab-btn tab-link" href="{{ url_for('po_list_page', pid=project.id) }}?return_bid={{ budget.id }}">POs</a>
-    <a class="tab-btn tab-link" href="{{ url_for('sub_budgets_page', pid=project.id) }}?return_bid={{ budget.id }}">Sub-Budgets</a>
-    <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
-    <span class="tab-btn active">Docs</span>
-    <a class="tab-btn tab-link" href="{{ url_for('actuals_workspace_page', pid=project.id) }}">Actuals</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=activity">Activity</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=import-tools">Tools</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=settings">⚙ Settings</a>
-  </div>
+{% if not current_user.is_docs_only %}
+{# THE project nav strip (templates/_project_nav.html) — Docs active. Needs
+   style.css + fp-utils.js (linked in <head>) like every other project page. #}
+<div style="padding:0 16px;background:#161920;border-bottom:1px solid #2a2d36">
+{% with nav_project=project, nav_budget=budget, nav_active='docs' %}
+{% include "_project_nav.html" %}
+{% endwith %}
 </div>
 {% endif %}
 
@@ -238,9 +229,19 @@
       </svg>
       From Gallery
     </button>
+    {# Whole folders (nested too) — desktop browsers. Hidden files and
+       non-documents are skipped by FP.filterDocFiles (static/fp-utils.js). #}
+    <button class="btn-camera" id="btnFolder" type="button" onclick="document.getElementById('folderInput').click()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+      </svg>
+      Choose folder…
+    </button>
   </div>
   <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none">
   <input type="file" id="galleryInput" accept="image/*,application/pdf" multiple style="display:none">
+  <input type="file" id="folderInput" webkitdirectory multiple style="display:none">
+  <div id="batchProgress" style="display:none;margin-top:12px;font-size:13px;color:#9aa3b5"></div>
 
   <!-- Upload queue -->
   <div class="queue" id="uploadQueue"></div>
@@ -537,9 +538,24 @@ dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classL
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', e => {
   e.preventDefault(); dropZone.classList.remove('drag-over');
-  addFiles(Array.from(e.dataTransfer.files));
+  // Folders (nested too) come in through the ONE shared walker.
+  FP.collectDroppedFiles(e.dataTransfer).then(files => {
+    if (!files.length) { setBatchProgress('Nothing to upload — no PDF or image files found in that drop.'); return; }
+    addFiles(files);
+  });
 });
-fileInput.addEventListener('change', () => { addFiles(Array.from(fileInput.files)); fileInput.value=''; });
+fileInput.addEventListener('change', () => { addFiles(FP.filterDocFiles(fileInput.files)); fileInput.value=''; });
+document.getElementById('folderInput').addEventListener('change', function() {
+  const files = FP.filterDocFiles(this.files); this.value = '';
+  if (!files.length) { setBatchProgress('Nothing to upload — no PDF or image files found in that folder.'); return; }
+  addFiles(files);
+});
+function setBatchProgress(msg) {
+  const el = document.getElementById('batchProgress');
+  if (!el) return;
+  el.style.display = msg ? 'block' : 'none';
+  el.innerHTML = msg || '';
+}
 
 // Camera / gallery buttons
 function openCamera() { document.getElementById('cameraInput').click(); }
@@ -576,9 +592,22 @@ async function uploadOne(item) {
 
 async function uploadAll() {
   const pending = queue.filter(i => i.status === 'pending');
+  const total = pending.length;
+  let n = 0;
+  const failed = [];
   for (const item of pending) {
-    await uploadOne(item);
+    n += 1;
+    setBatchProgress('Uploading ' + n + ' of ' + total + '…');
+    try { await uploadOne(item); } catch (e) { item.status = 'error'; renderQueue(); }
+    if (item.status === 'error') failed.push(item.file.fpRelativePath || item.file.name);
   }
+  const ok = total - failed.length;
+  let msg = ok + ' of ' + total + ' uploaded.';
+  if (failed.length) {
+    msg += ' <strong>' + failed.length + ' failed:</strong><ul style="margin:6px 0 0 18px">'
+         + failed.map(f => '<li>' + FP.esc(f) + '</li>').join('') + '</ul>';
+  }
+  setBatchProgress(msg);
 }
 
 function prependHistory(filename, upload_id) {

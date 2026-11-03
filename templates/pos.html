@@ -117,29 +117,10 @@
    Tab buttons that point to in-page panels on the budget become
    anchor links back to the budget with ?tab=<name>. The POs button
    gets the active state. #}
-{% if return_budget %}
-<div class="tabs-row">
-  <div class="tabs">
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=topsheet">Dashboard</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=topsheet-detail">Top Sheet</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=working">Budget</a>
-    <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=return_budget.id) }}">Schedule</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=travel">Travel</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=catering">Catering</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=contacts">People</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=locations">Locations</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=assumptions">Assumptions</a>
-    <span class="tab-btn active">POs</span>
-    <a class="tab-btn tab-link" href="{{ url_for('sub_budgets_page', pid=project.id) }}?return_bid={{ return_budget.id }}">Sub-Budgets</a>
-    <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=return_budget.id) }}">Call Sheets</a>
-    <a class="tab-btn tab-link" href="{{ url_for('docs_inbox_page', pid=project.id) }}">Docs</a>
-    <a class="tab-btn tab-link" href="{{ url_for('actuals_workspace_page', pid=project.id) }}">Actuals</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=activity">Activity</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=import-tools">Tools</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=settings">⚙ Settings</a>
-  </div>
-</div>
-{% endif %}
+{# THE project nav strip (templates/_project_nav.html) — POs active. #}
+{% with nav_project=project, nav_budget=return_budget, nav_active='pos' %}
+{% include "_project_nav.html" %}
+{% endwith %}
 
 <div class="page-header" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-top:1rem">
   <h1 style="margin:0">Purchase Orders</h1>

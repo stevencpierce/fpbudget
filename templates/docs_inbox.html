@@ -156,10 +156,10 @@
                             border:1px solid var(--border); border-radius:6px; padding:2px 8px; }
 </style>
 
-{# Shared project tab strip — keep the SAME nav chrome as the budget page so
-   the user can jump anywhere. 'docs' is marked active here. #}
-{% set active_tab = 'docs' %}
-{% include "_project_tabs.html" with context %}
+{# THE project nav strip (templates/_project_nav.html) — Docs active. #}
+{% with nav_project=project, nav_active='docs' %}
+{% include "_project_nav.html" %}
+{% endwith %}
 
 {# Back link removed 2026-07-08 (user): the shared tab strip above already
    navigates anywhere in the project — the extra ← button read as odd. #}
@@ -170,7 +170,11 @@
   {# Upload right here in the inbox — opens a file picker (multi). The whole
      page is also a drag-drop target (see #inbxDropOverlay + upload JS). #}
   <button type="button" class="inbx-link" id="inbxUploadBtn" style="cursor:pointer">⤒ Upload</button>
+  {# Whole folders, nested too (owner 2026-11-03). Hidden / non-document
+     files are skipped by FP.filterDocFiles (static/fp-utils.js). #}
+  <button type="button" class="inbx-link" id="inbxFolderBtn" style="cursor:pointer" title="Upload every document inside a folder (and its subfolders)">📁 Choose folder…</button>
   <input type="file" id="inbxFileInput" multiple accept="image/*,application/pdf,.heic,.heif" style="display:none">
+  <input type="file" id="inbxFolderInput" webkitdirectory multiple style="display:none">
   <span id="inbxHint" style="cursor:default">
     <span class="inbx-link" style="cursor:help">? Keys</span>
     <span id="inbxHintBox">
@@ -188,9 +192,9 @@
    where I used to drag documents in — I preferred it"). The whole page is
    still a drop target (#inbxDropOverlay); this strip is the always-visible
    affordance, and clicking it opens the same multi-file picker. #}
-<div id="inbxDropZone" title="Click to choose files — or drag them anywhere on this page">
+<div id="inbxDropZone" title="Click to choose files — or drag files or folders anywhere on this page">
   <span style="font-size:22px;line-height:1">📥</span>
-  <span><strong>Drag documents here</strong> or click to upload</span>
+  <span><strong>Drag documents or folders here</strong> or click to upload</span>
   <span class="dz-types">PDF · JPG · PNG · HEIC</span>
 </div>
 
@@ -1083,25 +1087,25 @@
     }
 
     _uploading = true;
-    var total = files.length, ok = 0, failed = 0;
+    var total = files.length, ok = 0, failed = [];
 
-    // Sequential chain, fail-open per file.
+    // Sequential chain, fail-open per file: one failure never stops the batch.
     var chain = Promise.resolve();
     files.forEach(function (file, i) {
       chain = chain.then(function () {
-        toastPin('Uploading ' + shortName(file.name) + '… (' + (i + 1) + '/' + total + ')', '');
+        toastPin('Uploading ' + (i + 1) + ' of ' + total + ' — ' + shortName(file.name) + '…', '');
         return uploadOne(file).then(function (res) {
           var s = res.status;
           if (s >= 200 && s < 300) {
             ok += 1;
-            toastPin('✓ ' + shortName(file.name) + ' uploaded (' + (i + 1) + '/' + total + ')', 'ok');
+            toastPin(ok + ' of ' + total + ' uploaded', 'ok');
           } else {
-            failed += 1;
             var msg = (res.body && res.body.error) ? res.body.error : ('HTTP ' + s);
+            failed.push(shortName(file.fpRelativePath || file.name) + ' — ' + msg);
             toastPin('✕ ' + shortName(file.name) + ' failed — ' + msg, 'err');
           }
         }).catch(function () {
-          failed += 1;
+          failed.push(shortName(file.fpRelativePath || file.name) + ' — network error');
           toastPin('✕ ' + shortName(file.name) + ' failed — network error', 'err');
         });
       });
@@ -1109,12 +1113,15 @@
 
     chain.then(function () {
       _uploading = false;
-      var summary = failed
-        ? (ok + ' uploaded, ' + failed + ' failed.')
-        : (ok + ' file' + (ok === 1 ? '' : 's') + ' uploaded.');
-      // Re-fetch so the new docs appear with their states, then flash summary.
+      var summary = ok + ' of ' + total + ' uploaded.';
+      // Re-fetch so the new docs appear with their states, then show the
+      // summary; a failure list stays pinned until the next action.
       loadInbox(function () {
-        toast(summary, failed ? 'err' : 'ok');
+        if (failed.length) {
+          toastPin(summary + ' ' + failed.length + ' failed: ' + failed.join(' · '), 'err');
+        } else {
+          toast(summary, 'ok');
+        }
       });
     });
   }
@@ -1132,8 +1139,20 @@
   });
   if (_fileInput) {
     _fileInput.addEventListener('change', function () {
-      uploadFiles(this.files);
+      uploadFiles(FP.filterDocFiles(this.files));
       this.value = '';   // allow re-picking the same file
+    });
+  }
+  // "Choose folder…" — the directory picker; nested folders come along.
+  var _folderInput = $('inbxFolderInput');
+  var _folderBtn = $('inbxFolderBtn');
+  if (_folderBtn && _folderInput) {
+    _folderBtn.addEventListener('click', function () { _folderInput.click(); });
+    _folderInput.addEventListener('change', function () {
+      var files = FP.filterDocFiles(this.files);
+      this.value = '';
+      if (!files.length) { toast('No PDF or image files found in that folder.', 'err'); return; }
+      uploadFiles(files);
     });
   }
 
@@ -1166,9 +1185,13 @@
   });
   window.addEventListener('drop', function (e) {
     _dragDepth = 0; showOverlay(false);
-    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    if (!hasFiles(e)) return;
     e.preventDefault();
-    uploadFiles(e.dataTransfer.files);
+    // Files AND folders (nested too) — the ONE walker in static/fp-utils.js.
+    FP.collectDroppedFiles(e.dataTransfer).then(function (files) {
+      if (!files.length) { toast('Nothing to upload — no PDF or image files in that drop.', 'err'); return; }
+      uploadFiles(files);
+    });
   });
 
   // ── go ─────────────────────────────────────────────────────────────────────

@@ -1,0 +1,115 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   THE project navigation strip — one partial, every project page.
+
+   Owner (2026-11-03): "when I go to the actuals tab, it loses all the top
+   tabs … I want a unified, universal website design, so all the pages feel
+   the same … however that navigation happens, it needs to be uniform."
+
+   Include it with an explicit, small context — never by assuming the
+   including page's variable names:
+
+     {% with nav_project=project, nav_active='actuals' %}
+       {% include "_project_nav.html" %}
+     {% endwith %}
+
+   Context keys
+     nav_project   (required) the ProjectSheet (only .id is read)
+     nav_active    one of: overview · topsheet · budget · schedule · people ·
+                   actuals · docs · travel · pos · catering · subbudgets ·
+                   locations · callsheets · assumptions · activity · import ·
+                   settings. Anything else = nothing highlighted.
+     nav_budget    (optional) a Budget. With it, budget-page tabs link to
+                   THAT budget (budget_view?tab=…) and Schedule / Call Sheets
+                   go straight to it. Without it, links go through
+                   project_budget_redirect, which resolves the live budget
+                   and preserves ?tab= / ?page= (so the same pane opens).
+     nav_inpage    (budget page only) True renders the budget page's own
+                   panes as <button data-tab> so its tab-switching JS keeps
+                   working. Everywhere else leave it unset: every tab is a
+                   plain link.
+     nav_dept_filter (budget page only) hides Overview / Top Sheet / Settings
+                   on a department-filtered view, as before.
+     nav_role      project role ('owner' | 'editor' | 'viewer' | …). When
+                   unset it is looked up (project_role_for, app.inject_globals).
+                   Viewers see neither Import & Templates nor Settings
+                   (Cleanup E) — same rule on every page.
+     nav_po_count / nav_sub_count / nav_cs_count   optional counts shown in
+                   the More menu (the budget page has them; other pages
+                   leave them out and the menu simply shows no number).
+
+   Layout: ONE row, never wraps. Below ~1024px the row scrolls sideways
+   (iPad), the More menu is positioned fixed by static/fp-utils.js so the
+   scroll container never clips it. The visual rules are .budget-tabstrip /
+   .project-nav in static/style.css.
+
+   Docs and Actuals are their own screens (Cleanup B) — never ?tab=docs /
+   ?tab=actuals. Every URL is url_for.
+   ═══════════════════════════════════════════════════════════════════════════ #}
+{% set _pid = nav_project.id %}
+{% set _at = nav_active | default('') %}
+{% set _inpage = nav_inpage | default(false) %}
+{% set _dept = nav_dept_filter | default(false) %}
+{% set _role = nav_role if nav_role is defined and nav_role else (project_role_for(_pid) if project_role_for is defined else 'owner') %}
+{% set _bid = nav_budget.id if (nav_budget is defined and nav_budget) else none %}
+{# Budget-page pane link: this budget when known, else the live one. #}
+{% macro _pane_href(tab) -%}
+{%- if _bid %}{{ url_for('budget_view', pid=_pid, bid=_bid) }}?tab={{ tab }}{% else %}{{ url_for('project_budget_redirect', pid=_pid) }}?tab={{ tab }}{% endif -%}
+{%- endmacro %}
+{# One tab: in-page button on the budget page, link everywhere else. `extra`
+   is 'menu' for items inside the More menu. #}
+{% macro _pane_tab(key, tab, label, extra='') -%}
+{%- set _cls = 'tab-btn' ~ (' tab-menu-item' if extra == 'menu' else '') ~ (' active' if _at == key else '') -%}
+{%- if _inpage -%}
+<button type="button" class="{{ _cls }}" data-tab="{{ tab }}"{% if extra == 'menu' %} role="menuitem"{% endif %}>{{ label }}</button>
+{%- else -%}
+<a class="{{ _cls }} tab-link" href="{{ _pane_href(tab) }}"{% if extra == 'menu' %} role="menuitem"{% endif %}{% if _at == key %} aria-current="page"{% endif %}>{{ label }}</a>
+{%- endif -%}
+{%- endmacro %}
+{% macro _page_tab(key, href, label, extra='', count=none) -%}
+{%- set _cls = 'tab-btn tab-link' ~ (' tab-menu-item' if extra == 'menu' else '') ~ (' active' if _at == key else '') -%}
+<a class="{{ _cls }}" href="{{ href }}"{% if extra == 'menu' %} role="menuitem"{% endif %}{% if _at == key %} aria-current="page"{% endif %}>{{ label }}{% if count %}<span class="tab-menu-count">{{ count }}</span>{% endif %}</a>
+{%- endmacro %}
+{% set _sched_href = url_for('gantt_view', pid=_pid, bid=_bid) if _bid else url_for('project_budget_redirect', pid=_pid) ~ '?page=schedule' %}
+{% set _cs_href = url_for('callsheet_view', pid=_pid, bid=_bid) if _bid else url_for('project_budget_redirect', pid=_pid) ~ '?page=callsheets' %}
+{% set _po_href = url_for('po_list_page', pid=_pid) ~ ('?return_bid=' ~ _bid if _bid else '') %}
+{% set _sub_href = url_for('sub_budgets_page', pid=_pid) ~ ('?return_bid=' ~ _bid if _bid else '') %}
+<nav class="tabs-row budget-tabstrip project-nav" aria-label="Project sections" data-active="{{ _at }}">
+  <div class="tabs">
+    {% if not _dept %}{{ _pane_tab('overview', 'topsheet', 'Overview') }}{% endif %}
+    {% if not _dept %}{{ _pane_tab('topsheet', 'topsheet-detail', 'Top Sheet') }}{% endif %}
+    {{ _pane_tab('budget', 'working', 'Budget') }}
+    {{ _page_tab('schedule', _sched_href, 'Schedule') }}
+    {{ _pane_tab('people', 'contacts', 'People') }}
+    {{ _page_tab('actuals', url_for('actuals_workspace_page', pid=_pid), 'Actuals') }}
+    {{ _page_tab('docs', url_for('docs_inbox_page', pid=_pid), 'Docs') }}
+    <div class="tab-more-wrap">
+      <button type="button" class="tab-btn tab-more-btn" id="tab-more-btn" aria-haspopup="menu" aria-expanded="false">
+        <span class="tab-more-label">More</span>
+        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>
+      </button>
+      <div class="tab-more-menu" id="tab-more-menu" role="menu" aria-label="More sections" hidden>
+        {{ _pane_tab('travel', 'travel', 'Travel', 'menu') }}
+        {{ _page_tab('pos', _po_href, 'POs', 'menu', nav_po_count | default(none)) }}
+        {{ _pane_tab('catering', 'catering', 'Catering', 'menu') }}
+        {{ _page_tab('subbudgets', _sub_href, 'Sub-Budgets', 'menu', nav_sub_count | default(none)) }}
+        {{ _pane_tab('locations', 'locations', 'Locations', 'menu') }}
+        {{ _page_tab('callsheets', _cs_href, 'Call Sheets', 'menu', nav_cs_count | default(none)) }}
+        {{ _pane_tab('assumptions', 'assumptions', 'Assumptions', 'menu') }}
+        {{ _pane_tab('activity', 'activity', 'Activity', 'menu') }}
+        {% if _role != 'viewer' %}
+        {{ _pane_tab('import', 'import-tools', 'Import & Templates', 'menu') }}
+        {% endif %}
+      </div>
+    </div>
+    {% if not _dept and _role != 'viewer' %}
+    {% if _inpage %}
+    <button type="button" class="tab-btn tab-settings{% if _at == 'settings' %} active{% endif %}" data-tab="settings">
+    {% else %}
+    <a class="tab-btn tab-link tab-settings{% if _at == 'settings' %} active{% endif %}" href="{{ _pane_href('settings') }}">
+    {% endif %}
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"></path></svg>
+      Settings
+    {% if _inpage %}</button>{% else %}</a>{% endif %}
+    {% endif %}
+  </div>
+</nav>

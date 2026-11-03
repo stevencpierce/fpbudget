@@ -3,6 +3,7 @@
 <head>
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <script src="{{ url_for('static', filename='csrf.js') }}?v={{ APP_COMMIT | default('x') }}"></script>
+  <script src="{{ url_for('static', filename='fp-utils.js') }}?v={{ APP_COMMIT | default('x') }}"></script>
   <script>
     // One rule per decision (Cleanup D): the canonical lists, from the server.
     window.__FP_DOC_TYPES = {{ DOC_TYPE_LABELS | tojson }};
@@ -619,10 +620,11 @@ if (dropZone) {
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
   dropZone.addEventListener('drop',      e => {
     e.preventDefault(); dropZone.classList.remove('drag-over');
-    addFiles(Array.from(e.dataTransfer.files));
+    // Files AND folders (nested too) — the ONE walker in static/fp-utils.js.
+    FP.collectDroppedFiles(e.dataTransfer).then(files => { if (files.length) addFiles(files); });
   });
   dropInput.addEventListener('change', () => {
-    addFiles(Array.from(dropInput.files)); dropInput.value = '';
+    addFiles(FP.filterDocFiles(dropInput.files)); dropInput.value = '';
   });
 }
 

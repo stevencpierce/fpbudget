@@ -395,18 +395,18 @@
 </template>
 
 <div class="aw aw-root" id="aw">
-  <header class="aw-head">
-    <div class="aw-crumbs">
-      <a class="brand" href="{{ url_for('dashboard') }}">FPBudget</a>
-      <span class="sep" aria-hidden="true">/</span>
-      <a class="proj" href="{{ url_for('budget_view', pid=project.id, bid=budget_id) if budget_id else url_for('dashboard') }}">{{ project.name }}</a>
-      <span class="sep" aria-hidden="true">/</span>
-      <span class="here">Actuals</span>
-    </div>
+  {# THE project nav strip (templates/_project_nav.html) — Actuals active. It
+     replaces the old crumbs + "Budget" button; the sync controls stay. #}
+  <div style="padding:0 24px;flex-shrink:0">
+  {% with nav_project=project, nav_budget=budget, nav_active='actuals' %}
+  {% include "_project_nav.html" %}
+  {% endwith %}
+  </div>
+  <header class="aw-head" style="height:44px">
+    <div class="aw-crumbs"><span class="here">Actuals</span><span class="proj">{{ project.name }}</span></div>
     <div class="aw-head-right">
       <span class="aw-status" id="aw-syncstatus"><span class="aw-dot off" id="aw-syncdot" aria-hidden="true"></span><span id="aw-synctext">Loading</span></span>
       <button type="button" class="aw-btn" id="aw-syncnow" data-act="sync-now">Sync now</button>
-      {% if budget_id %}<a class="aw-btn" href="{{ url_for('budget_view', pid=project.id, bid=budget_id) }}">Budget</a>{% endif %}
     </div>
   </header>
 

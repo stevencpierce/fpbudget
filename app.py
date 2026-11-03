@@ -1067,7 +1067,12 @@ def inject_globals():
             "PAYMENT_METHODS": _fp_payment_methods,        # actuals
             "PAYMENT_METHOD_LABELS": _fp_payment_method_labels,
             "MODE_META": _fp_mode_meta,                    # budget_calc
-            "FP_COA_SECTIONS": FP_COA_SECTIONS}            # budget_calc
+            "FP_COA_SECTIONS": FP_COA_SECTIONS,            # budget_calc
+            # The shared project nav strip (templates/_project_nav.html)
+            # hides Import & Templates / Settings from viewers on EVERY
+            # page with the one role rule; pages that don't already carry
+            # proj_role look it up here.
+            "project_role_for": _user_project_role}
 
 
 def _non_ledger_doc_categories_for_js():
@@ -6024,7 +6029,7 @@ def project_budget_redirect(pid):
         latest = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
     if latest:
         # ?page=schedule|callsheets sends the shared project-tab strip's
-        # Schedule / Call Sheets links (templates/_project_tabs.html, which
+        # Schedule / Call Sheets links (templates/_project_nav.html, which
         # has no budget id) to that page on the resolved budget instead of
         # the budget page. (Cleanup B, 2026-11-02.)
         _page = (request.args.get('page') or '').strip().lower()
