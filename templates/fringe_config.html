@@ -5,12 +5,14 @@
 <div class="page-header" style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:.75rem">
   <div>
     <h1>Fringe Rates</h1>
-    <p class="muted">Global defaults. Per-project overrides can be set later.</p>
+    <p class="muted">The company fringe library. Per-project overrides live on each budget's Settings tab.{% if not is_admin %} Changes are made by an admin.{% endif %}</p>
   </div>
-  <button class="btn btn-outline btn-sm" onclick="openNewFringeModal()">+ Add Fringe</button>
+  {% if is_admin %}<button class="btn btn-outline btn-sm" onclick="openNewFringeModal()">+ Add Fringe</button>{% endif %}
 </div>
 
 {% set DEFAULT_FRINGES = ['E','N','L','U','S','I'] %}
+{# Viewing is for every logged-in user; editing is admin-only (Cleanup E,
+   2026-11-02) — the save / new / delete routes return 403 otherwise. #}
 
 <table class="data-table" style="max-width:700px">
   <thead>
@@ -32,6 +34,7 @@
       <td>{{ '✓' if f.is_flat else '—' }}</td>
       <td class="col-num">{{ f.flat_amount | currency if f.flat_amount else '—' }}</td>
       <td style="white-space:nowrap">
+        {% if is_admin %}
         <button class="btn btn-xs btn-outline"
                 onclick="openFringeEdit({{ f.id }}, '{{ f.fringe_type }}', '{{ f.label }}',
                   {{ f.rate | float }}, {{ 'true' if f.is_flat else 'false' }},
@@ -42,6 +45,7 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="btn btn-xs btn-ghost" style="color:var(--red,#e74c3c)">Delete</button>
         </form>
+        {% endif %}
         {% endif %}
       </td>
     </tr>

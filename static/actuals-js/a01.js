@@ -165,9 +165,10 @@
     // Sync status in the header.
     const sy = d.sync || {};
     $('aw-syncdot').classList.toggle('off', !sy.connected);
-    $('aw-synctext').textContent = sy.connected
-      ? `QuickBooks synced ${sy.last_synced ? whenText(sy.last_synced) : 'never'} · ${sy.accounts} account${sy.accounts === 1 ? '' : 's'}`
-      : 'QuickBooks not connected';
+    // Connecting is company-wide — it lives on the Admin hub (AJ.urls.oauth).
+    $('aw-synctext').innerHTML = sy.connected
+      ? esc(`QuickBooks synced ${sy.last_synced ? whenText(sy.last_synced) : 'never'} · ${sy.accounts} account${sy.accounts === 1 ? '' : 's'}`)
+      : `QuickBooks not connected · <a href="${esc(AJ.urls.oauth)}">Connect in Admin</a>`;
     $('aw-syncnow').disabled = !sy.connected || !sy.accounts;
     // Card filter options (kept in sync with the pool).
     const cards = new Set();
@@ -416,7 +417,7 @@
       <div class="aw-card">
         <h3>QuickBooks</h3>
         <dl class="aw-kv">
-          <dt>Status</dt><dd>${connected ? '<span class="aw-flag green">Connected</span>' : `<span class="aw-flag yellow">Not connected</span> <a href="${esc(AJ.urls.oauth)}">Connect</a>`}</dd>
+          <dt>Status</dt><dd>${connected ? '<span class="aw-flag green">Connected</span>' : `<span class="aw-flag yellow">Not connected</span> <a href="${esc(AJ.urls.oauth)}">Connect in Admin</a>`}</dd>
           <dt>Accounts</dt><dd class="num">${sy.accounts || 0} selected</dd>
           <dt>Last sync</dt><dd class="num">${sy.last_synced ? esc(sy.last_synced.replace('T', ' ')) + ' (' + whenText(sy.last_synced) + ')' : 'never'}</dd>
           <dt>Change capture</dt><dd class="num">${sy.last_cdc_sync ? esc(sy.last_cdc_sync.replace('T', ' ')) : '—'}</dd>

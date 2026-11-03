@@ -3,16 +3,19 @@
 
 {% block content %}
 <style>
-  .admin-wrap { max-width: 1100px; margin: 0 auto; padding: 0 0 4rem; }
+  .admin-wrap { max-width: 1392px; margin: 0 auto; padding: 0 0 4rem; }
   .admin-page-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 1.5rem 0 1.25rem; border-bottom: 1px solid var(--border);
     margin-bottom: 2rem; flex-wrap: wrap; gap: .75rem;
   }
   .admin-page-header h1 { font-size: 1.4rem; font-weight: 700; margin: 0; }
+  .admin-jump { display: flex; gap: 14px; margin-top: 6px; font-size: .8rem; }
+  .admin-jump a { color: var(--text-muted); }
+  .admin-jump a:hover { color: var(--text); }
   .admin-stats { display: flex; gap: .6rem; }
   .admin-stat {
-    background: var(--surface, #2a2a2a); border: 1px solid var(--border);
+    background: var(--bg-2); border: 1px solid var(--border);
     border-radius: 8px; padding: .3rem .85rem; font-size: .82rem;
     color: var(--text-muted); display: flex; align-items: center; gap: .35rem;
   }
@@ -34,8 +37,8 @@
   }
   .temp-pw-box .sub { font-size: .78rem; color: #aaa; margin-top: .35rem; }
   .admin-card {
-    background: var(--surface, #1e1e1e); border: 1px solid var(--border);
-    border-radius: 12px; padding: 1.5rem; margin-bottom: 1.75rem;
+    background: var(--bg-2); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 1.25rem 1.5rem; margin-bottom: 1.5rem;
   }
   .admin-card-header {
     display: flex; align-items: center; justify-content: space-between;
@@ -53,19 +56,20 @@
   }
   .users-table td { padding: .7rem .75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
   .users-table tr:last-child td { border-bottom: none; }
-  .users-table tbody tr:hover td { background: rgba(255,255,255,.025); }
+  .users-table tbody tr:hover td { background: var(--bg-hover); }
   .role-badge {
     display: inline-block; padding: .2rem .65rem; border-radius: 20px;
     font-size: .72rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
   }
-  .role-super_admin  { background:rgba(124,58,237,.2); color:#c4b5fd; border:1px solid rgba(124,58,237,.4); }
-  .role-admin        { background:rgba(79,70,229,.2);  color:#a5b4fc; border:1px solid rgba(79,70,229,.4); }
-  .role-line_producer{ background:rgba(2,132,199,.2);  color:#7dd3fc; border:1px solid rgba(2,132,199,.4); }
-  .role-dept_head    { background:rgba(8,145,178,.2);  color:#67e8f9; border:1px solid rgba(8,145,178,.4); }
-  .role-docs_only    { background:rgba(16,185,129,.15); color:#6ee7b7; border:1px solid rgba(16,185,129,.35); }
+  /* Theme tokens so both themes hold (Cleanup E). */
+  .role-super_admin  { background:color-mix(in srgb, var(--accent) 16%, var(--bg-2)); color:var(--accent); border:1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
+  .role-admin        { background:color-mix(in srgb, var(--blue) 14%, var(--bg-2));   color:var(--blue);   border:1px solid color-mix(in srgb, var(--blue) 40%, transparent); }
+  .role-line_producer{ background:color-mix(in srgb, var(--blue) 10%, var(--bg-2));   color:var(--blue);   border:1px solid color-mix(in srgb, var(--blue) 30%, transparent); }
+  .role-dept_head    { background:color-mix(in srgb, var(--green) 12%, var(--bg-2));  color:var(--green);  border:1px solid color-mix(in srgb, var(--green) 35%, transparent); }
+  .role-docs_only    { background:color-mix(in srgb, var(--green) 10%, var(--bg-2));  color:var(--green);  border:1px solid color-mix(in srgb, var(--green) 30%, transparent); }
   .status-dot { display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:.35rem; }
-  .dot-active   { background:#22c55e;box-shadow:0 0 5px #22c55e80; }
-  .dot-inactive { background:#6b7280; }
+  .dot-active   { background:var(--green); }
+  .dot-inactive { background:var(--text-muted); }
   .action-row { display:flex;gap:.3rem;flex-wrap:wrap; }
   .btn-xs {
     padding:.22rem .55rem;font-size:.75rem;border-radius:5px;
@@ -73,8 +77,8 @@
     color:var(--text);cursor:pointer;transition:all .12s;line-height:1.4;
   }
   .btn-xs:hover { background:var(--border); }
-  .btn-xs.danger { color:#f87171;border-color:rgba(248,113,113,.35); }
-  .btn-xs.danger:hover { background:rgba(248,113,113,.12); }
+  .btn-xs.danger { color:var(--red);border-color:color-mix(in srgb, var(--red) 35%, transparent); }
+  .btn-xs.danger:hover { background:color-mix(in srgb, var(--red) 12%, var(--bg-2)); }
   .btn-xs:disabled { opacity:.3;cursor:not-allowed; }
   .create-form { display:grid;grid-template-columns:1fr 1fr;gap:1rem; }
   .create-form .full { grid-column:1/-1; }
@@ -82,7 +86,7 @@
   .fg label { font-size:.78rem;font-weight:600;color:var(--text-muted); }
   .fg input,.fg select {
     padding:.5rem .75rem;border:1px solid var(--border);border-radius:7px;
-    background:var(--bg,#141414);color:var(--text);font-size:.88rem;
+    background:var(--bg-input);color:var(--text);font-size:.88rem;
   }
   .fg input:focus,.fg select:focus { outline:none;border-color:var(--accent,#4f46e5); }
   .proj-access-row {
@@ -94,18 +98,18 @@
   .access-chips { display:flex;flex-wrap:wrap;gap:.35rem;flex:1; }
   .access-chip {
     display:inline-flex;align-items:center;gap:.3rem;
-    background:rgba(79,70,229,.12);border:1px solid rgba(79,70,229,.3);
-    color:#a5b4fc;padding:.18rem .6rem;border-radius:20px;font-size:.78rem;
+    background:color-mix(in srgb, var(--accent) 12%, var(--bg-2));border:1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    color:var(--accent);padding:.18rem .6rem;border-radius:20px;font-size:.78rem;
   }
   .access-chip.role-docs_only {
-    background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.3);color:#6ee7b7;
+    background:color-mix(in srgb, var(--green) 10%, var(--bg-2));border-color:color-mix(in srgb, var(--green) 30%, transparent);color:var(--green);
   }
-  .access-chip .chip-role { color:#64748b;font-size:.7rem; }
-  .access-chip button { background:none;border:none;color:#f87171;cursor:pointer;font-size:.78rem;padding:0;line-height:1; }
+  .access-chip .chip-role { color:var(--text-muted);font-size:.7rem; }
+  .access-chip button { background:none;border:none;color:var(--red);cursor:pointer;font-size:.78rem;padding:0;line-height:1; }
   .add-row { display:flex;gap:.4rem;align-items:center;flex-wrap:wrap; }
   .add-row select {
     padding:.32rem .6rem;border:1px solid var(--border);border-radius:6px;
-    background:var(--bg,#141414);color:var(--text);font-size:.8rem;
+    background:var(--bg-input);color:var(--text);font-size:.8rem;
   }
   .edit-backdrop {
     display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);
@@ -113,7 +117,7 @@
   }
   .edit-backdrop.open { display:flex; }
   .edit-box {
-    background:var(--surface,#1e1e1e);border:1px solid var(--border);
+    background:var(--bg-2);border:1px solid var(--border);
     border-radius:12px;padding:1.75rem 2rem;
     min-width:320px;max-width:440px;width:90%;
   }
@@ -124,8 +128,19 @@
 
 <div class="admin-wrap">
 
+  {# Admin hub (Cleanup E, 2026-11-02): ONE place for everything company-wide
+     — Users · Company · Libraries · Maintenance · Errors. Nothing
+     company-wide lives inside a project. #}
   <div class="admin-page-header">
-    <h1>Admin Panel</h1>
+    <div>
+      <h1>Admin</h1>
+      <div class="admin-jump">
+        <a href="#users">Users</a>
+        {% if current_user.role == 'super_admin' %}<a href="#company">Company</a>{% endif %}
+        <a href="#libraries">Libraries</a>
+        {% if current_user.role == 'super_admin' %}<a href="#maintenance">Maintenance</a><a href="#errors">Errors</a>{% endif %}
+      </div>
+    </div>
     <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
       <div class="admin-stats">
         <div class="admin-stat"><strong>{{ users|length }}</strong>&nbsp;user{{ 's' if users|length!=1 }}</div>
@@ -151,7 +166,7 @@
   {% endwith %}
 
   <!-- Users -->
-  <div class="admin-card">
+  <div class="admin-card" id="users">
     <div class="admin-card-header"><h2>Users</h2></div>
     <table class="users-table">
       <thead><tr>
@@ -241,11 +256,9 @@
   <div class="admin-card" id="project-access">
     <div class="admin-card-header">
       <h2>Project Access</h2>
-      <form method="POST" action="{{ url_for('admin_import_dropbox') }}"
-            class="confirm-form" data-msg="Scan Dropbox for project folders and import any missing ones?">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="btn btn-sm btn-outline">Import from Dropbox</button>
-      </form>
+      {% if current_user.role == 'super_admin' %}
+      <a href="{{ url_for('admin_maintenance') }}#tool-import-dropbox" class="btn btn-sm btn-outline" title="Scan Dropbox for project folders — on the Maintenance page">Import from Dropbox →</a>
+      {% endif %}
     </div>
     {% if projects %}
       {% for project in projects %}
@@ -282,42 +295,136 @@
     {% endif %}
   </div>
 
-  {# Production Company Profile — moved here from the budget page's Settings
-     tab (Cleanup C, 2026-11-02): it is company-wide, not per project. Reads
-     and writes the existing /settings/company JSON endpoints. #}
-  <div class="admin-card" id="company-profile">
-    <div class="admin-card-header"><h2>Production Company Profile</h2></div>
-    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
-      Appears on every PDF export and client estimate. One profile for the whole company.
-    </p>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.6rem .9rem">
-      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Company name
-        <input type="text" id="cs-company-name" placeholder="Framework Productions"></label>
-      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Address
-        <input type="text" id="cs-address-line1" placeholder="Street address"></label>
-      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Suite / floor
-        <input type="text" id="cs-address-line2" placeholder="Optional"></label>
-      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">City
-        <input type="text" id="cs-city"></label>
-      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">State
-        <input type="text" id="cs-state"></label>
-      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">ZIP
-        <input type="text" id="cs-zip"></label>
-      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Phone
-        <input type="text" id="cs-phone"></label>
-      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Email
-        <input type="email" id="cs-email"></label>
-      <label style="display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-muted)">Website
-        <input type="text" id="cs-website" placeholder="https://..."></label>
-    </div>
-    <div style="display:flex;align-items:center;gap:10px;margin-top:.8rem">
-      <button type="button" class="btn btn-primary btn-sm" id="cs-save-btn">Save profile</button>
-      <span id="cs-saved-msg" style="font-size:.82rem;color:#22c55e;display:none">✓ Saved</span>
+
+  {# ── Company (super admin) ─────────────────────────────────────────── #}
+  {% if current_user.role == 'super_admin' %}
+  <div class="adm-section" id="company">
+    <div class="adm-section-h"><h2>Company</h2><span class="sub">one profile and one set of connections for the whole company</span></div>
+    <div class="adm-grid">
+
+      <div class="adm-card wide" id="company-profile">
+        <div class="adm-card-h"><span class="t">Production company profile</span><span class="pay-chip sq">on every PDF and estimate</span></div>
+        <div class="adm-fields">
+          <label>Company name<input type="text" id="cs-company-name" placeholder="Framework Productions"></label>
+          <label>Address<input type="text" id="cs-address-line1" placeholder="Street address"></label>
+          <label>Suite / floor<input type="text" id="cs-address-line2" placeholder="Optional"></label>
+          <label>City<input type="text" id="cs-city"></label>
+          <label>State<input type="text" id="cs-state"></label>
+          <label>ZIP<input type="text" id="cs-zip"></label>
+          <label>Phone<input type="text" id="cs-phone"></label>
+          <label>Email<input type="email" id="cs-email"></label>
+          <label>Website<input type="text" id="cs-website" placeholder="https://..."></label>
+        </div>
+        <div class="act">
+          <button type="button" class="pay-btn primary" id="cs-save-btn">Save profile</button>
+          <span id="cs-saved-msg" style="font-size:.8rem;color:var(--green);display:none">Saved</span>
+        </div>
+      </div>
+
+      <div class="adm-card" id="company-qbo">
+        <div class="adm-card-h"><span class="t">QuickBooks</span>
+          {% if status.qbo.connected and not status.qbo.token_expired %}<span class="pay-chip sq ok">connected</span>
+          {% elif status.qbo.connected %}<span class="pay-chip sq warn">token expired</span>
+          {% else %}<span class="pay-chip sq bad">not connected</span>{% endif %}
+        </div>
+        <dl class="adm-kv">
+          <dt>Realm</dt><dd>{{ status.qbo.realm_id or '—' }}</dd>
+          <dt>Last sync</dt><dd>{{ status.qbo.last_sync or '—' }}</dd>
+          <dt>Token expires</dt><dd>{{ status.qbo.token_expiry or '—' }}</dd>
+          <dt>App keys</dt><dd>{{ 'set' if status.qbo.env_ok else 'QBO_CLIENT_ID / SECRET missing' }}</dd>
+        </dl>
+        <div class="d">Syncing happens per project on its Actuals screen. Vendors mirror through <a href="{{ url_for('admin_qbo_vendors') }}">QuickBooks vendors</a>.</div>
+        <div class="act">
+          <a class="pay-btn primary" href="{{ url_for('qbo_oauth_start') }}">{{ 'Reconnect' if status.qbo.connected else 'Connect' }}</a>
+          {% if status.qbo.connected %}
+          <button type="button" class="pay-btn adm-btn-danger" id="qbo-disconnect-btn">Disconnect</button>
+          {% endif %}
+          <span style="font-size:.75rem;color:var(--text-muted)" id="qbo-disconnect-msg"></span>
+        </div>
+      </div>
+
+      <div class="adm-card" id="company-integrations">
+        <div class="adm-card-h"><span class="t">Integrations</span></div>
+        <div>
+          <div class="adm-status-row">
+            <span class="pay-dot {{ 'ok' if status.dropbox.configured else 'bad' }}"></span>
+            <span class="n">Dropbox</span>
+            <span class="s">{{ ('ops root ' ~ status.dropbox.ops_path) if status.dropbox.ops_path else ('namespace' if status.dropbox.namespace else 'no credentials') }}</span>
+            <button type="button" class="btn-xs" data-ping="/admin/dropbox/status">Test</button>
+          </div>
+          <div class="adm-status-row">
+            <span class="pay-dot {{ 'ok' if status.veryfi.configured else 'bad' }}"></span>
+            <span class="n">Veryfi OCR</span>
+            <span class="s">{{ 'keys set' if status.veryfi.configured else 'keys missing' }}</span>
+            <button type="button" class="btn-xs" data-ping="/admin/veryfi/status">Test</button>
+          </div>
+          <div class="adm-status-row">
+            <span class="pay-dot {{ 'ok' if status.ai.configured else 'warn' }}"></span>
+            <span class="n">AI layer</span>
+            <span class="s">{{ 'Claude key set' if status.ai.configured else 'no key — deterministic only' }}</span>
+            <button type="button" class="btn-xs" data-ping="/admin/ai/ping">Ping</button>
+          </div>
+          <div class="adm-status-row">
+            <span class="pay-dot {{ 'ok' if status.cron.configured else 'warn' }}"></span>
+            <span class="n">Cron token</span>
+            <span class="s">{{ 'set' if status.cron.configured else 'not set — the 4 pm reprocess is off' }}</span>
+          </div>
+        </div>
+        <pre class="adm-out" id="ping-out"></pre>
+      </div>
     </div>
   </div>
+  {% endif %}
+
+  {# ── Libraries ──────────────────────────────────────────────────────── #}
+  <div class="adm-section" id="libraries">
+    <div class="adm-section-h"><h2>Libraries</h2><span class="sub">company-wide lists every project draws on</span></div>
+    <div class="adm-links">
+      <a class="adm-link" href="{{ url_for('fringe_config') }}">Fringe library <span class="sub">rates</span></a>
+      <a class="adm-link" href="{{ url_for('template_list') }}">Templates <span class="sub">budget starters</span></a>
+      <a class="adm-link" href="{{ url_for('location_db_list') }}">Locations</a>
+      <a class="adm-link" href="{{ url_for('payees_directory') }}">Payees <span class="sub">people, loan-outs, vendors</span></a>
+      {% if current_user.role == 'super_admin' %}
+      <a class="adm-link" href="{{ url_for('admin_qbo_vendors') }}">QuickBooks vendors <span class="sub">link</span></a>
+      <a class="adm-link" href="{{ url_for('admin_transactions_page') }}">Transactions <span class="sub">whole pool</span></a>
+      <a class="adm-link" href="{{ url_for('admin_catalog_view') }}">Quick Entry catalog</a>
+      <a class="adm-link" href="{{ url_for('admin_role_mapping_view') }}">Role mapping <span class="sub">MMB / ShowBiz</span></a>
+      {% endif %}
+    </div>
+    <div class="adm-links" style="margin-top:8px">
+      <a class="adm-link" href="{{ url_for('company_health') }}">Company health <span class="sub">cross-project rollup</span></a>
+      <a class="adm-link" href="{{ url_for('admin_qbo_coverage') }}">QuickBooks sync coverage</a>
+      {% if current_user.role == 'super_admin' %}
+      <a class="adm-link" href="{{ url_for('admin_qe_audit_csv') }}">Quick Entry vs catalog audit <span class="sub">CSV</span></a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if current_user.role == 'super_admin' %}
+  {# ── Maintenance + Errors (super admin) ─────────────────────────────── #}
+  <div class="adm-section" id="maintenance">
+    <div class="adm-section-h"><h2>Maintenance</h2></div>
+    <div class="adm-grid">
+      <div class="adm-card">
+        <div class="adm-card-h"><span class="t">Maintenance tools</span><span class="pay-chip sq">{{ tool_count }} tools</span></div>
+        <div class="d">Dropbox and document checks, ledger repairs, QuickBooks purge, catalog and schedule diagnostics — each with a description, its last run and a Run button. Never a typed URL.</div>
+        <div class="act"><a class="pay-btn primary" href="{{ url_for('admin_maintenance') }}">Open Maintenance</a></div>
+      </div>
+      <div class="adm-card" id="errors">
+        <div class="adm-card-h"><span class="t">Errors</span></div>
+        <div class="d">The last production tracebacks from the 500 handler, and a deliberate test error to confirm the Sentry chain end to end.</div>
+        <div class="act">
+          <a class="pay-btn" href="{{ url_for('admin_recent_errors') }}">Recent errors</a>
+          <a class="pay-btn" href="{{ url_for('admin_sentry_test') }}" onclick="return confirm('Raise a deliberate test error now? You will land on the error page; a Sentry event should follow.')">Sentry test</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
   (function () {
     const f = id => document.getElementById(id);
+    // Company profile — the existing /settings/company JSON endpoints.
     fetch('/settings/company').then(r => r.json()).then(d => {
       f('cs-company-name').value  = d.company_name  || '';
       f('cs-address-line1').value = d.address_line1 || '';
@@ -339,254 +446,41 @@
           zip_code: v('cs-zip'), phone: v('cs-phone'), email: v('cs-email'),
           website: v('cs-website')})});
       const m = f('cs-saved-msg');
-      m.textContent = r.ok ? '✓ Saved' : 'Save failed';
-      m.style.color = r.ok ? '#22c55e' : '#ef4444';
+      m.textContent = r.ok ? 'Saved' : 'Save failed';
+      m.style.color = r.ok ? 'var(--green)' : 'var(--red)';
       m.style.display = '';
       setTimeout(() => { m.style.display = 'none'; }, 2500);
     });
-  })();
-  </script>
-
-  {% if current_user.role == 'super_admin' %}
-  <div class="admin-card">
-    <div class="admin-card-header">
-      <h2>Global Quick Entry Catalog</h2>
-      <span class="badge" style="background:rgba(217,119,6,.18);color:#fbbf24;font-size:.7rem;padding:3px 8px;border-radius:4px;margin-left:.5rem;text-transform:uppercase;letter-spacing:.04em">Super Admin</span>
-    </div>
-    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
-      Roles, default rates, fringe types, and groupings used by the Quick Entry panel on every budget.
-      Changes apply globally and immediately.
-    </p>
-    <a href="{{ url_for('admin_catalog_view') }}" class="btn btn-primary">Open Catalog Editor →</a>
-  </div>
-
-  <div class="admin-card">
-    <div class="admin-card-header">
-      <h2>Role Tag Mapping (MMB / ShowBiz)</h2>
-      <span class="badge" style="background:rgba(217,119,6,.18);color:#fbbf24;font-size:.7rem;padding:3px 8px;border-radius:4px;margin-left:.5rem;text-transform:uppercase;letter-spacing:.04em">Super Admin</span>
-    </div>
-    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
-      Translates each internal role tag to its Movie Magic Budgeting and ShowBiz Budgeting target account.
-      Export routines read this table to route lines to the correct external account on download.
-    </p>
-    <a href="{{ url_for('admin_role_mapping_view') }}" class="btn btn-primary">Open Role Mapping Editor →</a>
-  </div>
-
-  <div class="admin-card">
-    <div class="admin-card-header">
-      <h2>All Transactions</h2>
-      <span class="badge" style="background:rgba(217,119,6,.18);color:#fbbf24;font-size:.7rem;padding:3px 8px;border-radius:4px;margin-left:.5rem;text-transform:uppercase;letter-spacing:.04em">Super Admin</span>
-    </div>
-    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
-      The whole transaction pool across projects, one row per QuickBooks charge, with the
-      claiming project, line, backup state and source. Answers "which project took this?"
-    </p>
-    <a href="{{ url_for('admin_transactions_page') }}" class="btn btn-primary">Open All Transactions →</a>
-  </div>
-
-  <div class="admin-card">
-    <div class="admin-card-header">
-      <h2>QBO Sync Coverage</h2>
-      <span class="badge" style="background:rgba(217,119,6,.18);color:#fbbf24;font-size:.7rem;padding:3px 8px;border-radius:4px;margin-left:.5rem;text-transform:uppercase;letter-spacing:.04em">Super Admin</span>
-    </div>
-    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
-      Per-project matrix of every active Bank / Credit-Card account on the connected QBO realm.
-      Diagnoses "project A synced but project B didn't see the same transactions" — almost always
-      caused by different account selections or a parked sync watermark.
-    </p>
-    <a href="{{ url_for('admin_qbo_coverage') }}" class="btn btn-primary">Open QBO Coverage Matrix →</a>
-  </div>
-
-  <div class="admin-card">
-    <div class="admin-card-header">
-      <h2>Cross-Project Claim Backfill</h2>
-      <span class="badge" style="background:rgba(217,119,6,.18);color:#fbbf24;font-size:.7rem;padding:3px 8px;border-radius:4px;margin-left:.5rem;text-transform:uppercase;letter-spacing:.04em">Super Admin</span>
-    </div>
-    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
-      Walks every already-coded transaction through the cross-project claim
-      logic so the fuzzy-match channel (added 2026-05-15) fires retroactively.
-      Use this when you see the same expense showing up in two projects — e.g.
-      a Lyft charge coded in Project A still visible in Project B's actuals.
-      Click <strong>Preview</strong> first to see how many siblings would get
-      claimed without writing anything; then <strong>Run Backfill</strong> to
-      apply.
-    </p>
-    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
-      <button type="button" id="claim-backfill-preview" class="btn btn-outline">Preview (dry-run)</button>
-      <button type="button" id="claim-backfill-apply"   class="btn btn-primary" disabled
-              style="opacity:.55">Run Backfill</button>
-      <span id="claim-backfill-status" style="font-size:.82rem;color:var(--text-muted)"></span>
-    </div>
-    <pre id="claim-backfill-output"
-         style="margin-top:.9rem;padding:.7rem 1rem;background:var(--bg-2,#1a1a1a);
-                border:1px solid var(--border);border-radius:6px;font-size:.78rem;
-                color:var(--text-muted);max-height:380px;overflow:auto;display:none;
-                white-space:pre-wrap;word-break:break-word"></pre>
-  </div>
-
-  <script>
-  (function () {
-    // Two-button workflow: Preview (GET = dry-run, never writes) →
-    // Run Backfill (POST = commits). The apply button stays disabled
-    // until the user has previewed at least once, so a stray double-
-    // click on "Open Admin" can't accidentally fire a database-wide
-    // write. The output pane shows the JSON response from each call
-    // including the per-sibling sample list so the super admin can
-    // sanity-check what's about to be claimed.
-    const previewBtn = document.getElementById('claim-backfill-preview');
-    const applyBtn   = document.getElementById('claim-backfill-apply');
-    const statusEl   = document.getElementById('claim-backfill-status');
-    const outEl      = document.getElementById('claim-backfill-output');
-    if (!previewBtn || !applyBtn) return;
-
-    function setStatus(msg, color) {
-      statusEl.textContent = msg;
-      statusEl.style.color = color || 'var(--text-muted)';
-    }
-    function showOutput(data) {
-      outEl.style.display = 'block';
-      outEl.textContent   = JSON.stringify(data, null, 2);
-    }
-    function setApplyEnabled(on) {
-      applyBtn.disabled       = !on;
-      applyBtn.style.opacity  = on ? '1' : '.55';
-      applyBtn.style.cursor   = on ? 'pointer' : 'not-allowed';
-    }
-
-    previewBtn.addEventListener('click', async () => {
-      previewBtn.disabled = true;
-      const _orig = previewBtn.textContent;
-      previewBtn.textContent = 'Previewing…';
-      setStatus('Walking every coded transaction (dry-run, no writes)…');
+    // QuickBooks disconnect — wipes the stored tokens; the next sync re-auths.
+    const dis = f('qbo-disconnect-btn');
+    if (dis) dis.addEventListener('click', async () => {
+      if (!confirm('Disconnect QuickBooks? The stored tokens are removed and the next sync will ask you to authorize again. Nothing is deleted from QuickBooks.')) return;
+      dis.disabled = true;
       try {
-        const r = await fetch('/admin/cross-project-claim-backfill', {
-          method: 'GET', credentials: 'same-origin',
-          headers: { 'Accept': 'application/json' },
-        });
-        const j = await r.json();
-        showOutput(j);
-        if (!r.ok) {
-          setStatus(j.error || 'Preview failed.', '#ef4444');
-          return;
-        }
-        const n = j.siblings_would_claim || 0;
-        setStatus(
-          `Preview: ${n} sibling${n === 1 ? '' : 's'} would be claimed across ` +
-          `${j.coded_transactions} coded transaction${j.coded_transactions === 1 ? '' : 's'}. ` +
-          (n > 0 ? 'Review the sample below, then click Run Backfill.' :
-                   'Nothing to do — every claim is already in place.'),
-          n > 0 ? '#fbbf24' : '#22c55e'
-        );
-        setApplyEnabled(n > 0);
-      } catch (e) {
-        setStatus('Preview failed: ' + e.message, '#ef4444');
-      } finally {
-        previewBtn.disabled    = false;
-        previewBtn.textContent = _orig;
-      }
+        const r = await fetch('/qbo/oauth/disconnect', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j.ok) { location.reload(); return; }
+        f('qbo-disconnect-msg').textContent = j.error || ('Failed (HTTP ' + r.status + ')');
+      } catch (e) { f('qbo-disconnect-msg').textContent = 'Failed: ' + e.message; }
+      dis.disabled = false;
     });
-
-    applyBtn.addEventListener('click', async () => {
-      if (!confirm(
-        'Run cross-project claim backfill now?\n\n' +
-        'This will update the claimed_by_project_id and ' +
-        'not_project_expense flags on every sibling row identified by ' +
-        'the fuzzy matcher. It cannot be undone in bulk — individual ' +
-        'rows can be unclaimed by re-saving them.\n\n' +
-        'Make sure you reviewed the Preview output first.'
-      )) return;
-      applyBtn.disabled = true;
-      const _orig = applyBtn.textContent;
-      applyBtn.textContent = 'Running…';
-      setStatus('Writing claim updates…');
-      try {
-        const r = await fetch('/admin/cross-project-claim-backfill', {
-          method: 'POST', credentials: 'same-origin',
-          headers: { 'Accept': 'application/json' },
-        });
-        const j = await r.json();
-        showOutput(j);
-        if (!r.ok) {
-          setStatus(j.error || 'Backfill failed.', '#ef4444');
-          applyBtn.disabled = false;
-          applyBtn.textContent = _orig;
-          return;
-        }
-        setStatus(
-          `Done. Marked ${j.siblings_marked_dirty} sibling row${j.siblings_marked_dirty === 1 ? '' : 's'} ` +
-          `as claimed across ${j.coded_transactions} coded transactions` +
-          (j.errors ? ` (${j.errors} error${j.errors === 1 ? '' : 's'} — see server logs)` : '') + '.',
-          j.errors ? '#fbbf24' : '#22c55e'
-        );
-        setApplyEnabled(false);
-        applyBtn.textContent = 'Run Backfill';
-      } catch (e) {
-        setStatus('Backfill failed: ' + e.message, '#ef4444');
-        applyBtn.disabled = false;
-        applyBtn.textContent = _orig;
-      }
+    // Integration tests — show the JSON under the card.
+    document.querySelectorAll('[data-ping]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const out = f('ping-out');
+        out.classList.add('show'); out.textContent = 'Checking ' + btn.dataset.ping + '…';
+        btn.disabled = true;
+        try {
+          const r = await fetch(btn.dataset.ping, { headers: {'Accept': 'application/json'} });
+          const t = await r.text();
+          try { out.textContent = JSON.stringify(JSON.parse(t), null, 2); } catch (_) { out.textContent = t; }
+          out.classList.toggle('err', !r.ok);
+        } catch (e) { out.textContent = 'Failed: ' + e.message; out.classList.add('err'); }
+        btn.disabled = false;
+      });
     });
   })();
   </script>
-
-  <div class="admin-card">
-    <div class="admin-card-header">
-      <h2>Quick Entry vs Catalog Audit</h2>
-      <span class="badge" style="background:rgba(217,119,6,.18);color:#fbbf24;font-size:.7rem;padding:3px 8px;border-radius:4px;margin-left:.5rem;text-transform:uppercase;letter-spacing:.04em">Super Admin</span>
-    </div>
-    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
-      One-shot reconciliation report comparing the Quick Entry panel items (frozen from templates/budget.html)
-      to the database catalog. Flags: missing from catalog, missing from departments, duplicates within or
-      across departments. Export as CSV for offline review before unifying the two sources.
-    </p>
-    <a href="{{ url_for('admin_qe_audit_csv') }}" class="btn btn-primary">Download qe_audit.csv</a>
-  </div>
-
-  <div class="admin-card">
-    <div class="admin-card-header">
-      <h2>One-Time Migrations</h2>
-      <span class="badge" style="background:rgba(217,119,6,.18);color:#fbbf24;font-size:.7rem;padding:3px 8px;border-radius:4px;margin-left:.5rem;text-transform:uppercase;letter-spacing:.04em">Super Admin</span>
-    </div>
-    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
-      Data cleanup migrations that apply across every budget in the system.
-      Review the preview count before running — these changes are not reversible.
-    </p>
-
-    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:.75rem;background:var(--bg-2,#1a1a1a);border:1px solid var(--border);border-radius:6px">
-      <div style="flex:1;min-width:260px">
-        <strong style="font-size:.9rem">Split multi-quantity labor lines into A/B/C</strong>
-        <p style="color:var(--text-muted);font-size:.78rem;margin:.3rem 0 0">
-          Finds every labor line with quantity > 1 and splits it into independent
-          named lines (Line A / B / C...). Schedule days and crew assignments
-          transfer to the correct per-person line by crew_instance. Safe to
-          re-run — already-split lines are skipped.
-        </p>
-        <div id="split-labor-preview" style="font-size:.82rem;margin-top:.5rem"></div>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn-sm btn-outline" id="split-labor-preview-btn">Preview</button>
-        <button class="btn btn-sm btn-primary" id="split-labor-run-btn" disabled>Run Migration</button>
-      </div>
-    </div>
-    <div id="split-labor-result" style="margin-top:.75rem;font-size:.85rem"></div>
-
-    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:.75rem;background:var(--bg-2,#1a1a1a);border:1px solid var(--border);border-radius:6px;margin-top:.75rem">
-      <div style="flex:1;min-width:260px">
-        <strong style="font-size:.9rem">Resync schedule-driven lines across every budget</strong>
-        <p style="color:var(--text-muted);font-size:.78rem;margin:.3rem 0 0">
-          Re-runs the meals / flights / hotel / mileage / per diem / working
-          meals / craft services sync for every budget in the system. Rebuilds
-          auto-created budget lines from the current schedule + production day
-          flags. Safe to run any time — idempotent.
-        </p>
-        <div id="resync-all-preview" style="font-size:.82rem;margin-top:.5rem"></div>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn-sm btn-primary" id="resync-all-btn">Resync All Budgets</button>
-      </div>
-    </div>
-    <div id="resync-all-result" style="margin-top:.75rem;font-size:.85rem"></div>
-  </div>
   {% endif %}
 
 </div>

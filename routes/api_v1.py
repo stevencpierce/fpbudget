@@ -200,11 +200,6 @@ def api_payees():
     return jsonify({"payees": out})
 
 
-@app.route("/api/v1/docs/<int:uid>/status", methods=["GET"])
-@api_auth_required
-def api_docs_upload_status(uid):
-    return docs_upload_status(uid)
-
 
 @app.route("/api/v1/projects/<int:pid>/docs/recent", methods=["GET"])
 @api_auth_required

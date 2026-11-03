@@ -668,7 +668,9 @@ __AJ.initialView = {{ initial_view|tojson }};
 __AJ.canSync = {{ can_sync|tojson }};
 __AJ.urls = {
   workspace: "{{ url_for('actuals_workspace_json', pid=project.id) }}",
-  oauth: "{{ url_for('qbo_oauth_start') }}",
+  {# QuickBooks is a company-wide connection: connect / disconnect from the
+     Admin hub (Cleanup E, 2026-11-02). Sync stays here, per project. #}
+  oauth: "{{ url_for('admin_panel') }}#company-qbo",
   docs: "{{ url_for('docs_project', pid=project.id) }}",
   upload: "{{ url_for('mobile_upload') }}"
 };

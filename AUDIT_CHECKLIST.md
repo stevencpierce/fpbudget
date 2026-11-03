@@ -479,3 +479,51 @@ Tests: `tests/unit/test_one_rule.py` (37: pure + app-booting, self-skipping).
 - [x] D12 — Credits: the mismatch scan (added credits as positive), the ledger
   `coded_total` and person `total_paid` (ignored credits), the not-project
   listing and the PO detail amounts go through `signed_amount_value`.
+
+## 🧹 Cleanup E — Admin hub, Maintenance page, one-shots removed (2026-11-02, branch `cleanup/e-admin`)
+One Admin area holds everything company-wide and every maintenance tool;
+nothing company-wide lives inside a project; one-shot repairs that already
+ran are deleted. Route snapshot vs main: −19 removed, +2 added
+(`/admin/maintenance`, `/admin/maintenance.json`).
+Tests: `tests/unit/test_admin_access.py` (6, app-booting, self-skipping).
+
+- [x] E1 — `/admin` is a hub: Users · Company (profile, QuickBooks
+  Connect / **Disconnect** with confirm + realm / last sync / token expiry,
+  Dropbox / Veryfi / AI status with Test buttons, cron token) · Libraries ·
+  Maintenance · Errors (recent errors, Sentry test). Role badges and chips
+  use theme tokens.
+- [x] E2 — `/admin/maintenance` (`routes/admin_maintenance.py`, super-admin):
+  24 tool cards from a registry (`TOOLS`), each with a description, the
+  last run from `system_task_log` where logged, Preview / Run buttons
+  (confirmed when destructive), inline JSON output or a new tab for HTML
+  pages. Dropbox scan, project wipe, split-labor, resync-all and the claim
+  backfill moved here from the hub / docs page.
+- [x] E3 — Removed (unreferenced; one-shot / legacy / superseded): catalog
+  reseed, purge-legacy-duplicates, rehouse-staff-from, wipe-and-reseed,
+  repair-codes, repair-date-years, /docs/repair-extensions, backfill-card4,
+  relabel-subtype, reconcile-filing, reset-person-invoices, veryfi/classify,
+  from-template, set-active, budget-level estimate/shares, notify-preview,
+  gantt/expand, callsheet/contacts, /api/v1/docs/<uid>/status.
+  KEPT: `/projects/<pid>/clients` + `/save` + `/delete` — budget.html's
+  People tab still uses them (the brief called them retired; they are not).
+- [x] E4 — Company-wide out of the project: Actuals 'Connect' → Admin
+  (Sync now stays per project); `/settings/company` super-admin only;
+  `/fringe-config` save / new / delete admin-only (`admin_required_403`),
+  viewing open to all with edit controls hidden; `/vendors/audit` admin-only;
+  'Wipe all receipts (test)' off the docs page; Gut Check super-admin AND
+  Settings → Display → 'Show Gut Check' (localStorage, default off).
+- [x] E5 — Top nav: Projects · Payees (admins — the directory is
+  admin-only) · Libraries ▾ (Fringes, Templates, Locations) · Upload ·
+  Admin · My Profile · Logout. Company health moved under Admin → Libraries.
+- [x] E6 — Budget page Tools tab → 'Import & Templates' under More ▾
+  (data-tab `import-tools` kept for deep links); the duplicate Export card
+  and the 'Budget Mode' card are gone. Viewers see neither it nor Settings
+  (`proj_role` passed to the template); `actuals_line_totals_batch` (a
+  read-only POST) is exempt from the viewer POST gate so their budget page
+  loads without a console 403.
+- [ ] E7 — No company-wide 'Scan for issues' exists beyond the per-project
+  one (Settings → Maintenance), so nothing moved. `/cron/reprocess-unpaired`
+  keeps its header-token auth; the Maintenance card runs the same worker
+  through the session-authed `/admin/docs/project/<pid>/reprocess-unpaired`
+  (the browser has no CRON_TOKEN).
+
