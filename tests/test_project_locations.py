@@ -1,60 +1,42 @@
 """
-Project-Locations tab tests: the Locations tab inside a budget page (#tab-locations).
-Separate from /locations (global locations database — that is tested in
-test_locations.py once that module is added).
+Project-Locations pane tests: the Locations pane inside a budget page
+(#tab-locations, under the "More" menu since Cleanup B; `?tab=locations`
+deep-links to it). Separate from /locations, the global locations library.
 """
 
-import time
-import allure
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.conftest import BASE_URL
-from tests.utils.helpers import (
-    create_project, delete_project, go_to_projects, open_project_by_name,
-    take_step_screenshot,
-)
-
-pytestmark = allure.suite("Project Locations")
-
-PROJECT_NAME = f"ProjLocTest-{int(time.time()) % 100000}"
+from tests.utils.helpers import take_step_screenshot
 
 
 @pytest.fixture
-def locations_tab_page(admin_page: Page) -> Page:
-    page = admin_page
-    create_project(page, PROJECT_NAME, template="FP Standard")
-    open_project_by_name(page, PROJECT_NAME)
-    page.wait_for_timeout(2000)
-    page.locator('button.tab-btn:has-text("Locations")').first.click()
-    page.wait_for_timeout(1000)
-    yield page
-    go_to_projects(page)
-    delete_project(page, PROJECT_NAME)
+def locations_page(project) -> Page:
+    page = project.page
+    page.goto(f"{project.budget_url}?tab=locations", wait_until="networkidle")
+    expect(page.locator("#tab-locations.active")).to_be_visible(timeout=10_000)
+    return page
 
 
-@allure.title("Project Locations tab activates")
-def test_project_locations_tab_activates(locations_tab_page: Page):
-    page = locations_tab_page
+def test_project_locations_pane_activates(project):
+    page = project.page
+    page.goto(project.budget_url, wait_until="networkidle")
+    page.click("#tab-more-btn")
+    page.click('#tab-more-menu .tab-menu-item[data-tab="locations"]')
     expect(page.locator("#tab-locations.active")).to_be_visible(timeout=10_000)
     expect(page.locator("#tab-locations h3:has-text('Locations')").first).to_be_visible()
-    take_step_screenshot(page, "project-locations-tab-active")
+    take_step_screenshot(page, "project-locations-pane-active")
 
 
-@allure.title("Project Locations tab has Add Location button")
-def test_project_locations_add_button(locations_tab_page: Page):
-    page = locations_tab_page
-    add_btn = page.locator('#tab-locations button:has-text("+ Add Location")').first
-    expect(add_btn).to_be_visible(timeout=5000)
+def test_project_locations_add_button(locations_page: Page):
+    page = locations_page
+    expect(page.locator('#tab-locations button:has-text("+ Add Location")').first).to_be_visible()
 
 
-@allure.title("Clicking Add Location opens a modal or form")
-def test_project_locations_add_opens_form(locations_tab_page: Page):
-    page = locations_tab_page
-    add_btn = page.locator('#tab-locations button:has-text("+ Add Location")').first
-    add_btn.click()
-    page.wait_for_timeout(1000)
-    # Some form of input should now be visible (modal, inline form, etc.)
-    visible_inputs = page.locator('input:visible, textarea:visible').count()
-    assert visible_inputs > 0, "Expected Add Location to open a form with inputs"
+def test_project_locations_add_opens_form(locations_page: Page):
+    page = locations_page
+    page.locator('#tab-locations button:has-text("+ Add Location")').first.click()
+    expect(page.locator("#loc-modal-title")).to_be_visible()
+    expect(page.locator("#loc-modal-title")).to_have_text("Add Location")
+    assert page.locator("input:visible, textarea:visible").count() > 0, "Add Location opened no form"
     take_step_screenshot(page, "location-add-opened")

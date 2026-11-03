@@ -1,157 +1,122 @@
 """
-Budget tests: quick entry, line item editing, calculations, section totals.
+Budget page tests on one FP Standard project: structure, adding a line
+through the modal, the Top Sheet pane, the version picker. (Folds in the
+old test_topsheet.py and test_versions.py, which only looked for elements
+"if visible".)
 """
 
 import re
-import time
-import allure
+
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.conftest import BASE_URL
-from tests.utils.helpers import (
-    create_project, delete_project, go_to_projects, open_project_by_name,
-    take_step_screenshot, wait_for_toast,
-)
+from tests.utils.helpers import take_step_screenshot
 
-pytestmark = allure.suite("Budget")
 
-PROJECT_NAME = f"BudgetTest-{int(time.time()) % 100000}"
+def _money(text: str) -> float:
+    m = re.search(r"-?[\d,]+(?:\.\d+)?", text or "")
+    return float(m.group(0).replace(",", "")) if m else 0.0
 
 
 @pytest.fixture
-def budget_page(admin_page: Page) -> Page:
-    """Create a test project, navigate to its budget, yield the page, then cleanup."""
-    page = admin_page
-    create_project(page, PROJECT_NAME, template="FP Standard")
-    open_project_by_name(page, PROJECT_NAME)
-    page.wait_for_timeout(2000)  # Let budget JS initialize
-    yield page
-    # Cleanup: go back to projects and delete
-    go_to_projects(page)
-    delete_project(page, PROJECT_NAME)
+def budget_page(project) -> Page:
+    page = project.page
+    page.goto(f"{project.budget_url}?tab=working", wait_until="networkidle")
+    expect(page.locator("#tab-working.active")).to_be_visible(timeout=10_000)
+    return page
 
 
 # ---------------------------------------------------------------------------
-# Budget Page Load
+# Structure
 # ---------------------------------------------------------------------------
 
-@allure.title("Budget page loads with section headers")
-def test_budget_loads(budget_page: Page):
+def test_budget_loads_with_sections(budget_page: Page, project):
     page = budget_page
-    expect(page).to_have_url(re.compile(r"/projects/\d+/budget"))
+    expect(page).to_have_url(re.compile(r"/projects/\d+/budget/\d+"))
+    expect(page.locator("#budget-name-heading")).to_contain_text(project.name)
+    blocks = page.locator("#tab-working .section-block[data-section]")
+    assert blocks.count() >= 5, f"FP Standard should bring several sections, got {blocks.count()}"
+    expect(page.locator("#budget-control-bar")).to_be_visible()
+    expect(page.locator("#wb-search")).to_be_visible()
     take_step_screenshot(page, "budget-loaded")
-    # Should have at least some budget structure visible
-    content = page.content()
-    assert "budget" in content.lower() or "section" in content.lower() or "total" in content.lower()
 
 
-# ---------------------------------------------------------------------------
-# Line Item Editing
-# ---------------------------------------------------------------------------
-
-@allure.title("Can edit a line item description")
-def test_edit_line_description(budget_page: Page):
+def test_budget_tabs_present(budget_page: Page):
     page = budget_page
-    # Find any editable input/cell in the budget grid
-    editable = page.locator('input[type="text"], [contenteditable="true"], td input').first
-    if editable.is_visible(timeout=5000):
-        editable.click()
-        editable.fill("Test Line Item Description")
-        editable.press("Tab")
-        page.wait_for_timeout(1000)
-        take_step_screenshot(page, "line-description-edited")
+    tabs = page.locator("nav.budget-tabstrip .tabs .tab-btn")
+    labels = " ".join(tabs.all_inner_texts())
+    for t in ("Overview", "Top Sheet", "Budget", "Schedule", "People", "Actuals", "Docs", "More"):
+        assert t in labels, f"missing tab {t!r} in {labels!r}"
+    # Docs and Actuals are links to their own screens (Cleanup B).
+    assert "/docs" in page.locator('nav.budget-tabstrip a.tab-btn:has-text("Docs")').get_attribute("href")
+    assert "/actuals" in page.locator('nav.budget-tabstrip a.tab-btn:has-text("Actuals")').get_attribute("href")
 
 
-@allure.title("Can edit a line item amount")
-def test_edit_line_amount(budget_page: Page):
+# ---------------------------------------------------------------------------
+# Add a line through the modal — the row exists after the reload and the
+# Top Sheet grand total moved by its amount
+# ---------------------------------------------------------------------------
+
+def test_add_flat_line_updates_totals(project):
+    page = project.page
+    page.goto(f"{project.budget_url}?tab=topsheet-detail", wait_until="networkidle")
+    before = _money(page.locator("#tab-topsheet-detail .grand-total-row td").nth(1).inner_text())
+
+    page.goto(f"{project.budget_url}?tab=working", wait_until="networkidle")
+    page.locator('#budget-control-bar button:has-text("Single Line")').click()
+    expect(page.locator("#add-line-modal")).to_be_visible()
+    section = page.locator("#modal-section")
+    section.select_option(index=1)
+    page.fill("#modal-desc", "E2E flat line")
+    # Per-unit rate × 1 × 1. (The "Flat total $" box is sent together with
+    # rate=0, which upsert_line treats as an explicit zero rate and so saves
+    # $0 — a pre-existing bug noted in AUDIT_CHECKLIST Cleanup F.)
+    page.fill("#modal-nl-rate", "1234")
+    with page.expect_navigation(wait_until="networkidle", timeout=30_000):
+        page.locator('#add-line-modal button:has-text("Add Line")').click()
+    row = page.locator("#tab-working tr.line-row", has_text="E2E flat line")
+    expect(row.first).to_be_visible(timeout=10_000)
+
+    page.goto(f"{project.budget_url}?tab=topsheet-detail", wait_until="networkidle")
+    after = _money(page.locator("#tab-topsheet-detail .grand-total-row td").nth(1).inner_text())
+    assert after >= before + 1234 - 0.01, f"grand total did not move: {before} -> {after}"
+    take_step_screenshot(page, "topsheet-after-add-line")
+
+
+# ---------------------------------------------------------------------------
+# Top Sheet pane
+# ---------------------------------------------------------------------------
+
+def test_topsheet_pane(project):
+    page = project.page
+    page.goto(f"{project.budget_url}?tab=topsheet-detail", wait_until="networkidle")
+    expect(page.locator("#tab-topsheet-detail.active")).to_be_visible(timeout=10_000)
+    table = page.locator("#tab-topsheet-detail table.topsheet-table").first
+    expect(table).to_be_visible()
+    assert table.locator("tr.subtotal-row").count() >= 1
+    expect(table.locator("tr.grand-total-row")).to_have_count(1)
+    expect(table.locator("tr.grand-total-row")).to_contain_text("GRAND TOTAL")
+
+
+def test_overview_pane_is_default(project):
+    page = project.page
+    page.goto(project.budget_url, wait_until="networkidle")
+    expect(page.locator("#tab-topsheet.active")).to_be_visible(timeout=10_000)
+    expect(page.locator("#ov-bydept")).to_be_visible()
+
+
+# ---------------------------------------------------------------------------
+# Versions
+# ---------------------------------------------------------------------------
+
+def test_version_picker(budget_page: Page):
     page = budget_page
-    # Find numeric inputs (amount, rate, quantity fields)
-    numeric = page.locator('input[type="number"], input.amount, input.rate').first
-    if numeric.is_visible(timeout=5000):
-        numeric.click()
-        numeric.fill("1500")
-        numeric.press("Tab")
-        page.wait_for_timeout(1000)
-        take_step_screenshot(page, "line-amount-edited")
-
-
-# ---------------------------------------------------------------------------
-# Quick Entry
-# ---------------------------------------------------------------------------
-
-@allure.title("Quick entry / add line item button works")
-def test_add_line_item(budget_page: Page):
-    page = budget_page
-    # Look for "Add" or "+" button for adding line items
-    add_btn = page.locator('button:has-text("Add"), button:has-text("+"), a:has-text("Add Line")').first
-    if add_btn.is_visible(timeout=5000):
-        # Count rows before
-        rows_before = page.locator("tr, .line-item, .budget-row").count()
-        add_btn.click()
-        page.wait_for_timeout(1000)
-        rows_after = page.locator("tr, .line-item, .budget-row").count()
-        take_step_screenshot(page, "line-item-added")
-        assert rows_after >= rows_before, "Expected at least the same number of rows after adding"
-
-
-# ---------------------------------------------------------------------------
-# Calculations
-# ---------------------------------------------------------------------------
-
-@allure.title("Budget total updates when line amounts change")
-def test_budget_total_updates(budget_page: Page):
-    page = budget_page
-    # Find a total element
-    total_locator = page.locator(".grand-total-row, .grand-total").first
-    if total_locator.is_visible(timeout=5000):
-        initial_total = total_locator.text_content()
-        # Edit a numeric field
-        numeric = page.locator('input[type="number"], input.amount').first
-        if numeric.is_visible(timeout=3000):
-            numeric.click()
-            numeric.fill("9999")
-            numeric.press("Tab")
-            page.wait_for_timeout(2000)
-            updated_total = total_locator.text_content()
-            take_step_screenshot(page, "total-updated")
-            # Total should have changed (or at least not errored)
-            # We log it for review rather than strict assert since
-            # initial state may vary
-            allure.attach(
-                f"Before: {initial_total}\nAfter: {updated_total}",
-                name="total-change",
-                attachment_type=allure.attachment_type.TEXT,
-            )
-
-
-@allure.title("Section subtotals reflect line item values")
-def test_section_subtotals(budget_page: Page):
-    page = budget_page
-    # Look for section subtotals
-    subtotals = page.locator(".subtotal-row, .section-total, .subtotal")
-    count = subtotals.count()
-    take_step_screenshot(page, "section-subtotals")
-    allure.attach(
-        f"Found {count} section subtotal elements",
-        name="subtotal-count",
-        attachment_type=allure.attachment_type.TEXT,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Delete line item
-# ---------------------------------------------------------------------------
-
-@allure.title("Can delete a line item")
-def test_delete_line_item(budget_page: Page):
-    page = budget_page
-    # Look for delete buttons (trash icon, X, or "Delete" text)
-    delete_btn = page.locator(
-        'button:has-text("Delete"), button:has-text("Remove"), '
-        'button.delete, button.remove, .delete-btn, [title="Delete"]'
-    ).first
-    if delete_btn.is_visible(timeout=5000):
-        delete_btn.click()
-        page.wait_for_timeout(1000)
-        take_step_screenshot(page, "line-item-deleted")
+    picker = page.locator(".version-picker-btn").first
+    expect(picker).to_be_visible(timeout=10_000)
+    text = picker.inner_text()
+    assert re.search(r"\bv\d+\b", text), f"Unexpected picker text: {text!r}"
+    assert "1 version" in text, f"a fresh project should have one version: {text!r}"
+    picker.click()
+    menu = page.locator(".version-menu").first
+    expect(menu).to_be_visible(timeout=3_000)
+    expect(menu.locator(".version-item-name").first).to_have_text(re.compile(r"v\d+"))

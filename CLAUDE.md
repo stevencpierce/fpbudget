@@ -10,6 +10,11 @@ Owner: Steven Pierce (steven@thefp.tv), non-programmer — live production syste
 3. `python scripts/route_audit.py app.py routes/*.py`   (route-stealing + duplicate-URL guard)
 4. `python scripts/js_check.py`             (inline-JS syntax)
 5. `python -m pytest tests/unit -q --confcutdir=tests/unit -o addopts=""`
+   (needs `pip install -r requirements-ci.txt` — the app-booting modules
+   must RUN, not skip; CI fails on any skip)
+6. Browser suite against the seeded local app (`tests/README.md`):
+   `python scripts/seed_local.py --port 5055 &` then
+   `BASE_URL=http://127.0.0.1:5055 ADMIN_EMAIL=local-admin@thefp.tv ADMIN_PASSWORD=localpass-123 TEST_EMAIL=local-editor@thefp.tv TEST_PASSWORD=localpass-123 python -m pytest tests -q --ignore=tests/unit -o addopts=""`
 
 ## Schema changes (2026-07-20 onward)
 Use **Alembic**: add a revision in `alembic/versions/` (copy 0001_baseline's

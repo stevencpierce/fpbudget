@@ -4,27 +4,22 @@ Authentication tests: login, logout, forgot password, session protection.
 
 import os
 import re
-import allure
 import pytest
 from playwright.sync_api import Page, expect
 
 from tests.conftest import BASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD, TEST_EMAIL, TEST_PASSWORD
-
-pytestmark = allure.suite("Authentication")
 
 
 # ---------------------------------------------------------------------------
 # Login
 # ---------------------------------------------------------------------------
 
-@allure.title("Admin can log in with valid credentials")
 def test_admin_login(admin_page: Page):
     """Admin fixture already logs in; verify we're on the projects page."""
     expect(admin_page).to_have_url(f"{BASE_URL}/")
     expect(admin_page.locator("h1:has-text('Projects')")).to_be_visible()
 
 
-@allure.title("Test user can log in with valid credentials")
 def test_test_user_login(test_user_page: Page):
     # Test user may be redirected to /profile (password reset) or / (projects)
     url = test_user_page.url
@@ -33,7 +28,6 @@ def test_test_user_login(test_user_page: Page):
     expect(test_user_page.locator("nav")).to_be_visible()
 
 
-@allure.title("Login fails with wrong password")
 def test_login_wrong_password(anon_page: Page):
     page = anon_page
     page.goto(f"{BASE_URL}/login", wait_until="networkidle", timeout=60_000)
@@ -47,7 +41,6 @@ def test_login_wrong_password(anon_page: Page):
     expect(page.locator("text=Invalid credentials")).to_be_visible(timeout=10_000)
 
 
-@allure.title("Login fails with empty fields")
 def test_login_empty_fields(anon_page: Page):
     page = anon_page
     page.goto(f"{BASE_URL}/login", wait_until="networkidle", timeout=60_000)
@@ -57,7 +50,6 @@ def test_login_empty_fields(anon_page: Page):
     expect(page).to_have_url(re.compile(r"/login"))
 
 
-@allure.title("Login fails with unregistered email")
 def test_login_unregistered_email(anon_page: Page):
     page = anon_page
     page.goto(f"{BASE_URL}/login", wait_until="networkidle", timeout=60_000)
@@ -72,7 +64,6 @@ def test_login_unregistered_email(anon_page: Page):
 # Logout
 # ---------------------------------------------------------------------------
 
-@allure.title("User can log out")
 def test_logout(admin_page: Page):
     admin_page.goto(f"{BASE_URL}/logout")
     admin_page.wait_for_load_state("networkidle")
@@ -81,7 +72,6 @@ def test_logout(admin_page: Page):
     expect(admin_page.locator('button:has-text("Sign In")')).to_be_visible()
 
 
-@allure.title("After logout, protected pages redirect to login")
 def test_no_access_after_logout(anon_page: Page):
     page = anon_page
     page.goto(f"{BASE_URL}/", wait_until="networkidle", timeout=60_000)
@@ -93,7 +83,6 @@ def test_no_access_after_logout(anon_page: Page):
 # Forgot Password
 # ---------------------------------------------------------------------------
 
-@allure.title("Forgot password page loads correctly")
 def test_forgot_password_page(anon_page: Page):
     page = anon_page
     page.goto(f"{BASE_URL}/forgot-password", wait_until="networkidle", timeout=60_000)
@@ -102,7 +91,6 @@ def test_forgot_password_page(anon_page: Page):
     expect(page.locator('button:has-text("Send Reset Link")')).to_be_visible()
 
 
-@allure.title("Forgot password form submits without error")
 def test_forgot_password_submit(anon_page: Page):
     page = anon_page
     page.goto(f"{BASE_URL}/forgot-password", wait_until="networkidle", timeout=60_000)
@@ -115,7 +103,6 @@ def test_forgot_password_submit(anon_page: Page):
     assert "error" not in content.lower() or "reset" in content.lower()
 
 
-@allure.title("Back to login link works from forgot password")
 def test_forgot_password_back_link(anon_page: Page):
     page = anon_page
     page.goto(f"{BASE_URL}/forgot-password", wait_until="networkidle", timeout=60_000)
@@ -127,7 +114,6 @@ def test_forgot_password_back_link(anon_page: Page):
 # Session / Security
 # ---------------------------------------------------------------------------
 
-@allure.title("Protected routes redirect unauthenticated users to login")
 @pytest.mark.parametrize("path", [
     "/",
     "/crew",
