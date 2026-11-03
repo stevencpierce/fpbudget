@@ -12,7 +12,11 @@ class User(db.Model, UserMixin):
     name                 = db.Column(db.String(200), nullable=True)
     password_hash        = db.Column(db.String(256), nullable=False)
     role                 = db.Column(db.String(20), default="line_producer", nullable=False)
-    # "super_admin" | "admin" | "line_producer" | "dept_head"
+    # "super_admin" | "admin" | "ai_agent" | "line_producer" | "dept_head" | "docs_only"
+    # ai_agent ("AI Agent") = the AI assistant's account (claude@thefp.tv): every project
+    # plus every maintenance / diagnostic tool, but none of the owner powers
+    # (users, roles, QuickBooks connection + account set, company profile,
+    # project deletes). Use the helpers below, never a role string.
     dept_code            = db.Column(db.Integer, nullable=True)
     # Only used when role == "dept_head". Stores the COA section code (e.g. 3000 for Grip & Electric)
     is_active            = db.Column(db.Boolean, default=True, nullable=False)
@@ -30,19 +34,66 @@ class User(db.Model, UserMixin):
         from werkzeug.security import check_password_hash
         return check_password_hash(self.password_hash, pw)
 
+    # ── Permission helpers: ONE helper per decision (2026-11-03) ──────────
+    # Never compare role strings in a route; pick the helper whose name is
+    # the decision being made. is_admin deliberately does NOT include
+    # ai_agent: it guards the owner/admin powers (users, roles, QuickBooks
+    # connection, company account set, notifications).
     @property
     def is_admin(self):
         return self.role in ('super_admin', 'admin')
 
     @property
+    def is_super_admin(self):
+        return self.role == 'super_admin'
+
+    @property
+    def is_ai_agent(self):
+        return self.role == 'ai_agent'
+
+    @property
+    def has_all_project_access(self):
+        """Every project, at admin level: open/edit any project, budget,
+        actuals, docs; rename / duplicate; the per-project admin tools.
+        (Admins already passed every project gate — the dashboard and the
+        access gate let them see all projects — so they stay included.)"""
+        return self.role in ('super_admin', 'admin', 'ai_agent')
+
+    @property
+    def can_run_maintenance(self):
+        """Company-wide maintenance + diagnostics: /admin/maintenance and
+        every TOOLS entry, /admin/errors + tracebacks, the company ledger,
+        /admin/transactions, the full activity log, QuickBooks sync."""
+        return self.role in ('super_admin', 'ai_agent')
+
+    @property
+    def can_open_admin(self):
+        """May open the /admin hub and the admin-level company screens that
+        an admin already reaches (payees, ledger conflicts, read-only
+        QuickBooks accounts, fringe config, budget diff)."""
+        return self.role in ('super_admin', 'admin', 'ai_agent')
+
+    @property
     def is_docs_only(self):
         return self.role == 'docs_only'
+
+    # ── Who-did-it labels (AI Agent must always read as the AI) ──────────
+    @property
+    def actor_name(self):
+        return self.name or (self.email or '').split('@')[0] or 'someone'
+
+    @property
+    def actor_label(self):
+        """Plain-text name for contexts that cannot hold a badge (presence
+        hints, titles, e-mail): the AI Agent always carries its tag."""
+        return (self.actor_name + ' · AI Agent') if self.is_ai_agent else self.actor_name
 
     @property
     def display_role(self):
         return {
             'super_admin': 'Super Admin',
             'admin': 'Admin',
+            'ai_agent': 'AI Agent',
             'line_producer': 'Line Producer',
             'dept_head': 'Dept Head',
             'docs_only': 'Docs / Receipts',

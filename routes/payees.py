@@ -36,7 +36,7 @@ from flask import (render_template, request, jsonify, flash, redirect,
 from flask_login import login_required, current_user
 from sqlalchemy import func, or_
 
-from app import (app, admin_required, _log_activity, _line_budget_total, _RATE_TYPE_LABELS,
+from app import (app, admin_hub_required, _log_activity, _line_budget_total, _RATE_TYPE_LABELS,
                  _ingest_document_bytes, _validate_upload_file)
 from models import (db, CrewMember, CrewAssignment, Budget, BudgetLine, ProjectSheet,
                     DocUpload, Transaction, VendorAlias, ScheduleDay, ProjectCrewMember,
@@ -333,7 +333,7 @@ def _directory_data(year):
 
 @app.route("/payees")
 @login_required
-@admin_required
+@admin_hub_required
 def payees_directory():
     data = _directory_data(_year_arg())
     return render_template("payees.html", d=data, KIND_LABELS=KIND_LABELS)
@@ -341,14 +341,14 @@ def payees_directory():
 
 @app.route("/payees.json")
 @login_required
-@admin_required
+@admin_hub_required
 def payees_directory_json():
     return jsonify({"ok": True, **_directory_data(_year_arg())})
 
 
 @app.route("/payees/report.csv")
 @login_required
-@admin_required
+@admin_hub_required
 def payees_report_csv():
     """The 1099 prep sheet for one tax year: every payee paid that year,
     non-card first. Same rows and rules as the directory."""
@@ -696,7 +696,7 @@ def _payee_page_data(cm, year):
 
 @app.route("/payees/<int:payee_id>")
 @login_required
-@admin_required
+@admin_hub_required
 def payee_page(payee_id):
     cm = CrewMember.query.get_or_404(payee_id)
     data = _payee_page_data(cm, _year_arg())
@@ -705,7 +705,7 @@ def payee_page(payee_id):
 
 @app.route("/payees/<int:payee_id>.json")
 @login_required
-@admin_required
+@admin_hub_required
 def payee_page_json(payee_id):
     cm = CrewMember.query.get_or_404(payee_id)
     return jsonify({"ok": True, **_payee_page_data(cm, _year_arg())})
@@ -769,7 +769,7 @@ def apply_payee_fields(cm, src):
 
 @app.route("/payees/<int:payee_id>/update", methods=["POST"])
 @login_required
-@admin_required
+@admin_hub_required
 def payee_update(payee_id):
     cm = CrewMember.query.get_or_404(payee_id)
     src = request.get_json(silent=True) if request.is_json else request.form
@@ -796,7 +796,7 @@ def payee_update(payee_id):
 
 @app.route("/payees/<int:payee_id>/docs/upload", methods=["POST"])
 @login_required
-@admin_required
+@admin_hub_required
 def payee_docs_upload(payee_id):
     """Upload a document that belongs to this payee and to NO project.
 
@@ -865,7 +865,7 @@ def _payee_to_quickbooks(cm):
 
 @app.route("/payees/<int:payee_id>/qbo-create", methods=["POST"])
 @login_required
-@admin_required
+@admin_hub_required
 def payee_qbo_create(payee_id):
     """Create this Payee in QuickBooks (or link an exact DisplayName match).
     409 when already linked or a W-2 employee. FPBudget may CREATE in
@@ -900,7 +900,7 @@ def payee_qbo_create(payee_id):
 
 @app.route("/payees/<int:payee_id>/vendor-names", methods=["POST"])
 @login_required
-@admin_required
+@admin_hub_required
 def payee_vendor_name_link(payee_id):
     """Link a raw vendor string to this Payee (VendorAlias.payee_id). Body
     {raw: str, project_id?: int, alias_id?: int}: an existing alias row by
@@ -942,7 +942,7 @@ def payee_vendor_name_link(payee_id):
 
 @app.route("/payees/<int:payee_id>/vendor-names/<int:alias_id>/unlink", methods=["POST"])
 @login_required
-@admin_required
+@admin_hub_required
 def payee_vendor_name_unlink(payee_id, alias_id):
     cm = CrewMember.query.get_or_404(payee_id)
     a = VendorAlias.query.get_or_404(alias_id)

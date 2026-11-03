@@ -376,7 +376,9 @@ def support_contact_delete(cid, sid):
 # syncs any missing Crew Database (Dropbox) duplicates.
 
 def _require_super_admin():
-    if getattr(current_user, 'role', None) != 'super_admin':
+    # Crew-database docs view + Dropbox duplicate sync: maintenance work, so
+    # the AI Agent passes too (User.can_run_maintenance).
+    if not getattr(current_user, 'can_run_maintenance', False):
         abort(403)
 
 

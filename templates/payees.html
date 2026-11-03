@@ -26,7 +26,7 @@
         {% if not d.qbo.connected %}QuickBooks not connected{% elif not d.qbo.last_sync %}QuickBooks vendors: not yet mirrored{% elif d.qbo.unlinked %}QuickBooks vendors: {{ d.qbo.unlinked }} to link{% else %}QuickBooks vendors: all linked{% endif %}
       </a>
       {% endif %}
-      {% if current_user.role == 'super_admin' %}
+      {% if current_user.can_run_maintenance %}
       <button type="button" class="pay-btn" id="pay-syncall-btn" onclick="payeesSyncAllDocs()"
               title="Copy every person-linked document on all current and wrapped projects into the Crew Database folder in Dropbox. Safe to re-run.">Sync crew docs</button>
       {% endif %}
@@ -186,7 +186,7 @@ function _addPayeeQboToggle(){
   if (w2) w2.addEventListener('change', _addPayeeQboToggle);
 })();
 
-{% if current_user.role == 'super_admin' %}
+{% if current_user.can_run_maintenance %}
 /* Global Crew Database sync (carried over from the Crew page): loops the
    batched /admin/crew-docs/backfill endpoint until every person-linked
    doc is copied to Dropbox. */

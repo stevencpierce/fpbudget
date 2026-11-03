@@ -2117,7 +2117,7 @@ async function _ccLoad(cell) {
     const cs = (j && j.comments) || [];
     list.innerHTML = cs.length ? cs.map(c =>
       '<div style="border-top:1px solid var(--border,#2c3444);padding:4px 0">'
-      + '<b style="font-size:.72rem">' + _dvEsc(c.author) + '</b> '
+      + '<b style="font-size:.72rem">' + _dvEsc(c.author) + '</b>' + ((window.FP && FP.aiBadge) ? FP.aiBadge(c.author_ai_agent) : '') + ' '
       + '<span style="font-size:.64rem;color:var(--text-muted,#8a94a3)">'
       + (c.created_at ? new Date(c.created_at).toLocaleString(undefined,
           { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '') + '</span>'

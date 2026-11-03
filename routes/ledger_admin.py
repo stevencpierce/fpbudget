@@ -32,7 +32,8 @@ import logging
 from flask import jsonify, render_template, request
 from flask_login import current_user, login_required
 
-from app import app, admin_required, admin_required_403, super_admin_required, _log_activity
+from app import (app, admin_required_403, maintenance_required,
+                 admin_hub_required, admin_hub_required_403, _log_activity)
 from models import db, ProjectSheet, QBOConnection, TransactionMergeLog
 import ledger
 
@@ -52,7 +53,7 @@ def _int(v):
 
 @app.route("/admin/ledger/preview", methods=["GET"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_ledger_preview():
     """The pre-flight report: counts, then every group with more than one
     row and what the run would keep, delete or flag. Touches nothing."""
@@ -66,7 +67,7 @@ def admin_ledger_preview():
 
 @app.route("/admin/ledger/run", methods=["POST"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_ledger_run():
     """Collapse the per-project copies into one row per QuickBooks
     transaction. One transaction, marker + advisory lock; re-running finds
@@ -92,7 +93,7 @@ def admin_ledger_run():
 
 @app.route("/admin/ledger/merge-log.json", methods=["GET"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_ledger_merge_log():
     rows = (TransactionMergeLog.query.order_by(TransactionMergeLog.id.desc())
             .limit(500).all())
@@ -117,7 +118,7 @@ def admin_ledger_merge_log():
 
 @app.route("/admin/ledger/undo-merge", methods=["POST"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_ledger_undo_merge():
     log_id = _int(_body().get("log_id") or request.args.get("log_id"))
     if not log_id:
@@ -137,7 +138,7 @@ def admin_ledger_undo_merge():
 
 @app.route("/admin/ledger/conflicts", methods=["GET"])
 @login_required
-@admin_required
+@admin_hub_required
 def admin_ledger_conflicts():
     pid = _int(request.args.get("pid"))
     cards = ledger.conflicts(project_id=pid)
@@ -148,7 +149,7 @@ def admin_ledger_conflicts():
 
 @app.route("/admin/ledger/conflicts.json", methods=["GET"])
 @login_required
-@admin_required_403
+@admin_hub_required_403
 def admin_ledger_conflicts_json():
     pid = _int(request.args.get("pid"))
     return jsonify({"ok": True, "cards": ledger.conflicts(project_id=pid)})
@@ -156,7 +157,7 @@ def admin_ledger_conflicts_json():
 
 @app.route("/admin/ledger/conflicts/keep", methods=["POST"])
 @login_required
-@admin_required_403
+@admin_hub_required_403
 def admin_ledger_conflict_keep():
     b = _body()
     keep_pid = _int(b.get("keep_project_id"))
@@ -179,7 +180,7 @@ def admin_ledger_conflict_keep():
 
 @app.route("/admin/ledger/conflicts/unmatch", methods=["POST"])
 @login_required
-@admin_required_403
+@admin_hub_required_403
 def admin_ledger_conflict_unmatch():
     tid = _int(_body().get("txn_id"))
     if not tid:
@@ -197,7 +198,7 @@ def admin_ledger_conflict_unmatch():
 
 @app.route("/admin/ledger/conflicts/clear", methods=["POST"])
 @login_required
-@admin_required_403
+@admin_hub_required_403
 def admin_ledger_conflict_clear():
     tid = _int(_body().get("txn_id"))
     if not tid:
@@ -215,7 +216,7 @@ def admin_ledger_conflict_clear():
 
 @app.route("/admin/ledger/release", methods=["POST"])
 @login_required
-@admin_required_403
+@admin_hub_required_403
 def admin_ledger_release():
     """Release to unclaimed + unmatch receipt, by transaction id (the
     Maintenance card and the row menu both post here)."""
@@ -263,14 +264,14 @@ def _accounts_payload():
 
 @app.route("/admin/qbo-accounts", methods=["GET"])
 @login_required
-@admin_required
+@admin_hub_required
 def admin_qbo_accounts():
     return render_template("admin_qbo_accounts.html", d=_accounts_payload())
 
 
 @app.route("/admin/qbo-accounts.json", methods=["GET"])
 @login_required
-@admin_required_403
+@admin_hub_required_403
 def admin_qbo_accounts_json():
     return jsonify({"ok": True, **_accounts_payload()})
 

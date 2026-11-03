@@ -73,7 +73,7 @@
       <button class="btn btn-sm btn-outline" title="More actions"
               onclick="toggleProjectMenu(event, {{ p.id }})">⋯</button>
       <div id="proj-menu-{{ p.id }}" class="proj-menu hidden">
-        {% set _is_admin       = current_user.role in ('super_admin', 'admin') %}
+        {% set _is_admin       = current_user.has_all_project_access %}
         {% set _is_super_admin = current_user.role == 'super_admin' %}
 
         {# Rename — admin+ only. Always rendered so non-admins see why
@@ -145,7 +145,7 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
       </form>
-      {% if current_user.role in ('super_admin', 'admin') %}
+      {% if current_user.has_all_project_access %}
       {# Duplicate FROM a wrapped project (owner 2026-07-22) — e.g. clone last
          season's wrapped show as the starting point for the new one. The
          wrapped original stays untouched; the copy is created active. #}

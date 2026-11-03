@@ -66,6 +66,7 @@
   .role-admin        { background:color-mix(in srgb, var(--blue) 14%, var(--bg-2));   color:var(--blue);   border:1px solid color-mix(in srgb, var(--blue) 40%, transparent); }
   .role-line_producer{ background:color-mix(in srgb, var(--blue) 10%, var(--bg-2));   color:var(--blue);   border:1px solid color-mix(in srgb, var(--blue) 30%, transparent); }
   .role-dept_head    { background:color-mix(in srgb, var(--green) 12%, var(--bg-2));  color:var(--green);  border:1px solid color-mix(in srgb, var(--green) 35%, transparent); }
+  .role-ai_agent     { background:color-mix(in srgb, #7c3aed 16%, var(--bg-2)); color:#7c3aed; border:1px solid color-mix(in srgb, #7c3aed 45%, transparent); }
   .role-docs_only    { background:color-mix(in srgb, var(--green) 10%, var(--bg-2));  color:var(--green);  border:1px solid color-mix(in srgb, var(--green) 30%, transparent); }
   .status-dot { display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:.35rem; }
   .dot-active   { background:var(--green); }
@@ -136,9 +137,9 @@
       <h1>Admin</h1>
       <div class="admin-jump">
         <a href="#users">Users</a>
-        {% if current_user.role == 'super_admin' %}<a href="#company">Company</a>{% endif %}
+        {% if current_user.is_super_admin %}<a href="#company">Company</a>{% endif %}
         <a href="#libraries">Libraries</a>
-        {% if current_user.role == 'super_admin' %}<a href="#maintenance">Maintenance</a><a href="#errors">Errors</a>{% endif %}
+        {% if current_user.can_run_maintenance %}<a href="#maintenance">Maintenance</a><a href="#errors">Errors</a>{% endif %}
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
@@ -177,9 +178,9 @@
         {% for u in users %}
         {% set pc = project_access|selectattr('user_id','eq',u.id)|list|length %}
         <tr>
-          <td style="font-weight:600">{{ u.name or '—' }}</td>
+          <td style="font-weight:600">{{ u.name or '—' }}{{ ai_badge(u) }}</td>
           <td style="color:var(--text-muted);font-size:.85rem">{{ u.email }}</td>
-          <td><span class="role-badge role-{{ u.role }}">{{ u.display_role }}</span></td>
+          <td><span class="role-badge role-{{ u.role }}">{% if u.is_ai_agent %}<span aria-hidden="true">&#10022;</span> {% endif %}{{ u.display_role }}</span></td>
           <td style="font-size:.82rem;color:var(--text-muted)">
             {% if u.role=='dept_head' and u.dept_code %}
               {% for code,name in coa_sections %}{% if code==u.dept_code %}{{ name }}{% endif %}{% endfor %}
@@ -191,6 +192,8 @@
           </td>
           <td style="text-align:center;color:var(--text-muted)">{{ pc }}</td>
           <td>
+            {# The AI Agent sees the list read-only: /admin/users/* is never its. #}
+            {% if current_user.is_admin %}
             <div class="action-row">
               <button class="btn-xs edit-user-btn"
                       data-uid="{{ u.id }}"
@@ -206,13 +209,14 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="btn-xs" {% if u.id==current_user.id %}disabled{% endif %}>{{ 'Deactivate' if u.is_active else 'Activate' }}</button>
               </form>
-              {% if (current_user.role=='super_admin' and u.id!=current_user.id) or (current_user.role=='admin' and u.role not in ('super_admin','admin') and u.id!=current_user.id) %}
+              {% if (current_user.role=='super_admin' and u.id!=current_user.id) or (current_user.role=='admin' and u.role not in ('super_admin','admin','ai_agent') and u.id!=current_user.id) %}
               <form method="POST" action="{{ url_for('admin_user_delete',uid=u.id) }}" style="display:contents" class="confirm-form" data-msg="Delete {{ u.email }}? Cannot be undone.">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="btn-xs danger">Delete</button>
               </form>
               {% endif %}
             </div>
+            {% else %}<span style="font-size:.78rem;color:var(--text-muted)">—</span>{% endif %}
           </td>
         </tr>
         {% else %}
@@ -222,6 +226,7 @@
     </table>
   </div>
 
+  {% if current_user.is_admin %}
   <!-- Create New User -->
   <div class="admin-card">
     <div class="admin-card-header"><h2>Create New User</h2></div>
@@ -235,6 +240,7 @@
           <select name="role" id="new-role">
             {% if current_user.role=='super_admin' %}<option value="super_admin">Super Admin</option>{% endif %}
             <option value="admin">Admin</option>
+            {% if current_user.role=='super_admin' %}<option value="ai_agent">&#10022; AI Agent — Claude (limited admin)</option>{% endif %}
             <option value="line_producer" selected>Line Producer</option>
             <option value="dept_head">Department Head</option>
             <option value="docs_only">Docs / Receipts Only</option>
@@ -295,6 +301,8 @@
     {% endif %}
   </div>
 
+
+  {% endif %}{# is_admin: Create user + Project Access #}
 
   {# ── Company (super admin) ─────────────────────────────────────────── #}
   {% if current_user.role == 'super_admin' %}
@@ -385,7 +393,7 @@
       <a class="adm-link" href="{{ url_for('template_list') }}">Templates <span class="sub">budget starters</span></a>
       <a class="adm-link" href="{{ url_for('location_db_list') }}">Locations</a>
       <a class="adm-link" href="{{ url_for('payees_directory') }}">Payees <span class="sub">people, loan-outs, vendors</span></a>
-      {% if current_user.role == 'super_admin' %}
+      {% if current_user.can_run_maintenance %}
       <a class="adm-link" href="{{ url_for('admin_qbo_vendors') }}">QuickBooks vendors <span class="sub">link</span></a>
       <a class="adm-link" href="{{ url_for('admin_transactions_page') }}">Company ledger <span class="sub">every QuickBooks transaction</span></a>
       <a class="adm-link" href="{{ url_for('admin_catalog_view') }}">Quick Entry catalog</a>
@@ -396,14 +404,14 @@
       <a class="adm-link" href="{{ url_for('company_health') }}">Company health <span class="sub">cross-project rollup</span></a>
       <a class="adm-link" href="{{ url_for('admin_qbo_accounts') }}">QuickBooks accounts <span class="sub">company set</span></a>
       <a class="adm-link" href="{{ url_for('admin_ledger_conflicts') }}">Claimed in two projects <span class="sub">review</span></a>
-      {% if current_user.role == 'super_admin' %}
+      {% if current_user.can_run_maintenance %}
       <a class="adm-link" href="{{ url_for('admin_qe_audit_csv') }}">Quick Entry vs catalog audit <span class="sub">CSV</span></a>
       {% endif %}
     </div>
   </div>
 
-  {% if current_user.role == 'super_admin' %}
-  {# ── Maintenance + Errors (super admin) ─────────────────────────────── #}
+  {% if current_user.can_run_maintenance %}
+  {# ── Maintenance + Errors (super admin + AI Agent) ──────────────────── #}
   <div class="adm-section" id="maintenance">
     <div class="adm-section-h"><h2>Maintenance</h2></div>
     <div class="adm-grid">
@@ -417,11 +425,14 @@
         <div class="d">The last production tracebacks from the 500 handler, and a deliberate test error to confirm the Sentry chain end to end.</div>
         <div class="act">
           <a class="pay-btn" href="{{ url_for('admin_recent_errors') }}">Recent errors</a>
-          <a class="pay-btn" href="{{ url_for('admin_sentry_test') }}" onclick="return confirm('Raise a deliberate test error now? You will land on the error page; a Sentry event should follow.')">Sentry test</a>
+          {% if current_user.is_super_admin %}<a class="pay-btn" href="{{ url_for('admin_sentry_test') }}" onclick="return confirm('Raise a deliberate test error now? You will land on the error page; a Sentry event should follow.')">Sentry test</a>{% endif %}
         </div>
       </div>
     </div>
   </div>
+  {% endif %}
+
+  {% if current_user.is_super_admin %}
 
   <script>
   (function () {
@@ -501,6 +512,7 @@
           <select name="role" id="er">
             {% if current_user.role=='super_admin' %}<option value="super_admin">Super Admin</option>{% endif %}
             <option value="admin">Admin</option>
+            {% if current_user.role=='super_admin' %}<option value="ai_agent">&#10022; AI Agent — Claude (limited admin)</option>{% endif %}
             <option value="line_producer">Line Producer</option>
             <option value="dept_head">Department Head</option>
             <option value="docs_only">Docs / Receipts Only</option>

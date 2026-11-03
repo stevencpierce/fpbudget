@@ -1385,7 +1385,7 @@
         const iconHtml  = `<span title="${style.label}" style="margin-right:.4rem">${style.icon}</span>`;
         return `<tr ${it.undone ? 'style="opacity:.55;'+stripe+'"' : 'style="'+stripe+'"'}>
           <td style="font-size:.85em;color:var(--text-muted);padding-left:.6rem">${_fmtActivityWhen(it.when)}</td>
-          <td>${whoEsc}</td>
+          <td>${whoEsc}${FP.aiBadge(it.who_ai_agent)}</td>
           <td>${iconHtml}${summaryEsc}${_activityDetail(it.detail)}</td>
           <td class="col-num">${_fmtActivityDelta(it.dollar_delta)}</td>
           <td>${undoBtn}</td>

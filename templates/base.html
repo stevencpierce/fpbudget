@@ -27,13 +27,17 @@
 <body class="{% block body_class %}{% endblock %}">
   <nav class="navbar">
     <a class="nav-brand" href="{{ url_for('dashboard') }}">FPBudget</a>
+    {% if current_user.is_authenticated and current_user.is_ai_agent %}
+    {# Screenshots must show it is the AI assistant at the controls. #}
+    <span class="ai-agent-session-pill" title="Signed in as {{ current_user.email }} — the AI assistant's account (limited admin)"><span aria-hidden="true">&#10022;</span> AI Agent session</span>
+    {% endif %}
     {# Top nav (Cleanup E, 2026-11-02): Projects · Payees · Libraries ▾ ·
        Upload · Admin (admins) · My Profile · Logout. Company health and the
        library screens keep their URLs; they are reached from Libraries and
        from the Admin hub. #}
     <div class="nav-links">
       <a href="{{ url_for('dashboard') }}">Projects</a>
-      {% if current_user.is_authenticated and current_user.role in ('super_admin', 'admin') %}
+      {% if current_user.is_authenticated and current_user.can_open_admin %}
       <a href="{{ url_for('payees_directory') }}">Payees</a>
       {% endif %}
       <div class="dropdown nav-dropdown">
@@ -47,7 +51,7 @@
       {% if current_user.is_authenticated %}
       <a href="{{ url_for('mobile_upload') }}" title="Mobile-friendly receipt upload">Upload</a>
       {% endif %}
-      {% if current_user.is_authenticated and current_user.role in ('super_admin', 'admin') %}
+      {% if current_user.is_authenticated and current_user.can_open_admin %}
       <a href="{{ url_for('admin_panel') }}">Admin</a>
       {% endif %}
       {% if current_user.is_authenticated %}

@@ -45,6 +45,17 @@
   window.FP.esc = esc;
   window.FP.money = money;
   window.FP.whole = whole;
+
+  // The "AI Agent" badge (2026-11-03): every place that shows WHO did
+  // something appends FP.aiBadge(flag) after the name, where flag is the
+  // server's *_ai_agent boolean. Server-rendered pages use the Jinja
+  // ai_badge(user) global — same markup, same .ai-agent-badge class.
+  function aiBadge(flag) {
+    if (!flag) return '';
+    return '<span class="ai-agent-badge" title="Action taken by the AI assistant (Claude)">'
+      + '<span aria-hidden="true">\u2726</span> AI Agent</span>';
+  }
+  window.FP.aiBadge = aiBadge;
 })();
 
 /* ── Project navigation: the "More ▾" menu (templates/_project_nav.html) ──

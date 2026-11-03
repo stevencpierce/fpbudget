@@ -438,7 +438,7 @@
         <div class="aw-cell right">Amount</div><div class="aw-cell">Card</div><div class="aw-cell">Source</div><div class="aw-cell">Excluded</div><div class="aw-cell"></div></div>`;
       rows.forEach(t => {
         const x = t.excluded || {};
-        const who = `by ${esc(x.by || 'someone')}${x.at ? ' · ' + esc(shortDate(x.at.slice(0, 10))) : ''}`;
+        const who = `by ${esc(x.by || 'someone')}${FP.aiBadge(x.by_ai_agent)}${x.at ? ' · ' + esc(shortDate(x.at.slice(0, 10))) : ''}`;
         html += `<div role="row" class="aw-row excluded" data-tid="${t.id}" tabindex="0">
           <div class="aw-cell"></div>
           <div class="aw-cell num muted">${esc(shortDate(t.date))}</div>

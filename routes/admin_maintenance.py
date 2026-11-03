@@ -6,7 +6,7 @@ logs one (system_task_log), and a Run button (confirmed when destructive).
 The tools themselves are the routes that already existed; nothing here
 re-implements them. Nobody should ever have to type a /admin/... URL.
 
-Routes (super-admin only):
+Routes (super-admin + AI Agent: User.can_run_maintenance):
   GET /admin/maintenance        the page
   GET /admin/maintenance.json   the tool registry + last-run times (for the
                                 page's JS and for a quick health look)
@@ -21,10 +21,10 @@ import os
 from datetime import datetime
 
 from flask import jsonify, render_template, request
-from flask_login import login_required
+from flask_login import current_user, login_required
 from sqlalchemy import text
 
-from app import app, super_admin_required
+from app import app, maintenance_required, _log_activity
 from models import db, ProjectSheet, QBOConnection
 
 
@@ -45,6 +45,8 @@ from models import db, ProjectSheet, QBOConnection
 #   confirm   confirmation text → the run is destructive; shown red
 #   task      system_task_log task_name whose last_run_at is shown
 #   note      small grey line under the description
+#   owner_only  True = the AI Agent role may not run it (super admin only):
+#             mass / irreversible deletes. The route enforces it too.
 TOOLS = [
     # ── Documents & Dropbox ────────────────────────────────────────────
     {"id": "dropbox-status", "group": "Documents & Dropbox",
@@ -79,14 +81,14 @@ TOOLS = [
      "open": "inline", "params": [("pid", "Project", "project")],
      "confirm": "Re-OCR every receipt on this project that is not paired to a bank charge? This uses Veryfi credits.",
      "desc": "The same job the 4 pm cron kicks off (/cron/reprocess-unpaired with the X-Cron-Token header): re-OCR, then AI clean-up and the double-coded scan. Runs in the background."},
-    {"id": "docs-wipe", "group": "Documents & Dropbox",
+    {"id": "docs-wipe", "group": "Documents & Dropbox", "owner_only": True,
      "title": "Wipe all receipts on a project (test)", "method": "POST",
      "url": "/admin/docs/project/{pid}/wipe",
      "open": "inline", "params": [("pid", "Project", "project")],
      "confirm": "Wipe EVERY document on this project?\n\nDocument rows and their own receipt-born ledger rows are deleted. Bank / QuickBooks / manual charges are kept and unlinked. Filed Dropbox files move to /_TRASH/.\n\nThis is a testing tool.",
      "confirm2": "Really sure? Only THIS project's documents are affected.",
      "desc": "Clean-start testing tool. Deletes a project's document rows, keeps and unlinks its bank charges, moves the files to Dropbox trash."},
-    {"id": "trash-purge", "group": "Documents & Dropbox",
+    {"id": "trash-purge", "group": "Documents & Dropbox", "owner_only": True,
      "title": "Purge Dropbox trash", "method": "POST", "url": "/admin/trash/purge",
      "open": "inline", "task": "trash_purge",
      "confirm": "Permanently delete /_TRASH/ folders older than 30 days? This cannot be undone.",
@@ -195,6 +197,56 @@ TOOLS = [
 ]
 
 
+# ── AI Agent audit trail (2026-11-03) ─────────────────────────────────────
+# Every request the AI Agent makes to a Maintenance tool (its Run, its
+# Preview / Show log) writes an activity_log row, whatever the tool's own
+# logging does, so the owner can always see what the assistant ran.
+import re as _re
+
+
+def _tool_rule(url):
+    """'/admin/docs/project/{pid}/wipe' → '/admin/docs/project/<int:pid>/wipe'
+    (the Flask rule string the request resolves to)."""
+    return _re.sub(r"\{(pid|bid)\}", r"<int:\1>", url.split("?")[0])
+
+
+_TOOL_BY_RULE = {}
+for _t in TOOLS:
+    _TOOL_BY_RULE.setdefault(_tool_rule(_t["url"]), _t)
+    if (_t.get("preview") or {}).get("url"):
+        _TOOL_BY_RULE.setdefault(_tool_rule(_t["preview"]["url"]), _t)
+
+
+@app.after_request
+def _audit_ai_agent_maintenance(resp):
+    try:
+        if not (getattr(current_user, "is_authenticated", False)
+                and getattr(current_user, "is_ai_agent", False)):
+            return resp
+        rule = request.url_rule.rule if request.url_rule is not None else None
+        tool = _TOOL_BY_RULE.get(rule) if rule else None
+        if tool is None:
+            return resp
+        pid = (request.view_args or {}).get("pid")
+        if pid is None:
+            try:
+                pid = int(request.values.get("project") or request.values.get("pid") or 0) or None
+            except (TypeError, ValueError):
+                pid = None
+        qs = request.query_string.decode("utf-8", "replace")[:200]
+        _log_activity(action="maintenance", entity_type="maintenance_tool",
+                      entity_label=tool["title"][:300], project_id=pid,
+                      after={"tool": tool["id"], "method": request.method,
+                             "path": request.path, "query": qs,
+                             "status": resp.status_code},
+                      note=(f"AI Agent ran maintenance tool \"{tool['title']}\" "
+                            f"({request.method} {request.path}{'?' + qs if qs else ''}) "
+                            f"→ HTTP {resp.status_code}"))
+    except Exception:
+        pass   # auditing must never break the response
+    return resp
+
+
 def _last_runs():
     """{task_name: (last_run_at, last_result)} from system_task_log — the
     table is created lazily by the boot tasks, so a missing table is just
@@ -266,6 +318,7 @@ def _tools_payload():
         d = dict(t)
         d["params"] = [{"name": n, "label": l, "kind": k} for (n, l, k) in t.get("params", [])]
         d["destructive"] = bool(t.get("confirm"))
+        d["owner_only"] = bool(t.get("owner_only"))
         lr = runs.get(t.get("task") or "")
         d["last_run"] = _fmt_dt(lr[0]) if lr else ""
         d["last_result"] = (lr[1] or "") if lr else ""
@@ -275,7 +328,7 @@ def _tools_payload():
 
 @app.route("/admin/maintenance", methods=["GET"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_maintenance():
     projects = (ProjectSheet.query.filter(ProjectSheet.status != 'archived')
                 .order_by(ProjectSheet.name).all())
@@ -291,7 +344,7 @@ def admin_maintenance():
 
 @app.route("/admin/maintenance.json", methods=["GET"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_maintenance_json():
     return jsonify({"tools": _tools_payload(), "status": company_status(),
                     "generated_at": datetime.utcnow().isoformat() + "Z"})

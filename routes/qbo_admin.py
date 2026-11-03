@@ -23,7 +23,7 @@ from flask import render_template, request, jsonify, redirect, url_for, flash
 from flask_login import login_required
 from sqlalchemy import func
 
-from app import app, super_admin_required, _log_activity
+from app import app, maintenance_required, _log_activity
 from models import db, CrewMember, QBOVendor, QBOConnection, Transaction
 from actuals import attribute_txns_for_qbo_vendor
 import qbo_sync
@@ -101,21 +101,21 @@ def _screen_data():
 
 @app.route("/admin/qbo-vendors")
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_qbo_vendors():
     return render_template("admin_qbo_vendors.html", d=_screen_data())
 
 
 @app.route("/admin/qbo-vendors.json")
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_qbo_vendors_json():
     return jsonify({"ok": True, **_screen_data()})
 
 
 @app.route("/admin/qbo-vendors/sync", methods=["POST"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_qbo_vendors_sync():
     """Run the vendor mirror now (QuickBooks → FPBudget only)."""
     conn = QBOConnection.query.first()
@@ -158,7 +158,7 @@ def _fail(msg, code=400):
 
 @app.route("/admin/qbo-vendors/<vid>/link", methods=["POST"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_qbo_vendor_link(vid):
     """Link a QuickBooks vendor to an existing Payee. Mirrors the vendor's
     fields onto the Payee (QuickBooks owns them from here) and attributes
@@ -198,7 +198,7 @@ def admin_qbo_vendor_link(vid):
 
 @app.route("/admin/qbo-vendors/<vid>/create-payee", methods=["POST"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_qbo_vendor_create_payee(vid):
     """Create a Payee (kind=vendor) from a QuickBooks vendor. Nothing is
     written to QuickBooks; the Payee is born linked with qbo_origin='qbo'."""

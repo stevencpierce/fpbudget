@@ -362,16 +362,18 @@ def _txn_excluded_info(txn):
     if not getattr(txn, 'not_project_expense', False):
         return None
     _by = None
+    _by_ai = False
     _uid = getattr(txn, 'excluded_by_user_id', None)
     if _uid:
         try:
             _u = User.query.get(_uid)
             _by = (_u.name or _u.email) if _u else None
+            _by_ai = bool(_u and _u.is_ai_agent)
         except Exception:
             _by = None
     _at = getattr(txn, 'excluded_at', None)
     return {"at": _at.isoformat(timespec='minutes') if _at else None,
-            "by_user_id": _uid, "by": _by,
+            "by_user_id": _uid, "by": _by, "by_ai_agent": _by_ai,
             "reason": getattr(txn, 'excluded_reason', None)}
 
 
@@ -930,8 +932,9 @@ def actuals_txn_review(pid, tid):
     data = request.get_json(silent=True) or {}
     want = bool(data.get("reviewed"))
     if want:
-        who = (current_user.name or (current_user.email.split('@')[0]
-               if current_user.email else 'user'))
+        who = (current_user.actor_label if current_user.is_ai_agent else
+               (current_user.name or (current_user.email.split('@')[0]
+                if current_user.email else 'user')))
         txn.reviewed_at = datetime.utcnow()
         txn.reviewed_by = who
     else:
@@ -956,8 +959,9 @@ def actuals_line_review_all(pid, lid):
     line, sib_ids, _wl = _ledger_resolve_line(pid, lid)
     if line is None:
         abort(404)
-    who = (current_user.name or (current_user.email.split('@')[0]
-           if current_user.email else 'user'))
+    who = (current_user.actor_label if current_user.is_ai_agent else
+           (current_user.name or (current_user.email.split('@')[0]
+            if current_user.email else 'user')))
     now = datetime.utcnow()
     rows = (Transaction.query
             .filter(Transaction.project_id == pid,
@@ -1681,7 +1685,7 @@ def actuals_set_line_bulk(pid):
     request. Previously the UI fired one POST per row, which was slow for big
     batches. Reuses link_transaction_to_line so the Working→Actual clone + line
     translation are identical to single-row coding. (User 2026-06-03.)"""
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access:
             return jsonify({"error": "Forbidden"}), 403
@@ -2135,7 +2139,7 @@ def actuals_workspace_page(pid):
                            line_groups=line_groups,
                            crew=_ws_crew_options(pid),
                            focus_txn=focus_txn, initial_view=view,
-                           can_sync=bool(getattr(current_user, 'role', None) in ('super_admin', 'admin')))
+                           can_sync=bool(getattr(current_user, 'has_all_project_access', False)))
 
 
 @app.route("/projects/<int:pid>/actuals/scan-dup-transactions", methods=["GET", "POST"])
@@ -2151,7 +2155,7 @@ def actuals_scan_dup_transactions(pid):
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
     ProjectSheet.query.get_or_404(pid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
@@ -2245,7 +2249,7 @@ def actuals_dismiss_dup_transactions(pid):
     """Mark a duplicate-transaction cluster as genuinely SEPARATE so the scan
     won't flag it again. Body: {"dup_key": "..."}. (User 2026-06-17.)"""
     ProjectSheet.query.get_or_404(pid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         if not ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first():
             return jsonify({"error": "Forbidden"}), 403
     key = ((request.get_json(silent=True) or {}).get("dup_key") or "").strip()
@@ -2362,7 +2366,7 @@ def actuals_reconcile_scan(pid):
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
     ProjectSheet.query.get_or_404(pid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
@@ -2469,7 +2473,7 @@ def actuals_reconcile_ai_judge(pid):
     nights for different people, per-passenger airfare)? Reasons over the JSON
     only; logs to ai_event; mutates nothing. Fail-open. (User 2026-06-17.)"""
     ProjectSheet.query.get_or_404(pid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         if not ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first():
             return jsonify({"error": "Forbidden"}), 403
     import ai_layer, time as _t, json as _j
@@ -2510,7 +2514,7 @@ def actuals_automatch_trace(pid):
     rows, whether each is in the eligible unmatched pool (and if not, why), and
     for the first eligible one the top doc candidates with each gate's value
     (amount diff / day gap / vendor score). Admin only. (User 2026-06-02.)"""
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         return jsonify({"error": "Forbidden — admin only"}), 403
     import datetime as _dt
     from actuals import _vendor_similarity
@@ -3489,7 +3493,7 @@ def actuals_absorb_linked_receipts(pid):
     ?dry=1 (default) reports; ?dry=0 runs confirm_match per pair (which merges
     coding/card/note off the placeholder before deleting it).
     """
-    if getattr(current_user, 'role', None) != 'super_admin':
+    if not getattr(current_user, 'can_run_maintenance', False):
         return jsonify({"error": "Forbidden"}), 403
     dry = (request.values.get("dry", "1").strip().lower() not in ("0", "false", "no"))
     ProjectSheet.query.get_or_404(pid)

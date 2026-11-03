@@ -112,7 +112,7 @@
             </span>
             {% if est %}
             <button class="btn btn-xs btn-ghost" style="margin-left:auto;padding:0 5px;font-size:.68rem;opacity:.6"
-                    title="Version options — internal subtitle{% if current_user.role in ('super_admin','admin') %}, lock{% endif %}"
+                    title="Version options — internal subtitle{% if current_user.has_all_project_access %}, lock{% endif %}"
                     onclick='versionMetaMenu(event, {{ est.id }}, {{ vn | tojson }}, {{ (est.internal_label or "") | tojson }}, {{ "true" if _vlocked else "false" }}, {{ (est.name or "") | tojson }})'>✎</button>
             {% endif %}
           </div>
@@ -1017,7 +1017,7 @@
           {% for r in recent_activity %}
           <li class="ov-activity">
             <span class="ov-row-text">{{ r.text }}</span>
-            <span class="ov-row-where">{{ r.who }}{% if r.when %} · {{ r.when | in_tz(budget.timezone, '%b %-d') }}{% endif %}</span>
+            <span class="ov-row-where">{{ r.who }}{{ ai_badge(r.who_ai_agent) }}{% if r.when %} · {{ r.when | in_tz(budget.timezone, '%b %-d') }}{% endif %}</span>
           </li>
           {% else %}
           <li class="ov-activity"><span class="muted">No activity on this project yet.</span></li>
@@ -1426,7 +1426,7 @@
       </button>
       {% if _cm_latest %}
       <div id="line-note-{{ ln.id }}" role="tooltip" class="line-note-card">
-        <span class="line-note-card-head">Internal note <span class="line-note-card-meta">· {{ _cm_latest.who }}{% if _cm_latest.when %} · {{ _cm_latest.when | in_tz(budget.timezone, '%b %-d') }}{% endif %}{% if comment_counts.get(ln.id, 0) > 1 %} · {{ comment_counts.get(ln.id) }} notes{% endif %}</span></span>
+        <span class="line-note-card-head">Internal note <span class="line-note-card-meta">· {{ _cm_latest.who }}{{ ai_badge(_cm_latest.who_ai_agent) }}{% if _cm_latest.when %} · {{ _cm_latest.when | in_tz(budget.timezone, '%b %-d') }}{% endif %}{% if comment_counts.get(ln.id, 0) > 1 %} · {{ comment_counts.get(ln.id) }} notes{% endif %}</span></span>
         <span class="line-note-card-body">{{ _cm_latest.body }}</span>
       </div>
       {% endif %}
@@ -4304,7 +4304,7 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
 
       <div class="settings-section">
         <h3>Display</h3>
-        {% if current_user.role == 'super_admin' %}
+        {% if current_user.can_run_maintenance %}
         <div class="field" style="margin-bottom:.6rem">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="set-show-gut-check" style="width:auto;margin:0">
@@ -5008,7 +5008,7 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
    Read-only diagnostic: re-runs the canonical calc engine, cross-checks each
    line's arithmetic, reconciles section + grand-total roll-ups, and surfaces
    snapshot drift. Hidden from every other role so it can't confuse non-admins. #}
-{% if current_user.role == 'super_admin' %}
+{% if current_user.can_run_maintenance %}
 <style>
   #gc-trigger {
     position: fixed; left: 16px; bottom: 16px; z-index: 9000;
@@ -6503,7 +6503,7 @@ var RATE_TYPE_LABELS = {
 
 var COA_SECTIONS = {{ coa_sections | tojson }};
 var MY_ID    = {{ current_user.id }};
-var MY_NAME  = {{ (current_user.name or current_user.email) | tojson }};
+var MY_NAME  = {{ (current_user.actor_label if current_user.is_ai_agent else (current_user.name or current_user.email)) | tojson }};  // AI Agent carries its tag in presence
 var MY_ROLE  = {{ current_user.role | tojson }};
 var MY_COLOR = [
   "#2563eb","#dc2626","#059669","#d97706","#7c3aed",
@@ -8676,7 +8676,7 @@ async function _cmLoad() {
       '<div style="border-left:3px solid rgba(251,191,36,.55);background:rgba(251,191,36,.06);'
       + 'border-radius:6px;padding:7px 10px;margin-bottom:7px">'
       + '<div style="display:flex;gap:8px;align-items:center">'
-      + '<b style="font-size:.76rem">' + _cmEsc(c.author) + '</b>'
+      + '<b style="font-size:.76rem">' + _cmEsc(c.author) + '</b>' + FP.aiBadge(c.author_ai_agent)
       + '<span style="font-size:.7rem;color:var(--text-muted)">'
       + (c.created_at ? new Date(c.created_at).toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '') + '</span>'
       + (c.mine ? '<button onclick="delComment(' + c.id + ')" title="Delete" style="margin-left:auto;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:.75rem">✕</button>' : '')
@@ -11121,7 +11121,7 @@ function normalizePhone(v) {
   <input type="text" id="vmeta-label" maxlength="120" placeholder='e.g. "post-client-call cut" or "DO NOT TOUCH"'
          style="width:100%;margin-top:3px"
          onkeydown="if(event.key==='Enter'){saveVersionMeta()}if(event.key==='Escape'){closeVmetaPopup()}">
-  {% if current_user.role in ('super_admin', 'admin') %}
+  {% if current_user.has_all_project_access %}
   <label style="display:flex;align-items:center;gap:.4rem;margin-top:.55rem;font-weight:400;cursor:pointer;font-size:.82rem">
     <input type="checkbox" id="vmeta-locked"> 🔒 Lock this version — it can't be deleted until unlocked
   </label>
@@ -11369,7 +11369,7 @@ __BJ["b13__isActView"] = false;
      Loaded LAST so PID/BID and DOM are guaranteed available. -->
 <script src="{{ url_for('static', filename='budget-js/b14.js') }}?v={{ APP_COMMIT }}"></script>
 
-{% if current_user.role == 'super_admin' %}
+{% if current_user.can_run_maintenance %}
 <script src="{{ url_for('static', filename='budget-js/b15.js') }}?v={{ APP_COMMIT }}"></script>
 {% endif %}
 

@@ -24,7 +24,8 @@ function _renderViewers(viewers) {
   const overflow = others.length - MAX_SHOW;
   let html = visible.map(v => {
     const initials = v.user_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
-    return `<span class="collab-avatar" title="${v.user_name} is viewing" style="background:${v.color || '#2563eb'} !important">${initials}</span>`;
+    const ai = / · AI Agent$/.test(v.user_name || '') ? ' ai-agent' : '';
+    return `<span class="collab-avatar${ai}" title="${v.user_name} is viewing" style="background:${v.color || '#2563eb'} !important">${initials}</span>`;
   }).join('');
   if (overflow > 0) {
     html += `<span class="collab-avatar collab-overflow" title="${overflow} more viewer${overflow > 1 ? 's' : ''}">+${overflow}</span>`;
