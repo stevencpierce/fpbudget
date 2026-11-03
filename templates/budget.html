@@ -8358,8 +8358,16 @@ async function submitAddLine() {
     const flat   = parseFloat(document.getElementById('modal-estimated').value || 0);
     payload.quantity = nlQty;
     payload.days     = nlDays;
-    payload.rate     = nlRate > 0 ? nlRate : 0;
-    payload.estimated_total = nlRate > 0 ? nlRate * nlQty * nlDays : flat;
+    if (nlRate > 0) {
+      payload.rate = nlRate;
+      payload.estimated_total = nlRate * nlQty * nlDays;
+    } else {
+      // Flat total: do NOT send rate — an explicit rate key makes upsert_line
+      // recompute total = rate × qty × days and the flat amount became $0.00
+      // (found by the Cleanup F e2e suite, Nov 2 2026). With no rate key the
+      // server back-derives the unit rate from the flat total instead.
+      payload.estimated_total = flat;
+    }
   }
 
   let res;
