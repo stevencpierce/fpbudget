@@ -6,10 +6,25 @@ from __future__ import annotations
 
 import os
 import re
-import allure
+from contextlib import contextmanager
+from pathlib import Path
 from playwright.sync_api import Page, expect
 
-BASE_URL = os.getenv("BASE_URL", "https://fp-budget.onrender.com")
+BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")
+ARTIFACT_DIR = Path(os.getenv("E2E_ARTIFACTS", Path(__file__).parent.parent / "artifacts"))
+
+
+@contextmanager
+def step(title: str):
+    """Named step (was an Allure step) — just a context manager now."""
+    yield
+
+
+def note(text, name: str = ""):
+    """Record a free-text observation in the test output (was allure.attach)."""
+    if isinstance(text, bytes):
+        return
+    print(f"[{name}] {text}" if name else str(text))
 COLD_START_TIMEOUT = 60_000
 DEFAULT_TIMEOUT = 15_000
 
@@ -20,7 +35,7 @@ DEFAULT_TIMEOUT = 15_000
 
 def login(page: Page, email: str, password: str):
     """Navigate to /login, fill credentials, wait for projects page."""
-    with allure.step(f"Login as {email}"):
+    with step(f"Login as {email}"):
         page.goto(f"{BASE_URL}/login", wait_until="networkidle", timeout=COLD_START_TIMEOUT)
         page.fill('input[type="email"]', email)
         page.fill('input[type="password"]', password)
@@ -30,7 +45,7 @@ def login(page: Page, email: str, password: str):
 
 def logout(page: Page):
     """Click the logout link (or navigate directly)."""
-    with allure.step("Logout"):
+    with step("Logout"):
         page.goto(f"{BASE_URL}/logout", wait_until="networkidle", timeout=DEFAULT_TIMEOUT)
         expect(page).to_have_url(re.compile(r"/login"), timeout=DEFAULT_TIMEOUT)
 
@@ -47,7 +62,7 @@ def go_to_projects(page: Page):
 
 def open_project_budget(page: Page, project_name: str):
     """Find a project card by name and click 'Open Budget'."""
-    with allure.step(f"Open budget for project: {project_name}"):
+    with step(f"Open budget for project: {project_name}"):
         card = page.locator(f"text={project_name}").locator("..")
         card.locator("text=Open Budget").click()
         page.wait_for_load_state("networkidle", timeout=DEFAULT_TIMEOUT)
@@ -59,7 +74,7 @@ def open_project_budget(page: Page, project_name: str):
 
 def create_project(page: Page, name: str, template: str = "Blank budget") -> str:
     """Create a new project via the modal. Returns the project name."""
-    with allure.step(f"Create project: {name}"):
+    with step(f"Create project: {name}"):
         go_to_projects(page)
         page.click("text=+ New Project")
         page.fill('input[placeholder="e.g. GINTS Season 2"]', name)
@@ -107,7 +122,7 @@ def open_project_by_name(page: Page, name: str):
 
 def delete_project(page: Page, name: str):
     """Delete a project via the three-dot menu on its card."""
-    with allure.step(f"Delete project: {name}"):
+    with step(f"Delete project: {name}"):
         go_to_projects(page)
         card = find_project_card(page, name)
         if card.count() == 0:
@@ -158,6 +173,9 @@ def assert_element_count(page: Page, selector: str, count: int):
 
 
 def take_step_screenshot(page: Page, name: str):
-    """Capture a screenshot and attach to Allure report."""
-    screenshot = page.screenshot(full_page=True)
-    allure.attach(screenshot, name=name, attachment_type=allure.attachment_type.PNG)
+    """Capture a full-page screenshot into tests/artifacts/ (CI uploads it)."""
+    try:
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(ARTIFACT_DIR / f"{name}.png"), full_page=True)
+    except Exception:
+        pass

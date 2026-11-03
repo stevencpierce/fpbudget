@@ -29,7 +29,9 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS_DIR = os.path.join(PROJECT_ROOT, "tests")
-ALLURE_DIR = os.path.join(PROJECT_ROOT, "allure-results")
+# Failure screenshots land here (tests/conftest.py, FAILED-<nodeid>.png);
+# Allure was retired in Cleanup F (2026-11-02).
+ARTIFACT_DIR = os.path.join(TESTS_DIR, "artifacts")
 REPORT_PATH = os.path.join(PROJECT_ROOT, ".report.json")
 
 load_dotenv(os.path.join(TESTS_DIR, ".env"))
@@ -79,23 +81,18 @@ def discover_modules() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Allure screenshot correlation
+# Failure screenshot correlation
 # ---------------------------------------------------------------------------
 
 def get_failure_screenshots() -> dict[str, str]:
-    """Map test fullName -> screenshot filename from allure-results."""
+    """Map test name -> screenshot filename from tests/artifacts/.
+
+    conftest writes FAILED-<nodeid with [^A-Za-z0-9_.-] -> _>.png; the test
+    function name survives that mangling, which is what the UI matches on."""
     screenshots = {}
-    for path in glob.glob(os.path.join(ALLURE_DIR, "*-result.json")):
-        try:
-            with open(path) as f:
-                result = json.load(f)
-            if result.get("status") == "failed" and result.get("attachments"):
-                for att in result["attachments"]:
-                    if att.get("type", "").startswith("image/"):
-                        full_name = result.get("fullName", result.get("name", ""))
-                        screenshots[full_name] = att["source"]
-        except (json.JSONDecodeError, KeyError):
-            continue
+    for path in glob.glob(os.path.join(ARTIFACT_DIR, "FAILED-*.png")):
+        fname = os.path.basename(path)
+        screenshots[fname[len("FAILED-"):-len(".png")]] = fname
     return screenshots
 
 
@@ -362,9 +359,9 @@ def api_run():
     module = data.get("module", "all")
     headed = data.get("headed", True)
 
-    # Clear allure results
-    os.makedirs(ALLURE_DIR, exist_ok=True)
-    for f in glob.glob(os.path.join(ALLURE_DIR, "*")):
+    # Clear last run's screenshots
+    os.makedirs(ARTIFACT_DIR, exist_ok=True)
+    for f in glob.glob(os.path.join(ARTIFACT_DIR, "*.png")):
         try:
             os.remove(f)
         except OSError:
@@ -379,7 +376,6 @@ def api_run():
         sys.executable, "-m", "pytest",
         "-v", "--tb=short",
         "--json-report", "--json-report-file", REPORT_PATH,
-        "--alluredir", ALLURE_DIR,
         "--browser", "chromium",
     ]
     if headed:
@@ -473,7 +469,7 @@ def api_report():
 
 @app.route("/screenshots/<path:filename>")
 def serve_screenshot(filename):
-    return send_from_directory(ALLURE_DIR, filename)
+    return send_from_directory(ARTIFACT_DIR, filename)
 
 
 # ---------------------------------------------------------------------------
