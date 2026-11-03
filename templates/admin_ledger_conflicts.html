@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}Claimed in two projects — FPBudget{% endblock %}
+
+{# ══════════════════════════════════════════════════════════════════════════
+   Company ledger review list (2026-11-03). One card per QuickBooks charge the
+   ledger migration found claimed by two projects (both rows kept, flagged)
+   or whose receipt names a different payee than QuickBooks. Admin+.
+   Actions post to routes/ledger_admin.py; every one is logged and leaves a
+   merge-log entry, so Admin → Maintenance → Undo a ledger merge reverses it.
+   ══════════════════════════════════════════════════════════════════════ #}
+{% block content %}
+<style>
+  .lc-page { max-width: 1100px; margin: 0 auto; padding: 0 0 40px; }
+  .lc-intro { font-size: .86rem; color: var(--text-muted); margin: 0 0 16px; max-width: 760px; }
+  .lc-card { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px 16px; margin-bottom: 14px; }
+  .lc-card.payee { border-color: color-mix(in srgb, var(--orange) 45%, var(--border)); }
+  .lc-top { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+  .lc-top .amt { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .lc-top .amt.credit { color: var(--green); }
+  .lc-facts { display: flex; gap: 14px; flex-wrap: wrap; font-size: .82rem; color: var(--text-muted); margin-top: 4px; }
+  .lc-facts b { color: var(--text); font-weight: 500; }
+  .lc-claims { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; margin-top: 12px; }
+  .lc-claim { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--bg); display: flex; flex-direction: column; gap: 6px; }
+  .lc-claim .p { font-weight: 600; }
+  .lc-claim .sig { font-size: .8rem; color: var(--text-muted); }
+  .lc-claim .sig b { color: var(--text); font-weight: 500; }
+  .lc-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .lc-acts .pay-btn { height: 30px; font-size: .8rem; padding: 0 10px; }
+  .lc-note { font-size: .78rem; color: var(--text-muted); margin-top: 6px; }
+  .lc-msg { font-size: .8rem; margin-top: 8px; min-height: 1em; }
+  .lc-msg.err { color: var(--red); }
+  .lc-empty { padding: 28px; text-align: center; color: var(--text-muted); background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+  .lc-reason { display: inline-block; font-size: .72rem; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: color-mix(in srgb, var(--orange) 16%, var(--bg-2)); color: var(--orange); }
+</style>
+<div class="pay-page lc-page">
+  <div class="pay-head">
+    <div class="pay-crumbs">
+      <a href="{{ url_for('dashboard') }}">FPBudget</a><span class="sep">/</span>
+      <a href="{{ url_for('admin_panel') }}">Admin</a><span class="sep">/</span>
+      <span class="cur">Claimed in two projects</span>
+      {% if project_name %}<span class="pay-chip">{{ project_name }}</span>{% endif %}
+    </div>
+    <div class="pay-actions">
+      {% if pid %}<a class="pay-btn" href="{{ url_for('admin_ledger_conflicts') }}">All projects</a>
+      <a class="pay-btn" href="{{ url_for('actuals_workspace_page', pid=pid) }}">Back to Actuals</a>{% endif %}
+      <a class="pay-btn" href="{{ url_for('admin_transactions_page', status='conflict') }}">Company ledger</a>
+    </div>
+  </div>
+
+  <p class="lc-intro">
+    Each card is one QuickBooks charge with a problem the company ledger could not settle on its own: two projects both
+    claimed it, or the receipt matched to it names someone other than the payee QuickBooks recorded. Nothing here was
+    changed automatically. Every action is logged and can be put back from Admin → Maintenance → Undo a ledger merge.
+  </p>
+
+  {% if not cards %}
+  <div class="lc-empty">Nothing to review{% if project_name %} for {{ project_name }}{% endif %}. Every QuickBooks charge is claimed by at most one project.</div>
+  {% endif %}
+
+  {% for c in cards %}
+  <div class="lc-card {{ 'payee' if c.kind == 'payee' else '' }}" data-key="{{ c.qbo_txn_type }}/{{ c.qbo_txn_id }}">
+    <div class="lc-top">
+      <div>
+        <span class="amt {{ 'credit' if not c.is_expense else '' }}">{{ '-' if not c.is_expense else '' }}${{ '{:,.2f}'.format(c.amount|abs) }}</span>
+        <span style="margin-left:10px;font-weight:500">{{ c.qbo_payee or '—' }}</span>
+        <span class="pay-chip sq" style="margin-left:8px" title="What QuickBooks calls the payee">QuickBooks payee</span>
+      </div>
+      <div>{% for r in c.reasons %}<span class="lc-reason">{{ r }}</span> {% endfor %}</div>
+    </div>
+    <div class="lc-facts">
+      <span>Date <b>{{ c.date or '—' }}</b></span>
+      <span>QuickBooks <b>{{ c.qbo_txn_type }}/{{ c.qbo_txn_id }}</b></span>
+      {% if c.card_last4 %}<span>Card <b>••{{ c.card_last4 }}</b></span>{% endif %}
+      {% if c.account %}<span>Account <b>{{ c.account }}</b></span>{% endif %}
+    </div>
+    <div class="lc-claims">
+      {% for cl in c.claims %}
+      <div class="lc-claim" data-tid="{{ cl.id }}">
+        <span class="p">{{ cl.project }}{% if cl.flagged %} <span class="pay-chip sq" title="{{ cl.reason or '' }}">flagged</span>{% endif %}</span>
+        <span class="sig">Row #{{ cl.id }} · vendor as named here: <b>{{ cl.vendor or '—' }}</b></span>
+        <span class="sig">{% if cl.signals %}{% for s in cl.signals %}<b>{{ s }}</b>{% if not loop.last %} · {% endif %}{% endfor %}{% else %}no claim signal{% endif %}</span>
+        {% if cl.receipt %}<span class="sig">Receipt: <b>{{ cl.receipt }}</b>{% if cl.receipt_vendor %} ({{ cl.receipt_vendor }}){% endif %}</span>{% endif %}
+        <div class="lc-acts">
+          {% if c.kind == 'two_projects' and cl.project_id %}
+          <button type="button" class="pay-btn primary" data-act="keep" data-mode="receipt_to_place"
+                  data-pid="{{ cl.project_id }}" data-qid="{{ c.qbo_txn_id }}" data-qtype="{{ c.qbo_txn_type }}"
+                  data-confirm="Keep this charge in {{ cl.project }}? The other project's row loses its coding, its receipt goes back to that project's Receipts to place, and the row is logged and removed.">Keep in {{ cl.project }}</button>
+          <button type="button" class="pay-btn" data-act="keep" data-mode="receipt_stays_coded"
+                  data-pid="{{ cl.project_id }}" data-qid="{{ c.qbo_txn_id }}" data-qtype="{{ c.qbo_txn_type }}"
+                  title="The other project's receipt was matched to the wrong charge (a different charge of the same amount): it keeps its line and stays in that project as its own receipt row; only the QuickBooks identity is removed from it."
+                  data-confirm="Keep this charge in {{ cl.project }} and leave the other project's receipt coded as its own row (it was a wrong reconcile — a different charge)? Only the QuickBooks identity is removed from that row.">Keep here · other receipt was a wrong match</button>
+          {% endif %}
+          {% if cl.project_id and cl.receipt %}
+          <button type="button" class="pay-btn" data-act="unmatch" data-tid="{{ cl.id }}"
+                  data-confirm="Unmatch the receipt from this charge? The receipt goes back to Receipts to place; the charge keeps the QuickBooks payee and stays in {{ cl.project }} only if it still has a line or section, otherwise it returns to the pool.">Unmatch receipt</button>
+          {% endif %}
+          {% if cl.project_id %}
+          <button type="button" class="pay-btn" data-act="release" data-tid="{{ cl.id }}"
+                  data-confirm="Release this charge to unclaimed and send its receipt back to {{ cl.project }}'s Receipts to place? Coding, splits and the receipt link are removed (logged, restorable).">Release to unclaimed</button>
+          {% endif %}
+          {% if c.kind != 'two_projects' or c.claims|length == 1 %}
+          <button type="button" class="pay-btn" data-act="clear" data-tid="{{ cl.id }}"
+                  data-confirm="Clear the flag on this row? Nothing else changes.">It's fine</button>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="lc-msg" data-role="msg"></div>
+  </div>
+  {% endfor %}
+</div>
+<script>
+(function () {
+  const post = async (url, body) => {
+    const r = await fetch(url, { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json',
+                 'X-CSRFToken': (document.querySelector('meta[name="csrf-token"]') || {}).content || '' },
+      body: JSON.stringify(body || {}) });
+    let j = {};
+    try { j = await r.json(); } catch (e) {}
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    return j;
+  };
+  document.querySelectorAll('.lc-card').forEach(card => {
+    const msg = card.querySelector('[data-role="msg"]');
+    card.querySelectorAll('button[data-act]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (btn.dataset.confirm && !confirm(btn.dataset.confirm)) return;
+        const act = btn.dataset.act;
+        card.querySelectorAll('button').forEach(b => b.disabled = true);
+        msg.classList.remove('err'); msg.textContent = 'Working…';
+        try {
+          let r;
+          if (act === 'keep') r = await post('/admin/ledger/conflicts/keep', { qbo_txn_id: btn.dataset.qid, qbo_txn_type: btn.dataset.qtype, keep_project_id: +btn.dataset.pid, loser_mode: btn.dataset.mode });
+          else if (act === 'unmatch') r = await post('/admin/ledger/conflicts/unmatch', { txn_id: +btn.dataset.tid });
+          else if (act === 'release') r = await post('/admin/ledger/release', { txn_id: +btn.dataset.tid });
+          else r = await post('/admin/ledger/conflicts/clear', { txn_id: +btn.dataset.tid });
+          msg.textContent = 'Done. ' + (r.removed ? r.removed.length + ' row(s) settled (merge log ' + r.removed.map(x => '#' + x.merge_log_id).join(', ') + ').' : r.merge_log_id ? 'Merge log #' + r.merge_log_id + '.' : '');
+          setTimeout(() => window.location.reload(), 900);
+        } catch (e) {
+          msg.classList.add('err'); msg.textContent = e.message || String(e);
+          card.querySelectorAll('button').forEach(b => b.disabled = false);
+        }
+      });
+    });
+  });
+})();
+</script>
+{% endblock %}

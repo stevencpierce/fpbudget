@@ -8,8 +8,9 @@ What it seeds
   * two active projects; the first has a Working budget with a few sections
     and lines (one fringe summary row), transactions in every Actuals state
     (unclaimed with a suggestion, duplicate pair, refund, cash paid by crew,
-    assigned with / without backup, split, not-project, claimed elsewhere)
-    and three receipts in the inbox
+    assigned with / without backup, split, not-project), two unclaimed
+    charges in the company pool shared with the second project, a charge
+    claimed by both projects (review list), and three receipts in the inbox
 
 Usage (from the repo root)
   python scripts/seed_local.py --port 5055            # seed + serve
@@ -78,12 +79,15 @@ def seed(db, models, budget_calc):
     crew = CrewMember(name="James Allerdyce", department="Production", active=True)
     crew2 = CrewMember(name="Sam Rivera", department="Camera", active=True)
     db.session.add_all([crew, crew2])
-    p = ProjectSheet(name="GrubHub Fee Breakdown", client_name="GrubHub", status="active",
-                     qbo_account_ids=json.dumps(["41", "42"]), sync_through="2026-10-30",
-                     last_synced=datetime.utcnow() - timedelta(hours=2))
-    p2 = ProjectSheet(name="Ventana Live · Oct 4-7", client_name="Ventana", status="active",
-                      qbo_account_ids=json.dumps(["41"]))
+    p = ProjectSheet(name="GrubHub Fee Breakdown", client_name="GrubHub", status="active")
+    p2 = ProjectSheet(name="Ventana Live · Oct 4-7", client_name="Ventana", status="active")
     db.session.add_all([p, p2])
+    # The company account set + watermarks live on the QuickBooks connection
+    # (company ledger, 2026-11-03). No refresh token: "not connected", so
+    # Sync now is disabled, but the Sync view shows the company state.
+    db.session.add(models.QBOConnection(realm_id="local", enabled_account_ids=json.dumps(["41", "42"]),
+                                        sync_through="2026-10-30",
+                                        last_synced=datetime.utcnow() - timedelta(hours=2)))
     db.session.flush()
     b = Budget(project_id=p.id, name="v3", budget_mode="working", version_status="current",
                is_actual=False)
@@ -192,15 +196,38 @@ def seed(db, models, budget_calc):
     txn("Netflix", 15.49, "2026-10-01", source="qbo_sync", qbo_txn_id="18500",
         qbo_txn_type="Purchase", card_last4="9023", not_project_expense=True,
         excluded_at=now - timedelta(days=2), excluded_by_user_id=u.id, excluded_reason=None)
-    # The same QBO charge synced into project 2 and claimed there (claimed elsewhere)
+    # Company ledger (2026-11-03): one row per QuickBooks charge. A charge
+    # project 2 claimed (section-only) — invisible to project 1 — and two
+    # UNCLAIMED charges in the company pool that both projects see until one
+    # of them claims it.
     db.session.add(Transaction(
         project_id=p2.id, vendor="Adorama", amount=Decimal("455.00"), is_expense=True,
         txn_date="2026-10-05", source="qbo_sync", qbo_txn_id="18600", qbo_txn_type="Purchase",
         card_last4="4417", account_code=2601, account_code_name="Camera package",
         created_at=now, updated_at=now))
-    txn("Adorama", 455.00, "2026-10-05", source="qbo_sync", qbo_txn_id="18600",
-        qbo_txn_type="Purchase", card_last4="4417", not_project_expense=True,
-        claimed_by_project_id=p2.id)
+    for vendor, amount, d, qid, card in (("Wrapbook US", 3080.00, "2026-10-23", "1300000312", None),
+                                         ("Lyft", 26.31, "2026-10-24", "28032", "4417")):
+        db.session.add(Transaction(
+            project_id=None, vendor=vendor, amount=Decimal(str(amount)), is_expense=True,
+            txn_date=d, source="qbo_sync", qbo_txn_id=qid,
+            qbo_txn_type=("BillPayment" if card is None else "Purchase"), card_last4=card,
+            account_code_name=("Bank · bill payment" if card is None else "CC: 4417"),
+            created_at=now, updated_at=now))
+    # A charge claimed by BOTH projects (the ledger migration keeps both rows
+    # and flags them) — the "Claimed in two projects" review list.
+    db.session.add_all([
+        Transaction(project_id=p.id, vendor="SiegeWorks", amount=Decimal("200.00"), is_expense=True,
+                    txn_date="2026-10-14", source="reconciled", qbo_txn_id="28026", qbo_txn_type="Purchase",
+                    card_last4="4417", budget_line_id=media.id, account_code=2603,
+                    account_code_name="Media & cards", match_status="confirmed",
+                    claim_conflict=True, claim_conflict_reason="claimed by two projects",
+                    created_at=now, updated_at=now),
+        Transaction(project_id=p2.id, vendor="ALLWAYS ON THE GO", amount=Decimal("200.00"), is_expense=True,
+                    txn_date="2026-10-14", source="qbo_sync", qbo_txn_id="28026", qbo_txn_type="Purchase",
+                    card_last4="4417", account_code=3400, account_code_name="Transportation",
+                    claim_conflict=True, claim_conflict_reason="claimed by two projects",
+                    created_at=now, updated_at=now),
+    ])
     # Receipts: one unmatched in the inbox, one confirmed on t11, one suggested on t6
     d1 = DocUpload(project_id=p.id, uploader_id=u.id, original_filename="IMG_4412.jpg",
                    filed_filename="2026-10-17_RECEIPT_Parking_Seaport_32.00.pdf", status="filed",

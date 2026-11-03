@@ -126,6 +126,9 @@
   .aw-filters[hidden] { display: none; }
   .aw-filters .spacer { flex: 1 1 auto; }
   .aw-summary { font-size: 12px; color: var(--text-muted); }
+  .aw-banner { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; font-size: 13px; background: color-mix(in srgb, var(--orange) 14%, var(--bg-2)); color: var(--text); border: 1px solid color-mix(in srgb, var(--orange) 40%, var(--border)); }
+  .aw-banner[hidden] { display: none; }
+  .aw-banner a { font-weight: 600; color: var(--accent); }
   .aw-recent { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 26px; }
   .aw-recent:empty { display: none; }
   .aw-label { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
@@ -518,6 +521,7 @@
           </button>
           <span class="aw-summary num" id="aw-summary"></span>
         </div>
+        <div class="aw-banner" id="aw-banner" hidden></div>
         <div class="aw-recent" id="aw-recent"></div>
       </div>
 
@@ -799,9 +803,11 @@ __AJ.initialView = {{ initial_view|tojson }};
 __AJ.canSync = {{ can_sync|tojson }};
 __AJ.urls = {
   workspace: "{{ url_for('actuals_workspace_json', pid=project.id) }}",
-  {# QuickBooks is a company-wide connection: connect / disconnect from the
-     Admin hub (Cleanup E, 2026-11-02). Sync stays here, per project. #}
+  {# QuickBooks is a company-wide connection: connect / disconnect and the
+     account set live on the Admin hub (Cleanup E, 2026-11-02; company
+     ledger 2026-11-03). Sync now here runs the company-wide pull. #}
   oauth: "{{ url_for('admin_panel') }}#company-qbo",
+  accounts: "{{ url_for('admin_qbo_accounts') }}",
   docs: "{{ url_for('docs_project', pid=project.id) }}",
   upload: "{{ url_for('mobile_upload') }}"
 };

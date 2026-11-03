@@ -122,19 +122,35 @@ TOOLS = [
      "url": "/admin/qbo-imports/purge",
      "open": "inline", "params": [("project", "Project", "project")],
      "preview": {"method": "POST", "label": "Preview"}, "apply": "apply=1",
-     "confirm": "Delete every QuickBooks-imported transaction on this project? Receipts, typed rows and splits are kept. This erases the bank ledger for the project.",
-     "desc": "Undo electronic imports for one project so the next sync starts clean. One project at a time."},
+     "confirm": "Release every QuickBooks-imported row this project holds back to the company pool? Coding and exclusions on them are cleared; receipts, typed rows and reconciled rows are kept.",
+     "desc": "Since the company ledger a project's QuickBooks imports are released to the pool, not deleted (the rows are the company's record). The pool itself is purged with project=pool from the JSON route."},
     {"id": "cleanup-estimate-txns", "group": "Ledger & QuickBooks",
      "title": "Non-ledger document rows on the ledger", "method": "GET",
      "url": "/admin/cleanup-estimate-txns", "open": "tab",
      "desc": "Lists transactions born from estimates, POs and other non-ledger documents, with a delete step on that page."},
-    {"id": "claim-backfill", "group": "Ledger & QuickBooks",
-     "title": "Cross-project claim backfill", "method": "POST",
-     "url": "/admin/cross-project-claim-backfill",
-     "open": "inline",
-     "preview": {"method": "GET", "label": "Preview"},
-     "confirm": "Mark every sibling charge the fuzzy matcher finds as claimed by its coded project? Individual rows can be unclaimed by re-saving them.",
-     "desc": "Walks every coded transaction through the cross-project claim rule so the same expense stops showing in two projects."},
+    {"id": "ledger-migrate", "group": "Ledger & QuickBooks",
+     "title": "Company ledger — preview / run", "method": "POST",
+     "url": "/admin/ledger/run", "open": "inline", "task": "company_ledger_v1",
+     "preview": {"method": "GET", "label": "Preview", "url": "/admin/ledger/preview"},
+     "confirm": "Collapse the per-project copies of each QuickBooks transaction into ONE row for the company?\n\nUnclaimed copies are released to the pool, twins of a claimed row are logged and deleted (restorable below), and a charge claimed by two projects is kept in both and flagged for review. Read the Preview first.",
+     "desc": "One row per QuickBooks transaction for the whole company (2026-11-03). Preview shows every group with more than one copy and what the run keeps, deletes or flags; nothing changes until Run. Never runs on its own at deploy."},
+    {"id": "ledger-conflicts", "group": "Ledger & QuickBooks",
+     "title": "Claimed in two projects", "method": "GET",
+     "url": "/admin/ledger/conflicts", "open": "tab",
+     "desc": "Review list: each QuickBooks charge two projects both claimed, or whose receipt names a different payee than QuickBooks. Keep one project's claim, unmatch the receipt, or mark it fine."},
+    {"id": "ledger-release", "group": "Ledger & QuickBooks",
+     "title": "Release a charge to unclaimed", "method": "POST",
+     "url": "/admin/ledger/release", "open": "inline",
+     "params": [("txn_id", "Transaction id", "int")],
+     "confirm": "Release this QuickBooks charge to the unclaimed pool and send its receipt back to Receipts to place? Coding, splits and the receipt link are removed (logged; restorable with Undo a ledger merge).",
+     "desc": "Any claimed QuickBooks row by id: back to unclaimed (no line, no section, source qbo_sync) and its receipt / invoice back to its project's Receipts to place, to redo by hand."},
+    {"id": "ledger-undo", "group": "Ledger & QuickBooks",
+     "title": "Undo a ledger merge", "method": "POST",
+     "url": "/admin/ledger/undo-merge", "open": "inline",
+     "params": [("log_id", "Merge log entry id", "int_opt")],
+     "preview": {"method": "GET", "label": "Show log", "url": "/admin/ledger/merge-log.json"},
+     "confirm": "Restore this row from the merge log? If its twin still holds the QuickBooks identity, both rows are flagged for review.",
+     "desc": "Every row the company ledger migration or a conflict resolution removed, demoted or released is in transaction_merge_log with its whole row. Show log lists them newest first; Run restores one by id."},
     {"id": "vendors-audit", "group": "Ledger & QuickBooks",
      "title": "Ghost vendor audit", "method": "GET", "url": "/vendors/audit",
      "open": "inline",
@@ -210,17 +226,21 @@ def company_status():
         conn = QBOConnection.query.first()
     except Exception:
         db.session.rollback()
-    last_sync = None
+    last_sync = conn.last_synced if conn is not None else None
+    accounts = 0
     try:
-        last_sync = (db.session.query(db.func.max(ProjectSheet.last_synced)).scalar())
+        import json as _json
+        accounts = len(_json.loads((conn.enabled_account_ids if conn else None) or '[]'))
     except Exception:
-        db.session.rollback()
+        accounts = 0
     qbo = {
         "connected": bool(conn and conn.refresh_token),
         "realm_id": (conn.realm_id if conn else None),
         "token_expiry": _fmt_dt(conn.token_expiry) if conn and conn.token_expiry else "",
         "token_expired": bool(conn and conn.token_expiry and conn.token_expiry < datetime.utcnow()),
         "last_sync": _fmt_dt(last_sync),
+        "sync_through": (conn.sync_through if conn else None),
+        "accounts": accounts,
         "updated_at": _fmt_dt(conn.updated_at) if conn and conn.updated_at else "",
         "env_ok": bool(os.getenv("QBO_CLIENT_ID") and os.getenv("QBO_CLIENT_SECRET")),
     }

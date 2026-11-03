@@ -10,8 +10,13 @@ What changed in the port:
     new codes (3700 not 8000 for meals, 3500 not 7000 for travel,
     6000 not 14000 for insurance, etc.).
   • SyncedTransaction model removed — replaced by the partial unique
-    index `uq_transaction_qbo` on (project_id, qbo_txn_id, qbo_txn_type)
-    in the Transaction table itself. Halves the row count.
+    index on the Transaction table itself. Since the company ledger
+    (2026-11-03) that index is uq_transaction_qbo_company on
+    (qbo_txn_id, qbo_txn_type): ONE row per QuickBooks transaction for
+    the whole company, project_id = "claimed by" (NULL = in the pool).
+    sync_company pulls every account in QBOConnection.enabled_account_ids
+    and is the ONE sync entry point (per-project Sync buttons and the
+    scheduled sync both call it).
   • Receipt model not ported here — receipts live as DocUpload rows
     in FPBudget, and the DocUpload→Transaction linkage is the
     Actuals tab's job (actuals.py).
@@ -31,7 +36,7 @@ log = logging.getLogger(__name__)
 
 
 # ── QBO category → FP COA mapping (NEW codes) ─────────────────────────
-# Used by sync_project to seed Transaction.suggested_account_code on
+# Used by sync_company to seed Transaction.suggested_account_code on
 # every imported row. The user confirms (or overrides) these in the
 # Actuals UI and we promote the user's choice to a CategoryMapping
 # row (learned mapping) so subsequent imports of the same QBO
@@ -190,7 +195,7 @@ def list_qbo_accounts(conn, db):
 
 def get_qbo_account_by_id(conn, db, account_id):
     """Look up a single QBO account by its Id. Returns the same dict
-    shape as list_qbo_accounts, or None on failure. Used by sync_project
+    shape as list_qbo_accounts, or None on failure. Used by sync_company
     to resolve unmatched account refs into human names so the UI can
     say "QBO account #221 (My Card •8432, Credit Card)" instead of
     just "QBO account #221"."""
@@ -361,7 +366,7 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
     Returns:
       list[dict] of transaction rows
       .seen_refs (attribute on the list) = set of every AccountRef
-        seen on returned rows. Used by sync_project to surface
+        seen on returned rows. Used by sync_company to surface
         "found N txns on unselected accounts X, Y" warnings.
     """
     token     = get_valid_token(conn, db)
@@ -666,19 +671,23 @@ def fetch_existing_ids(conn, db, entity, ids, chunk=40):
 
 def reconcile_qbo_deletions(project_sheet, conn, db, days=120, apply=False):
     """Maintenance → "Reconcile with QuickBooks": re-fetch by id every
-    QuickBooks record this project holds from the last `days` and report
-    the ones QuickBooks no longer returns. Dry run by default; apply=True
-    applies apply_qbo_deletions' rules. Fail-open on API errors (raises;
-    the route reports). Returns {"checked", "missing": [...], "applied"}."""
+    QuickBooks record from the last `days` and report the ones QuickBooks
+    no longer returns. Company-wide since the ledger (2026-11-03):
+    project_sheet=None checks every QuickBooks row (claimed or in the
+    pool); a project narrows to the rows that project claimed. Dry run by
+    default; apply=True applies apply_qbo_deletions' rules. Fail-open on
+    API errors (raises; the route reports). Returns {"checked",
+    "missing": [...], "applied"}."""
     from models import Transaction
     import datetime as _dt
     cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
-    rows = (Transaction.query
-            .filter(Transaction.project_id == project_sheet.id,
-                    Transaction.qbo_txn_id.isnot(None),
-                    Transaction.qbo_txn_type.isnot(None),
-                    Transaction.txn_date >= cutoff)
-            .all())
+    q = (Transaction.query
+         .filter(Transaction.qbo_txn_id.isnot(None),
+                 Transaction.qbo_txn_type.isnot(None),
+                 Transaction.txn_date >= cutoff))
+    if project_sheet is not None:
+        q = q.filter(Transaction.project_id == project_sheet.id)
+    rows = q.all()
     by_type = {}
     for t in rows:
         by_type.setdefault(t.qbo_txn_type, {}).setdefault(str(t.qbo_txn_id), []).append(t)
@@ -703,10 +712,11 @@ def reconcile_qbo_deletions(project_sheet, conn, db, days=120, apply=False):
                                 "action": qbo_deletion_action(t)})
     applied = None
     if apply and missing:
-        applied = apply_qbo_deletions(db, project_sheet.id,
+        applied = apply_qbo_deletions(db, (project_sheet.id if project_sheet is not None else None),
                                       [{"qbo_txn_id": m["qbo_txn_id"], "qbo_txn_type": m["qbo_txn_type"]}
                                        for m in missing], source='reconcile')
-    return {"project_id": project_sheet.id, "project": project_sheet.name,
+    return {"project_id": (project_sheet.id if project_sheet is not None else None),
+            "project": (project_sheet.name if project_sheet is not None else 'whole company'),
             "checked": len(rows), "since": cutoff, "missing": missing, "applied": applied}
 
 
@@ -727,12 +737,17 @@ def _parse_qbo_timestamp(ts_str):
 
 # ── Project sync (the public entry point) ─────────────────────────────
 
-def _find_unreconciled_doc_match(db, project_id, qbo_row):
-    """Receipt-first reconciliation matcher.
+def _find_unreconciled_doc_match(db, qbo_row, project_id=None):
+    """Receipt-first reconciliation matcher — ACROSS ALL PROJECTS since the
+    company ledger (2026-11-03).
 
-    Returns the existing doc-sourced Transaction in `project_id` that
-    most plausibly corresponds to `qbo_row` (a dict from
-    fetch_transactions), or None if no match is good enough.
+    Returns (match, ambiguous) where `match` is the existing doc-sourced
+    Transaction that most plausibly corresponds to `qbo_row` (a dict from
+    fetch_transactions) or None, and `ambiguous` is the list of candidate
+    rows when receipts in TWO OR MORE projects match equally well — the
+    caller then leaves the charge unclaimed and notes the suggestion on
+    each, never guessing. `project_id` narrows to one project (tests /
+    repair tools); the sync passes None.
 
     Match window: source='doc_upload' AND qbo_txn_id IS NULL AND
     txn_date within ±5 calendar days AND amount within ±$1.00 (or
@@ -746,28 +761,30 @@ def _find_unreconciled_doc_match(db, project_id, qbo_row):
     from models import Transaction
     import datetime as _dt
     if not qbo_row.get("txn_date") or qbo_row.get("amount") in (None, ""):
-        return None
+        return None, []
     try:
         target_date = _dt.datetime.strptime(qbo_row["txn_date"], "%Y-%m-%d").date()
     except (ValueError, TypeError):
-        return None
+        return None, []
     try:
         target_amt = float(qbo_row["amount"])
     except (ValueError, TypeError):
-        return None
+        return None, []
     win_lo = (target_date - _dt.timedelta(days=5)).isoformat()
     win_hi = (target_date + _dt.timedelta(days=5)).isoformat()
 
-    # Pull candidates: same project, doc-only, no QBO id yet, in window.
-    cands = (db.session.query(Transaction)
-             .filter(Transaction.project_id == project_id,
-                     Transaction.source == 'doc_upload',
-                     Transaction.qbo_txn_id.is_(None),
-                     Transaction.txn_date >= win_lo,
-                     Transaction.txn_date <= win_hi)
-             .all())
+    # Pull candidates: doc-only, no QBO id yet, in window, any project.
+    q = (db.session.query(Transaction)
+         .filter(Transaction.source == 'doc_upload',
+                 Transaction.qbo_txn_id.is_(None),
+                 Transaction.project_id.isnot(None),
+                 Transaction.txn_date >= win_lo,
+                 Transaction.txn_date <= win_hi))
+    if project_id is not None:
+        q = q.filter(Transaction.project_id == project_id)
+    cands = q.all()
     if not cands:
-        return None
+        return None, []
 
     def _vendor_sim(a, b):
         a = (a or "").strip().lower()
@@ -780,8 +797,7 @@ def _find_unreconciled_doc_match(db, project_id, qbo_row):
             return 0.0
         return len(ta & tb) / max(len(ta), len(tb))
 
-    best = None
-    best_score = 0.0
+    scored = []
     for c in cands:
         try:
             c_amt = float(c.amount or 0)
@@ -811,11 +827,21 @@ def _find_unreconciled_doc_match(db, project_id, qbo_row):
                 continue
             vendor_score = 0.2
         score = (amt_score * 0.5) + (date_score * 0.3) + (vendor_score * 0.2)
-        if score > best_score:
-            best_score = score
-            best = c
-    # Threshold: 0.7 keeps obvious matches, rejects coincidental ones.
-    return best if best_score >= 0.7 else None
+        # Threshold: 0.7 keeps obvious matches, rejects coincidental ones.
+        if score >= 0.7:
+            scored.append((score, c))
+    if not scored:
+        return None, []
+    scored.sort(key=lambda sc: (-sc[0], sc[1].id))
+    best_score, best = scored[0]
+    # Receipts in two projects that both qualify → nobody's; the caller
+    # notes the suggestion on each. (Within ONE project the best wins as
+    # before — that is this project's own ambiguity to review.)
+    rivals = [c for sc, c in scored if c.project_id != best.project_id
+              and sc >= best_score - 0.05]
+    if rivals:
+        return None, [best] + rivals
+    return best, []
 
 
 def repair_is_expense(project_sheet, conn, db, start_date, end_date, apply=False,
@@ -838,9 +864,13 @@ def repair_is_expense(project_sheet, conn, db, start_date, end_date, apply=False
                        check overlap first).
       'both'         — apply everything. (Code review 2026-06-04.)"""
     from models import Transaction
-    account_ids = json.loads(project_sheet.qbo_account_ids or "[]")
+    # Company ledger: the account set is the connection's; a row is found
+    # by its QuickBooks identity alone (one row per transaction company-
+    # wide). project_sheet narrows the APPLY step to that project's rows
+    # when given (None = every row).
+    account_ids = company_account_ids(conn)
     if not account_ids:
-        raise ValueError("No QBO accounts configured for this project.")
+        raise ValueError("No QuickBooks accounts selected for the company (Admin → QuickBooks).")
     try:
         account_meta = {a["id"]: a for a in list_qbo_accounts(conn, db)}
     except Exception:
@@ -851,10 +881,12 @@ def repair_is_expense(project_sheet, conn, db, start_date, end_date, apply=False
     fixed = 0
     for r in rows:
         local = (Transaction.query
-                 .filter(Transaction.project_id == project_sheet.id,
-                         Transaction.qbo_txn_id == r["qbo_txn_id"],
+                 .filter(Transaction.qbo_txn_id == r["qbo_txn_id"],
                          Transaction.qbo_txn_type == r["qbo_txn_type"])
+                 .order_by(Transaction.id)
                  .first())
+        if local is not None and project_sheet is not None and local.project_id not in (None, project_sheet.id):
+            continue
         if local is None:
             if len(missing) < 200:
                 missing.append({"qbo_txn_id": r["qbo_txn_id"], "type": r["qbo_txn_type"],
@@ -918,45 +950,81 @@ def _attribute_from_entity_ref(txn, entity_ref, payee_by_vendor):
         return False
 
 
-def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
-    """Pull QBO transactions for one project into the shared Transaction
-    table. Idempotent — re-running is a no-op for txns already imported.
+# One advisory lock for the company-wide sync (routes/actuals.py sync-now
+# and the scheduled loop both take it). Was 776600000 + pid per project.
+SYNC_LOCK_KEY = 776600000
+
+
+def company_account_ids(conn):
+    """The company account set: QBOConnection.enabled_account_ids as a list
+    of strings (Admin → QuickBooks). The per-project qbo_account_ids column
+    is retired — nothing reads it any more."""
+    try:
+        ids = json.loads((conn.enabled_account_ids if conn is not None else None) or "[]") or []
+    except Exception:
+        ids = []
+    return [str(x) for x in ids if x not in (None, "", "0", 0)]
+
+
+def _vendor_is_user_set(txn):
+    """Whether the vendor on a QuickBooks row was set by a person — the
+    ONE rule for 'never overwrite a vendor the user typed' (2026-11-03).
+    There is no vendor_overridden flag, so: a row whose source changed
+    through a receipt (reconciled / doc_upload) keeps its receipt vendor,
+    a row the AI vendor clean-up touched (ai_cleaned_at) keeps its clean
+    name, and a plain QuickBooks row counts as user-set only when an
+    activity log entry recorded a vendor rename on it. Otherwise the
+    QuickBooks VendorRef / EntityRef name wins (a blank or "—" vendor is
+    always filled)."""
+    if txn.source in ('reconciled', 'doc_upload', 'manual_entry'):
+        return True
+    if getattr(txn, 'ai_cleaned_at', None):
+        return True
+    try:
+        from models import ActivityLog, db as _db
+        return (_db.session.query(ActivityLog.id)
+                .filter(ActivityLog.entity_type == 'transaction',
+                        ActivityLog.entity_id == txn.id,
+                        ActivityLog.field_changes.like('%"vendor"%'))
+                .first() is not None)
+    except Exception:
+        return False
+
+
+def sync_company(conn, db, start_date=None, end_date=None):
+    """Pull every QuickBooks transaction on the company account set into
+    the shared Transaction table — ONE row per (qbo_txn_id, qbo_txn_type)
+    for the whole company (2026-11-03). Idempotent: a row that exists
+    already (claimed by any project, or in the pool) is enriched where it
+    is blank and never duplicated.
 
     Args:
-      project_sheet: ProjectSheet row. Reads qbo_account_ids,
-                     sync_through, last_cdc_sync; writes them back.
-      conn:          QBOConnection row.
+      conn:          QBOConnection row. Reads enabled_account_ids,
+                     sync_through, last_cdc_sync; writes the watermarks.
       db:            SQLAlchemy `db` instance.
-      start_date:    'YYYY-MM-DD' (default: project_sheet.sync_through
-                     or 90 days ago).
+      start_date:    'YYYY-MM-DD' (default: conn.sync_through or 90 days ago).
       end_date:      'YYYY-MM-DD' (default: today, capped at yesterday
                      by the safe-watermark logic).
 
     Returns:
-      dict {
-        'imported':         int,    # rows newly written to Transaction
-        'reconciled':       int,    # merged into existing doc-only rows
-                                    # (receipt-first reconciliation)
-        'cdc_additions':    int,    # subset of imported that came via CDC
-        'sync_through':     str,    # new watermark
-        'effective_start':  str,
-        'effective_end':    str,
-      }
+      dict {imported, enriched, reconciled, cdc_additions, attributed,
+            ambiguous, sync_through, effective_start, effective_end,
+            unmatched_accounts}
     """
-    from models import Transaction, CategoryMapping
+    from models import Transaction, CategoryMapping, ProjectSheet
     import datetime as dt
 
-    account_ids = json.loads(project_sheet.qbo_account_ids or "[]")
+    account_ids = company_account_ids(conn)
     if not account_ids:
-        raise ValueError("No QBO accounts configured for this project.")
+        raise ValueError("No QuickBooks accounts selected for the company (Admin → QuickBooks).")
 
     today     = dt.date.today()
     yesterday = (today - dt.timedelta(days=1)).isoformat()
     if not end_date:
         end_date = today.isoformat()
     if not start_date:
-        if project_sheet.sync_through:
-            start_date = project_sheet.sync_through
+        if conn.sync_through:
+            start_date = conn.sync_through
         else:
             start_date = (today - dt.timedelta(days=90)).isoformat()
 
@@ -965,10 +1033,10 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
     safe_end = min(end_date, yesterday)
 
     # 2. Overlap window — re-query LOOKBACK_DAYS behind the watermark.
-    if project_sheet.sync_through:
+    if conn.sync_through:
         try:
             overlap_start = (
-                dt.datetime.strptime(project_sheet.sync_through, "%Y-%m-%d")
+                dt.datetime.strptime(conn.sync_through, "%Y-%m-%d")
                 - dt.timedelta(days=LOOKBACK_DAYS)
             ).strftime("%Y-%m-%d")
             effective_start = min(start_date, overlap_start)
@@ -978,20 +1046,12 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
         effective_start = start_date
 
     log.info(
-        f"[qbo {project_sheet.name}] sync window {effective_start} → {safe_end} "
-        f"(requested {start_date} → {end_date}, overlap={LOOKBACK_DAYS}d)"
+        f"[qbo company] sync window {effective_start} → {safe_end} "
+        f"(requested {start_date} → {end_date}, overlap={LOOKBACK_DAYS}d, "
+        f"accounts={account_ids})"
     )
 
-    # 3. Build dedupe set from the Transaction table directly. The
-    # partial unique index uq_transaction_qbo enforces idempotency at
-    # the DB level too — this in-memory check is just a fast path.
-    existing = (db.session.query(Transaction.qbo_txn_id, Transaction.qbo_txn_type)
-                .filter(Transaction.project_id == project_sheet.id,
-                        Transaction.qbo_txn_id.isnot(None))
-                .all())
-    skip_keys = {(qid, qtype) for qid, qtype in existing}
-
-    # 4. Account metadata for nicer display strings.
+    # 3. Account metadata for nicer display strings.
     try:
         all_accounts = list_qbo_accounts(conn, db)
         account_meta = {a["id"]: a for a in all_accounts}
@@ -999,26 +1059,24 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
         log.warning(f"[qbo] account metadata fetch failed: {_ae}")
         account_meta = {}
 
-    # 5. Primary fetch — by TxnDate range with overlap.
-    # Fetch WITHOUT skipping known keys: rows we already imported flow
-    # through so blanks can be back-filled (a charge categorized or
-    # named in QBO AFTER our first pull now updates here — previously it
-    # was frozen at first sight forever). Inserts still dedupe below.
+    # 4. Primary fetch — by TxnDate range with overlap. Rows we already
+    # imported flow through so blanks can be back-filled; inserts dedupe
+    # below.
     rows = fetch_transactions(
         conn, db, account_ids, effective_start, safe_end,
         skip_keys=set(), account_meta=account_meta,
     )
     seen = {(r["qbo_txn_id"], r["qbo_txn_type"]) for r in rows}
 
-    # 6. CDC sweep — by LastUpdatedTime, catches late-accepted items.
+    # 5. CDC sweep — by LastUpdatedTime, catches late-accepted items.
     cdc_count       = 0
     cdc_server_time = None
     cdc_deleted     = []      # QuickBooks deletions / voids (Phase 5)
     try:
         now_utc = dt.datetime.utcnow()
-        if project_sheet.last_cdc_sync:
+        if conn.last_cdc_sync:
             earliest_allowed = now_utc - dt.timedelta(days=CDC_MAX_LOOKBACK_DAYS)
-            cdc_since = max(project_sheet.last_cdc_sync, earliest_allowed)
+            cdc_since = max(conn.last_cdc_sync, earliest_allowed)
         else:
             cdc_since = max(
                 dt.datetime.strptime(effective_start, "%Y-%m-%d") - dt.timedelta(days=1),
@@ -1036,64 +1094,82 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
                 seen.add(key)
                 cdc_count += 1
         if cdc_count:
-            log.info(f"[qbo {project_sheet.name}] CDC added {cdc_count} late-accepted txns")
+            log.info(f"[qbo company] CDC added {cdc_count} late-accepted txns")
     except Exception as _ce:
-        log.warning(f"[qbo {project_sheet.name}] CDC sweep failed (non-fatal): {_ce}")
+        log.warning(f"[qbo company] CDC sweep failed (non-fatal): {_ce}")
 
-    # 7. Write to Transaction. Build a one-shot lookup of learned
-    # category → COA mappings so we don't hit the DB per row.
+    # 6. Learned category → COA mappings, one-shot.
     mappings = {
         m.qbo_category.lower(): (m.coa_code, m.coa_name)
         for m in CategoryMapping.query.filter(CategoryMapping.vendor_name.is_(None)).all()
     }
-    # Seed defaults for any mapping the DB doesn't yet have a learned
-    # row for (don't override learned mappings — those have priority).
     for cat, (code, name) in DEFAULT_QBO_MAPPINGS.items():
         mappings.setdefault(cat, (code, name))
 
+    # Every existing QuickBooks row, company-wide, by identity. Before the
+    # ledger migration has collapsed the per-project copies a key may map
+    # to several rows; every copy is enriched and none is re-inserted.
     _existing_map = {}
     for _t in (Transaction.query
-               .filter(Transaction.project_id == project_sheet.id,
-                       Transaction.qbo_txn_id.isnot(None)).all()):
-        _existing_map[(_t.qbo_txn_id, _t.qbo_txn_type)] = _t
+               .filter(Transaction.qbo_txn_id.isnot(None))
+               .order_by(Transaction.id).all()):
+        _existing_map.setdefault((_t.qbo_txn_id, _t.qbo_txn_type), []).append(_t)
 
-    # Payee attribution for free (Documents Phase 3): EntityRef.value →
-    # the Payee carrying that qbo_vendor_id. No matching, no guessing. A
-    # vendor QuickBooks names that no Payee mirrors yet attributes nobody
-    # (its id is kept on the row for when it is linked).
     payee_by_vendor = _payee_by_qbo_vendor(db)
     attributed = 0
+    project_names = {}
+
+    def _pname(pid):
+        if pid not in project_names:
+            _p = ProjectSheet.query.get(pid)
+            project_names[pid] = _p.name if _p else f"project #{pid}"
+        return project_names[pid]
 
     imported = 0
     reconciled = 0
     enriched = 0
+    ambiguous = 0
     _seen_this_run = set()
     for r in rows:
         _key = (r["qbo_txn_id"], r["qbo_txn_type"])
         if _key in _seen_this_run:
             continue
         _seen_this_run.add(_key)
-        _ex = _existing_map.get(_key)
-        if _ex is not None:
-            # Already imported — fill BLANKS only (never touch values the
-            # user, or an earlier pull, already set).
-            _f = False
-            if not (_ex.vendor or '').strip() and r["vendor"]:
-                _ex.vendor = r["vendor"]; _f = True
-            if not (_ex.note or '').strip() and r["note"]:
-                _ex.note = r["note"]; _f = True
-            if not _ex.qbo_category and r["qbo_category"]:
-                _ex.qbo_category = r["qbo_category"]; _f = True
-                if _ex.suggested_account_code is None and not _ex.account_code:
-                    _m = mappings.get(r["qbo_category"].lower())
-                    if _m:
-                        _ex.suggested_account_code = _m[0]
-            if r.get("qbo_entity_ref") and not getattr(_ex, 'qbo_entity_ref', None):
-                _ex.qbo_entity_ref = r["qbo_entity_ref"]; _f = True
-            if _attribute_from_entity_ref(_ex, r.get("qbo_entity_ref"), payee_by_vendor):
-                attributed += 1; _f = True
-            if _f:
-                enriched += 1
+        _existing = _existing_map.get(_key)
+        if _existing:
+            # Already in the ledger — fill BLANKS only. The QuickBooks
+            # VendorRef / EntityRef name wins on a plain QuickBooks row
+            # (processor noise like "—" or a bare card descriptor gives
+            # way to the vendor QuickBooks names); a vendor a person
+            # typed, or one that came from a receipt, is never touched
+            # (_vendor_is_user_set — the one rule).
+            for _ex in _existing:
+                _f = False
+                _qv = (r.get("vendor") or '').strip()
+                _cur = (_ex.vendor or '').strip()
+                if _qv and (not _cur or _cur in ('—', '-', '?')):
+                    _ex.vendor = _qv; _f = True
+                elif (_qv and _cur != _qv and r.get("qbo_entity_ref")
+                      and not _vendor_is_user_set(_ex)):
+                    _ex.vendor = _qv; _f = True
+                if not (_ex.note or '').strip() and r["note"]:
+                    _ex.note = r["note"]; _f = True
+                if not _ex.qbo_category and r["qbo_category"]:
+                    _ex.qbo_category = r["qbo_category"]; _f = True
+                    if _ex.suggested_account_code is None and not _ex.account_code:
+                        _m = mappings.get(r["qbo_category"].lower())
+                        if _m:
+                            _ex.suggested_account_code = _m[0]
+                if not _ex.qbo_account_id and r.get("qbo_account_id"):
+                    _ex.qbo_account_id = r["qbo_account_id"]; _f = True
+                if not (_ex.account_code_name or '').strip() and r.get("account_name") and not _ex.account_code:
+                    _ex.account_code_name = r["account_name"]; _f = True
+                if r.get("qbo_entity_ref") and not getattr(_ex, 'qbo_entity_ref', None):
+                    _ex.qbo_entity_ref = r["qbo_entity_ref"]; _f = True
+                if _attribute_from_entity_ref(_ex, r.get("qbo_entity_ref"), payee_by_vendor):
+                    attributed += 1; _f = True
+                if _f:
+                    enriched += 1
             continue
         suggested_code = suggested_name = None
         if r.get("qbo_category"):
@@ -1101,28 +1177,33 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             if mapping:
                 suggested_code, suggested_name = mapping
 
-        # Cross-project claimed check: same QBO txn id assigned
-        # elsewhere with an account_code → flag this one as not-mine.
-        already_claimed = (
-            db.session.query(Transaction)
-            .filter(Transaction.qbo_txn_id   == r["qbo_txn_id"],
-                    Transaction.qbo_txn_type == r["qbo_txn_type"],
-                    Transaction.project_id   != project_sheet.id,
-                    Transaction.account_code.isnot(None))
-            .first()
-        )
-
-        # ── Receipt-first reconciliation ─────────────────────────────
-        # If the user already uploaded a receipt for this expense and
-        # tagged it to a budget line BEFORE the QBO charge synced, we
-        # have a doc_upload-sourced Transaction in our DB that's the
-        # "same" expense. Detect that and merge into it instead of
-        # creating a parallel row (which would double-count actuals).
-        # Match criteria: same project, source='doc_upload', no
-        # qbo_txn_id yet, txn_date within ±5d, amount within ±$1.00.
-        existing_doc_txn = _find_unreconciled_doc_match(
-            db, project_sheet.id, r,
-        )
+        # ── Receipt-first reconciliation, across ALL projects ────────
+        # A receipt uploaded (and maybe coded) BEFORE the charge synced
+        # already exists as a doc_upload-sourced Transaction in some
+        # project. A unique match claims the charge for that receipt's
+        # project — as a SUGGESTION the person confirms (never auto-
+        # confirmed). Receipts in two projects → the charge stays in
+        # the pool and each receipt row carries a note.
+        existing_doc_txn, rivals = _find_unreconciled_doc_match(db, r)
+        if rivals:
+            ambiguous += 1
+            _hint = (f"[QuickBooks {r['qbo_txn_type']}/{r['qbo_txn_id']} "
+                     f"${float(r['amount'] or 0):,.2f} on {r['txn_date']} may match "
+                     f"this receipt — also matches a receipt in "
+                     f"{', '.join(sorted({_pname(c.project_id) for c in rivals}))}; "
+                     f"claim it from Actuals]")
+            for c in rivals:
+                if _hint not in (c.note or ''):
+                    c.note = (((c.note or '') + ' ' + _hint).strip())[:500]
+            try:
+                from app import _log_activity as _la
+                for c in rivals:
+                    _la(action='update', entity_type='transaction', entity_id=c.id,
+                        entity_label=(c.vendor or f'Txn #{c.id}')[:80], project_id=c.project_id,
+                        note=f"Company sync: {r['qbo_txn_type']}/{r['qbo_txn_id']} matches receipts in "
+                             f"{len({x.project_id for x in rivals})} projects — left in the pool")
+            except Exception:
+                pass
         if existing_doc_txn is not None:
             # Merge: promote the doc-only row into a reconciled row by
             # stamping the QBO ingest fields onto it. Preserve the
@@ -1132,33 +1213,22 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             existing_doc_txn.qbo_txn_type   = r["qbo_txn_type"]
             existing_doc_txn.qbo_account_id = r["qbo_account_id"]
             existing_doc_txn.qbo_category   = r["qbo_category"]
-            # Trust QBO for the canonical amount + vendor + date; the
-            # user-typed receipt values may have been approximate.
+            # Trust QBO for the canonical amount + date; the user-typed
+            # receipt values may have been approximate.
             _amt_delta = abs(float(existing_doc_txn.amount or 0)
                              - float(r["amount"] or 0))
             existing_doc_txn.amount         = r["amount"]
             existing_doc_txn.is_expense     = r["is_expense"]
-            # Vendor: prefer the receipt's OCR'd / human-typed value
-            # over QBO's. QBO's vendor field carries credit-card processor
-            # noise — "AMAZON MKTPL*BJ3NU6KN0", "LYFT *RIDE MON 8AM" —
-            # whereas the receipt OCR produces the clean human-readable
-            # name ("Amazon", "Lyft"). Falls back to QBO if the doc has
-            # no vendor on it. 2026-05-15 user report: had to manually
-            # "overwrite name" via the modal after every reconcile —
-            # causing a page reload and losing scroll position. Inverting
-            # the precedence here removes that step entirely.
+            # Vendor: prefer the receipt's OCR'd / human-typed value over
+            # QBO's processor noise ("AMAZON MKTPL*BJ3NU6KN0"); fall back
+            # to QBO when the doc has none. (2026-05-15.)
             existing_doc_txn.vendor         = existing_doc_txn.vendor or r["vendor"]
             existing_doc_txn.txn_date       = r["txn_date"] or existing_doc_txn.txn_date
             if r.get("qbo_entity_ref") and not getattr(existing_doc_txn, 'qbo_entity_ref', None):
                 existing_doc_txn.qbo_entity_ref = r["qbo_entity_ref"]
             if _attribute_from_entity_ref(existing_doc_txn, r.get("qbo_entity_ref"), payee_by_vendor):
                 attributed += 1
-            # Suggested, never confirmed (owner decision 2026-10-30: every
-            # receipt match, exact or near, waits for a click — Concur's
-            # "smart matching, confirmed by a person"). Audit H3 (2026-07-20)
-            # auto-confirmed exact-amount pairings; that branch is gone. The
-            # user's coding on the row is untouched either way; only the
-            # match state is left for them to confirm or unmatch.
+            # Suggested, never confirmed (owner decision 2026-10-30).
             existing_doc_txn.match_status = 'suggested'
             if _amt_delta > 0.01:
                 _dnote = (f"[QBO reconcile: bank amount differed from "
@@ -1166,29 +1236,17 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
                 if _dnote not in (existing_doc_txn.note or ''):
                     existing_doc_txn.note = (((existing_doc_txn.note or '')
                                               + ' ' + _dnote).strip())[:500]
-            # Fire cross-project claim propagation: reconciliation
-            # stamped a qbo_txn_id onto this doc row, which means QBO
-            # siblings on other projects now share that id and should
-            # be claimed (or fuzzy-matched siblings, since the row also
-            # has a doc_upload_id — receipt = affirmative claim signal).
-            # Import locally to dodge circular import at module-load
-            # (app.py imports qbo_sync; qbo_sync importing app.py would
-            # cycle). app must be initialized when sync runs anyway.
-            try:
-                from app import _sync_claim_state as _scs
-                _scs(existing_doc_txn)
-            except Exception as _re:
-                log.warning(f"[qbo {project_sheet.name}] cross-project claim "
-                            f"on reconciled txn #{existing_doc_txn.id} failed: {_re}")
+            _existing_map.setdefault(_key, []).append(existing_doc_txn)
             log.info(
-                f"[qbo {project_sheet.name}] reconciled QBO {r['qbo_txn_type']}"
-                f"/{r['qbo_txn_id']} → existing doc Transaction id={existing_doc_txn.id}"
+                f"[qbo company] reconciled QBO {r['qbo_txn_type']}"
+                f"/{r['qbo_txn_id']} → existing doc Transaction id={existing_doc_txn.id} "
+                f"(project {existing_doc_txn.project_id})"
             )
             reconciled += 1
             continue
 
         _new = Transaction(
-            project_id              = project_sheet.id,
+            project_id              = None,              # in the company pool
             source                  = 'qbo_sync',
             qbo_txn_id              = r["qbo_txn_id"],
             qbo_txn_type            = r["qbo_txn_type"],
@@ -1201,7 +1259,7 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             is_expense              = r["is_expense"],
             account_code_name       = r["account_name"],   # display string (CC: 1234)
             note                    = r["note"],
-            not_project_expense     = bool(already_claimed),
+            not_project_expense     = False,
             suggested_account_code  = suggested_code,
             account_code            = None,                # user-confirms via Actuals UI
             match_status            = 'unmatched',
@@ -1209,46 +1267,42 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
         if _attribute_from_entity_ref(_new, r.get("qbo_entity_ref"), payee_by_vendor):
             attributed += 1
         db.session.add(_new)
+        _existing_map.setdefault(_key, []).append(_new)
         imported += 1
 
-    # 7b. QuickBooks deletions / voids (Actuals Phase 5, 2026-11-03): the
-    # sync used to never remove anything, so a BillPayment voided after
-    # import stayed forever (Ryan Mauskopf's $4,500 twice, Nov 2). One
-    # rule, qbo_sync.apply_qbo_deletions; fail-open.
+    # 7b. QuickBooks deletions / voids (Actuals Phase 5, 2026-11-03): one
+    # rule, qbo_sync.apply_qbo_deletions, company-wide since the ledger —
+    # a deleted QuickBooks record has ONE row, whoever claimed it (or the
+    # pool). Fail-open.
     qbo_deleted, qbo_voided = [], []
     if cdc_deleted:
         try:
             db.session.flush()
-            _dr = apply_qbo_deletions(db, project_sheet.id, cdc_deleted)
+            _dr = apply_qbo_deletions(db, None, cdc_deleted)
             qbo_deleted, qbo_voided = _dr["deleted"], _dr["voided"]
         except Exception as _de:
-            log.warning(f"[qbo {project_sheet.name}] deletions not applied (non-fatal): {_de}")
+            log.warning(f"[qbo company] deletions not applied (non-fatal): {_de}")
 
-    # 8. Watermark advance.
-    project_sheet.last_synced  = datetime.datetime.utcnow()
-    project_sheet.sync_through = safe_end
+    # 8. Watermark advance — on the connection (company-wide).
+    conn.last_synced  = datetime.datetime.utcnow()
+    conn.sync_through = safe_end
     if cdc_server_time:
-        project_sheet.last_cdc_sync = cdc_server_time
-    elif imported or not project_sheet.last_cdc_sync:
-        project_sheet.last_cdc_sync = datetime.datetime.utcnow()
+        conn.last_cdc_sync = cdc_server_time
+    elif imported or not conn.last_cdc_sync:
+        conn.last_cdc_sync = datetime.datetime.utcnow()
 
     db.session.commit()
-    log.info(f"[qbo {project_sheet.name}] imported {imported} txns "
+    log.info(f"[qbo company] imported {imported} txns "
              f"(reconciled={reconciled}, enriched={enriched}, cdc={cdc_count}, "
-             f"payee-attributed={attributed}); watermark → {safe_end}")
-    # Surface unmatched account refs — transactions QBO returned that
-    # weren't on accounts the user selected for this project. Resolve
-    # to display names if we can so the UI can say "add Chase 8432" not
-    # "add account 221".
+             f"ambiguous={ambiguous}, payee-attributed={attributed}); watermark → {safe_end}")
+    # Surface unmatched account refs — transactions QBO returned on accounts
+    # outside the company set. Resolve to display names if we can so the
+    # UI can say "add Chase 8432" not "add account 221".
     unmatched_refs = list(getattr(rows, 'unmatched_account_refs', []) or [])
     unmatched_named = []
     if unmatched_refs:
         for ref in unmatched_refs:
             meta = account_meta.get(ref) if account_meta else None
-            # If we don't have metadata in the cached list (because the
-            # ref's account type was filtered out previously, or the
-            # account is inactive), look it up directly by id so the
-            # UI can show the real name + account type.
             if not meta:
                 meta = get_qbo_account_by_id(conn, db, ref)
             if meta:
@@ -1268,6 +1322,7 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
         "attributed":      attributed,    # rows given a payee from EntityRef
         "qbo_deleted":     len(qbo_deleted),   # rows removed because QuickBooks deleted them
         "qbo_voided":      len(qbo_voided),    # rows kept + flagged "Voided in QuickBooks"
+        "ambiguous":       ambiguous,     # receipts in two projects — left in the pool
         "sync_through":    safe_end,
         "effective_start": effective_start,
         "effective_end":   safe_end,

@@ -1,15 +1,16 @@
 {% extends "base.html" %}
-{% block title %}All transactions — FPBudget Admin{% endblock %}
+{% block title %}Company ledger — FPBudget Admin{% endblock %}
 {% block body_class %}aw-body{% endblock %}
 
 {% block content %}
-{# ═══ SUPER-ADMIN: ALL TRANSACTIONS (ACTUALS_HANDOFF Phase 3, 2026-11-01) ═══
-   The whole pool across projects, one row per QuickBooks charge, with the
-   claiming project, line, backup state and source. Server-rendered from
-   the same rows as /admin/transactions.json; the filters are a GET form.
-   A row click opens the charge in its project's Actuals workspace with
-   ?txn= so it is selected and scrolled to. Visual spec: the
-   AdminTransactions.dc.html artboard in the app's own CSS variables. #}
+{# ═══ SUPER-ADMIN: THE COMPANY LEDGER (2026-11-03; Phase 3 pool page before) ═══
+   Every QuickBooks transaction once for the whole company — Date · Payee ·
+   Amount · Account · Claimed by · Line · Backup — plus manual / CSV /
+   activated-receipt rows, filtered by status (claimed / unclaimed / not
+   project / claimed in two projects), project, card, dates and search.
+   Server-rendered from the same rows as /admin/transactions.json. A row
+   click opens the charge in the claiming project's Actuals workspace with
+   ?txn= so it is selected and scrolled to. #}
 <style>
   .aw-body .main-content { padding: 0; }
   .adm { --aw-text-2: color-mix(in srgb, var(--text) 72%, var(--text-muted));
@@ -90,20 +91,26 @@
       <span class="sep" aria-hidden="true">/</span>
       <a href="{{ url_for('admin_panel') }}" class="muted">Admin</a>
       <span class="sep" aria-hidden="true">/</span>
-      <span class="here">All transactions</span>
+      <span class="here">Company ledger</span>
       <span class="adm-tag">Super-admin</span>
     </div>
-    <span class="adm-status"><span class="adm-dot" aria-hidden="true"></span>Company pool · {{ syncing }} project{{ '' if syncing == 1 else 's' }} syncing · <span class="num">{{ total }}</span> charge{{ '' if total == 1 else 's' }}{% if filters.q or filters.project_id or filters.card or filters['from'] or filters.to or filters.hide_claimed or filters.hide_not_project %} match{% endif %}</span>
+    <span class="adm-status"><span class="adm-dot" aria-hidden="true"></span>{{ accounts }} account{{ '' if accounts == 1 else 's' }} in the company set · <span class="num">{{ unclaimed }}</span> unclaimed{% if conflicts %} · <a href="{{ url_for('admin_ledger_conflicts') }}">{{ conflicts }} to review</a>{% endif %} · <span class="num">{{ total }}</span> row{{ '' if total == 1 else 's' }}{% if filters.q or filters.project_id or filters.card or filters['from'] or filters.to or filters.status != 'all' or filters.hide_not_project %} match{% endif %}</span>
   </header>
 
   <div class="adm-wrap">
-    <p>Every QuickBooks charge once, whichever projects synced it. Use this to find which project claimed a charge, or to see what nobody has.</p>
+    <p>Every QuickBooks transaction once, for the whole company, with the project that claimed it — or Unclaimed while it sits in the pool every project can see. Manual, CSV and activated-receipt rows are here too.</p>
 
     <form method="get" class="adm-filters" id="adm-form">
       <label for="adm-search" class="vis-hidden">Search transactions</label>
-      <input id="adm-search" type="search" name="q" value="{{ filters.q }}" placeholder="Search vendor, amount, last four, QBO id" autocomplete="off">
+      <input id="adm-search" type="search" name="q" value="{{ filters.q }}" placeholder="Search payee, amount, last four, QuickBooks id" autocomplete="off">
+      <label for="adm-status" class="vis-hidden">Status</label>
+      <select id="adm-status" name="status" onchange="this.form.submit()">
+        {% for st, lbl in [('all', 'All rows'), ('claimed', 'Claimed'), ('unclaimed', 'Unclaimed'), ('not_project', 'Not a project expense'), ('conflict', 'Claimed in two projects'), ('qbo', 'QuickBooks only')] %}
+        <option value="{{ st }}" {{ 'selected' if filters.status == st else '' }}>{{ lbl }}</option>
+        {% endfor %}
+      </select>
       <label for="adm-project" class="vis-hidden">Project</label>
-      <select id="adm-project" name="project_id">
+      <select id="adm-project" name="project_id" onchange="this.form.submit()">
         <option value="">All projects</option>
         {% for pid, name in projects %}
         <option value="{{ pid }}" {{ 'selected' if filters.project_id == pid else '' }}>{{ name }}</option>
@@ -122,7 +129,6 @@
       <button type="submit" class="adm-btn primary">Filter</button>
       <a href="{{ url_for('admin_transactions_page') }}" class="adm-btn">Reset</a>
       <span class="spacer"></span>
-      <label class="chk"><input type="checkbox" name="hide_claimed" value="1" {{ 'checked' if filters.hide_claimed else '' }} onchange="this.form.submit()">Hide claimed</label>
       <label class="chk"><input type="checkbox" name="hide_not_project" value="1" {{ 'checked' if filters.hide_not_project else '' }} onchange="this.form.submit()">Hide not-project</label>
       <a class="adm-btn" href="{{ url_for('admin_transactions_csv') }}{% if request.query_string %}?{{ request.query_string.decode() }}{% endif %}">
         <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2v7M4 6.5L7 9.5l3-3M2.5 11.5h9"/></svg>Export CSV</a>
@@ -130,20 +136,20 @@
 
     <div class="adm-card">
       <div class="adm-scroll">
-        <div role="table" class="adm-table" aria-label="All transactions">
+        <div role="table" class="adm-table" aria-label="Company ledger">
           <div role="row" class="adm-row head">
-            <div class="cell">Date</div><div class="cell">Vendor</div><div class="cell right">Amount</div><div class="cell">Card</div>
-            <div class="cell">Source</div><div class="cell">Claimed by</div><div class="cell">Line</div><div class="cell">Backup</div><div class="cell">QBO id</div>
+            <div class="cell">Date</div><div class="cell">Payee</div><div class="cell right">Amount</div><div class="cell">Account</div>
+            <div class="cell">Source</div><div class="cell">Claimed by</div><div class="cell">Line</div><div class="cell">Backup</div><div class="cell">QuickBooks id</div>
           </div>
           {% for r in rows %}
-          {% set open_pid = r.project_id or r.row_project_id %}
+          {% set open_pid = r.project_id or pool_pid %}
           {% set href = ('/projects/%d/actuals?txn=%d' % (open_pid, r.id)) if open_pid else '' %}
           <div role="row" class="adm-row {{ 'link' if href else '' }} {{ 'excluded' if r.excluded else '' }}"
-               {% if href %}tabindex="0" data-href="{{ href }}" aria-label="Open {{ r.vendor }} {{ '%.2f' % r.amount }} in its project"{% endif %}>
+               {% if href %}tabindex="0" data-href="{{ href }}" aria-label="Open {{ r.vendor }} {{ '%.2f' % r.amount }} in {{ r.project or 'a project' }}"{% endif %}>
             <div class="cell num muted" title="{{ r.date }}">{{ r.date_short or '—' }}</div>
             <div class="cell"><span class="vendor ell">{{ r.vendor }}</span>{% if r.amount < 0 %}<span class="note">refund</span>{% endif %}</div>
             <div class="cell num right"><span class="amt {{ 'credit' if r.amount < 0 else '' }}">{{ '-' if r.amount < 0 else '' }}${{ '{:,.2f}'.format(r.amount|abs) }}</span></div>
-            <div class="cell num muted">{% if r.card_last4 %}••{{ r.card_last4 }}{% elif r.payment_method %}{{ r.payment_method|replace('_', ' ')|capitalize }}{% elif r.qbo_txn_type == 'BillPayment' %}ACH{% endif %}</div>
+            <div class="cell num muted"><span class="ell" title="{{ r.account }}">{{ r.account or '' }}</span></div>
             <div class="cell">
               {% if r.source == 'receipt' %}<span class="src receipt">Receipt</span>
               {% elif r.source in ('qbo_sync', 'reconciled') %}<span class="src">QBO</span>
@@ -151,9 +157,9 @@
               {% else %}<span class="src manual">Manual</span>{% endif %}
             </div>
             <div class="cell">
-              {% if r.excluded %}<span class="chip">Not a project expense</span>
-              {% elif r.project %}<a href="{{ href }}" style="font-weight:500" class="ell" onclick="event.stopPropagation()">{{ r.project }}</a>
-              {% else %}<span class="chip open">Unclaimed{% if r.seen_in|length > 1 %} · seen by {{ r.seen_in|length }} projects{% endif %}</span>{% endif %}
+              {% if r.claim_conflict %}<a href="{{ url_for('admin_ledger_conflicts', pid=r.project_id) }}" class="chip open" style="color:var(--orange)" onclick="event.stopPropagation()" title="{{ r.claim_conflict_reason or '' }}">{{ r.project or '—' }} · review</a>
+              {% elif r.project %}<a href="{{ href }}" style="font-weight:500" class="ell" onclick="event.stopPropagation()">{{ r.project }}</a>{% if r.excluded %}<span class="note">not project</span>{% endif %}
+              {% else %}<span class="chip open">Unclaimed</span>{% endif %}
             </div>
             <div class="cell"><span class="ell {{ 'muted' if not r.line else '' }}">{{ r.line or '—' }}</span></div>
             <div class="cell">
@@ -164,20 +170,20 @@
               {% elif r.project_id %}<span class="flag red">Needs backup</span>
               {% else %}<span class="flag none">None</span>{% endif %}
             </div>
-            <div class="cell num muted" style="font-size:12px">{{ r.qbo_txn_id or '' }}</div>
+            <div class="cell num muted" style="font-size:12px">{% if r.qbo_txn_id %}{{ r.qbo_txn_type }}/{{ r.qbo_txn_id }}{% endif %}</div>
           </div>
           {% else %}
-          <div class="adm-empty">No transactions match. Clear a filter or sync a project.</div>
+          <div class="adm-empty">No transactions match. Clear a filter or run a sync.</div>
           {% endfor %}
         </div>
       </div>
       <div class="adm-foot">
         <span class="num">
-          {% if total > filters.limit %}{{ filters.offset + 1 }}–{{ [filters.offset + filters.limit, total]|min }} of {{ total }} charges{% else %}{{ total }} charge{{ '' if total == 1 else 's' }}{% endif %}{% if filters.q %} match “{{ filters.q }}”{% endif %} · {{ '-' if net < 0 else '' }}${{ '{:,.2f}'.format(net|abs) }} net
+          {% if total > filters.limit %}{{ filters.offset + 1 }}–{{ [filters.offset + filters.limit, total]|min }} of {{ total }} rows{% else %}{{ total }} row{{ '' if total == 1 else 's' }}{% endif %}{% if filters.q %} match “{{ filters.q }}”{% endif %} · {{ '-' if net < 0 else '' }}${{ '{:,.2f}'.format(net|abs) }} net on this page
           {% if filters.offset > 0 %}<a href="?{{ request.query_string.decode() | replace('offset=' ~ filters.offset, 'offset=' ~ ([filters.offset - filters.limit, 0]|max)) }}{% if 'offset=' not in request.query_string.decode() %}&amp;offset={{ [filters.offset - filters.limit, 0]|max }}{% endif %}">Previous</a>{% endif %}
           {% if filters.offset + filters.limit < total %}<a href="?{{ request.query_string.decode() | replace('offset=' ~ filters.offset, 'offset=' ~ (filters.offset + filters.limit)) }}{% if 'offset=' not in request.query_string.decode() %}&amp;offset={{ filters.offset + filters.limit }}{% endif %}">Next</a>{% endif %}
         </span>
-        <span>Click a row to open it in its project</span>
+        <span>Click a row to open it in its project (an unclaimed row opens in the first active project's pool)</span>
       </div>
     </div>
   </div>

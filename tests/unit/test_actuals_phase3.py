@@ -4,8 +4,9 @@
      workspace, its Split selects and its Create-expense combobox share:
      headers / spacers dropped, children under their parent, orphans kept,
      the fringe summary last and marked kind='fringe'.
-  2. admin_pool_csv — the super-admin export: header row, the page's
-     status labels, amounts to the cent, seen_in joined with ' | '.
+  2. admin_pool_csv — the company-ledger export: header row, the page's
+     status labels (unclaimed / claimed / not project / conflict), the
+     account column, amounts to the cent.
 
 No Flask, no DB. Run: python -m pytest tests/unit -q --confcutdir=tests/unit -o addopts=""
 """
@@ -72,8 +73,9 @@ def test_picker_truncates_long_descriptions_and_falls_back_to_account_name():
 
 def _row(**kw):
     base = {"id": 7, "date": "2026-10-22", "vendor": "Lensrentals", "amount": 912.0,
-            "card_last4": "4417", "source": "qbo_sync", "project": None, "project_id": None,
-            "line": None, "backup": "none", "excluded": False, "seen_in": ["A", "B"],
+            "card_last4": "4417", "account": "••4417", "source": "qbo_sync", "project": None,
+            "project_id": None, "line": None, "backup": "none", "excluded": False,
+            "claim_conflict": False,
             "qbo_txn_id": "18822", "qbo_txn_type": "Purchase", "payment_method": None}
     base.update(kw)
     return base
@@ -84,20 +86,22 @@ def test_csv_header_and_status_labels():
         _row(),
         _row(id=8, project="Ventana", project_id=3, line="2601 · Camera package", backup="backup"),
         _row(id=9, excluded=True, amount=-120.0, source="qbo_sync"),
+        _row(id=10, project="GINTS", project_id=4, claim_conflict=True),
     ])
     rows = list(csv.reader(io.StringIO(text)))
     assert rows[0] == list(ADMIN_POOL_CSV_COLUMNS)
-    assert len(rows) == 4
+    assert len(rows) == 5
     by_id = {r[-1]: r for r in rows[1:]}
-    assert by_id["7"][8] == "open" and by_id["7"][9] == "A | B"
-    assert by_id["8"][8] == "claimed" and by_id["8"][5] == "Ventana" and by_id["8"][6] == "2601 · Camera package"
-    assert by_id["9"][8] == "not project" and by_id["9"][2] == "-120.00"
+    assert by_id["7"][9] == "unclaimed" and by_id["7"][4] == "••4417"
+    assert by_id["8"][9] == "claimed" and by_id["8"][6] == "Ventana" and by_id["8"][7] == "2601 · Camera package"
+    assert by_id["9"][9] == "not project" and by_id["9"][2] == "-120.00"
+    assert by_id["10"][9] == "conflict"
 
 
 def test_csv_amounts_to_the_cent_and_blanks_for_missing():
-    text = admin_pool_csv([_row(amount=48.2, card_last4=None, qbo_txn_id=None, seen_in=[])])
+    text = admin_pool_csv([_row(amount=48.2, card_last4=None, account="", qbo_txn_id=None)])
     r = list(csv.reader(io.StringIO(text)))[1]
-    assert r[2] == "48.20" and r[3] == "" and r[9] == "" and r[10] == ""
+    assert r[2] == "48.20" and r[3] == "" and r[4] == "" and r[10] == ""
     assert admin_pool_csv([]).strip() == ",".join(ADMIN_POOL_CSV_COLUMNS)
     assert admin_pool_csv(None).count("\n") == 1
 

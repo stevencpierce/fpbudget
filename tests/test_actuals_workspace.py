@@ -118,7 +118,10 @@ def test_drag_two_rows_to_line(ws):
     page, pid = ws
     _reload_ws(page, pid)
     rows = page.locator("#aw-table .aw-row[data-tid]")
-    assert rows.count() >= 2
+    # Company ledger (2026-11-03): Unclaimed also lists the unclaimed company
+    # pool, so count relative to what is there, not to this project's seed.
+    before = rows.count()
+    assert before >= 2
     rows.nth(0).click()
     rows.nth(1).click(modifiers=["Shift"])
     expect(page.locator("#aw-actionbar")).to_be_visible()
@@ -128,7 +131,7 @@ def test_drag_two_rows_to_line(ws):
     rows.nth(0).drag_to(target)
     page.wait_for_timeout(1200)
     # Both rows left Unclaimed and sit on that line in Assigned.
-    expect(page.locator("#aw-table .aw-row[data-tid]")).to_have_count(1)
+    expect(page.locator("#aw-table .aw-row[data-tid]")).to_have_count(before - 2)
     _open_view(page, "assigned")
     chips = page.locator("#aw-table .aw-row[data-tid] .aw-chip.solid")
     expect(chips).to_have_count(2)

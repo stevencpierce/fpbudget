@@ -1,114 +1,22 @@
 """Super-admin transaction-pool routes — M1b-2 slice of the app.py split
 (ACTUALS_HANDOFF Phase 2, 2026-10-30).
 
-The cross-project claim backfill, the coding backup JSON, the QBO import
-repair / purge tools, the QBO coverage matrix and the estimate-txn cleanup
-page. Same pattern as routes/actuals.py: @app.route on the same app object,
-endpoint names and URLs unchanged. /admin/transactions (the whole pool,
-one row per QBO charge) is added at the bottom under its own banner.
+The coding backup JSON, the QBO import repair / purge tools and the
+estimate-txn cleanup page. Same pattern as routes/actuals.py: @app.route
+on the same app object, endpoint names and URLs unchanged.
+/admin/transactions is the COMPANY LEDGER (2026-11-03): every QuickBooks
+transaction once, with who claimed it. The cross-project claim backfill
+and the per-project QBO coverage matrix were retired with the company
+ledger (one row per transaction — there are no siblings to claim and no
+per-project account sets).
 """
 import logging
 from datetime import (datetime)
 from flask import (jsonify, redirect, render_template, request, url_for)
 from flask_login import (current_user, login_required)
 
-from app import (app, _NON_LEDGER_DOC_CATEGORIES, _delete_evidence_for_txns, _log_activity, _sync_claim_state, admin_required, super_admin_required)
+from app import (app, _NON_LEDGER_DOC_CATEGORIES, _delete_evidence_for_txns, _log_activity, super_admin_required)
 from models import (DocUpload, ProjectSheet, Transaction, TransactionSplit, db)
-
-
-@app.route("/admin/cross-project-claim-backfill", methods=["GET", "POST"])
-@login_required
-@super_admin_required
-def admin_cross_project_claim_backfill():
-    """One-shot: run _sync_claim_state across every already-coded
-    transaction in the database so the new fuzzy-match channel
-    retroactively claims siblings in other projects.
-
-    User report 2026-05-15: a Lyft $37.93 was coded in Project A but
-    still showing in Project B because the pre-fuzzy claim logic only
-    matched on qbo_txn_id and Project A's row was doc-only. After
-    deploying the fuzzy match, NEW coding actions claim correctly, but
-    historical ones don't until we walk the table once.
-
-    GET shows a dry-run preview (how many siblings would get claimed
-    without writing anything). POST runs it for real and commits.
-    """
-    from sqlalchemy import or_ as _or
-    # "Coded" for this backfill = any claim signal recognized by
-    # _sync_claim_state. As of 2026-05-15 that includes doc_upload_id
-    # too (receipt attachment → claim).
-    coded_q = (Transaction.query
-               .filter(_or(Transaction.budget_line_id.isnot(None),
-                           Transaction.account_code.isnot(None),
-                           Transaction.not_project_expense == True,
-                           Transaction.doc_upload_id.isnot(None)))
-               .filter(Transaction.amount.isnot(None),
-                       Transaction.txn_date.isnot(None),
-                       Transaction.vendor.isnot(None)))
-    coded_count = coded_q.count()
-
-    if request.method == "GET":
-        # Dry-run preview: iterate but rollback at the end.
-        marked = 0
-        preview = []
-        for t in coded_q.limit(2000).all():
-            _before = {
-                str(s.id): (s.claimed_by_project_id, bool(s.not_project_expense))
-                for s in Transaction.query
-                              .filter(Transaction.project_id != t.project_id,
-                                      Transaction.amount == t.amount,
-                                      Transaction.txn_date == t.txn_date)
-                              .limit(20).all()
-            }
-            _sync_claim_state(t)
-            for s in db.session.dirty:
-                if not isinstance(s, Transaction):
-                    continue
-                _b = _before.get(str(s.id))
-                if _b is None:
-                    continue
-                if _b != (s.claimed_by_project_id, bool(s.not_project_expense)):
-                    marked += 1
-                    if len(preview) < 25:
-                        preview.append({
-                            'sibling_id':   s.id,
-                            'sibling_proj': s.project_id,
-                            'vendor':       s.vendor,
-                            'amount':       float(s.amount or 0),
-                            'date':         s.txn_date,
-                            'claimed_by':   s.claimed_by_project_id,
-                            'not_project':  bool(s.not_project_expense),
-                        })
-        db.session.rollback()
-        return jsonify({
-            'ok': True,
-            'mode': 'dry-run',
-            'coded_transactions': coded_count,
-            'siblings_would_claim': marked,
-            'sample': preview,
-            'next': 'POST to this URL to apply.',
-        })
-
-    # POST: actually run + commit.
-    marked = 0
-    errors = 0
-    for t in coded_q.all():
-        try:
-            _sync_claim_state(t)
-            for s in list(db.session.dirty):
-                if isinstance(s, Transaction):
-                    marked += 1
-        except Exception as e:
-            errors += 1
-            logging.warning("[claim-backfill] failed on txn #%s: %s", t.id, e)
-    db.session.commit()
-    return jsonify({
-        'ok': True,
-        'mode': 'committed',
-        'coded_transactions': coded_count,
-        'siblings_marked_dirty': marked,
-        'errors': errors,
-    })
 
 
 @app.route("/admin/backup/transactions.json", methods=["GET"])
@@ -142,72 +50,6 @@ def admin_backup_transactions():
            for r in rows]
     return jsonify({"generated_at": datetime.utcnow().isoformat() + 'Z',
                     "count": len(out), "transactions": out})
-
-
-@app.route("/admin/qbo-coverage", methods=["GET"])
-@login_required
-@admin_required
-def admin_qbo_coverage():
-    """Per-project QBO sync diagnostics.
-
-    Shows a matrix of every active project × every Bank/Credit-Card
-    account on the connected QBO realm, with a ✓ wherever the project
-    has that account in its qbo_account_ids. Also surfaces each
-    project's sync_through watermark + last_synced + last_cdc_sync, so
-    you can pinpoint "why didn't this project see those 5/12 Amazon
-    charges?" — almost always: the relevant card isn't selected, or
-    the watermark is parked too far in the future.
-
-    Built 2026-05-14 in response to user report that two projects
-    "synced" minutes apart saw different transaction sets.
-    """
-    from models import QBOConnection
-    import json as _json
-
-    projects = (ProjectSheet.query
-                .filter(ProjectSheet.status != 'archived')
-                .order_by(ProjectSheet.name).all())
-
-    conn = QBOConnection.query.first()
-    qbo_connected = bool(conn and conn.refresh_token)
-    accounts = []
-    qbo_error = None
-    if qbo_connected:
-        try:
-            from qbo_sync import list_qbo_accounts
-            accounts = list_qbo_accounts(conn, db)
-            # Stable sort: Bank first, then Credit Card; then by name.
-            accounts.sort(key=lambda a: (
-                0 if a.get("type") == "Bank" else 1,
-                (a.get("name") or "").lower(),
-            ))
-        except Exception as e:
-            qbo_error = str(e)
-            logging.exception("[admin qbo-coverage] list_qbo_accounts failed")
-
-    # Build matrix: each row = project with its enabled-set + watermark.
-    rows = []
-    for p in projects:
-        try:
-            enabled_ids = set(_json.loads(p.qbo_account_ids or "[]") or [])
-        except Exception:
-            enabled_ids = set()
-        rows.append({
-            "project":      p,
-            "enabled_ids":  enabled_ids,
-            "enabled_count": len(enabled_ids),
-            # The 4 timestamps that govern *what* a sync pulls.
-            "sync_through": p.sync_through,
-            "last_synced":  p.last_synced,
-            "last_cdc_sync": p.last_cdc_sync,
-        })
-
-    return render_template("admin_qbo_coverage.html",
-                           projects=rows,
-                           accounts=accounts,
-                           qbo_connected=qbo_connected,
-                           qbo_error=qbo_error,
-                           now=datetime.utcnow())
 
 
 @app.route("/admin/qbo-imports/repair-refunds", methods=["POST"])
@@ -271,155 +113,93 @@ def qbo_repair_refunds():
 @app.route("/admin/qbo-imports/purge", methods=["POST"])
 @login_required
 def qbo_imports_purge(pid=None):
-    """Undo electronic (QuickBooks) imports — delete Transactions with
-    source='qbo_sync'. Receipts (doc_upload), typed rows (manual_entry) and
-    invoice splits are NEVER touched. Dry-run by default; ?apply=1 to delete.
-    Scope: ?project=<pid> limits to one project; default = all projects.
-
-    Before deleting we:
-      • release cross-project claims that point at a project whose qbo rows
-        are being removed (clear claimed_by_project_id on surviving rows),
-      • detach any child transaction whose parent is being deleted
-        (parent_transaction_id → NULL) so no split is orphaned.
-    Linked DocUploads are left intact (the link lives on the txn side).
-    Super-admin only, ONE project at a time (Cleanup A #8, 2026-11-02 — the
-    'all projects' scope and the admin role are gone: this erases the bank
-    ledger). (User 2026-06-01.)"""
+    """Undo electronic (QuickBooks) imports. Since the company ledger
+    (2026-11-03) a QuickBooks transaction has ONE row for the whole
+    company, so "purge for a project" means: RELEASE that project's
+    source='qbo_sync' rows back to the pool (coding, exclusion and splits
+    cleared; the rows stay — they are the company's record), while
+    project=pool DELETES the unclaimed pool rows so the next sync starts
+    clean. Receipts (doc_upload), typed rows (manual_entry), reconciled
+    rows and rows carrying a receipt are NEVER touched. Dry-run by
+    default; ?apply=1 to write. Super-admin only. (User 2026-06-01;
+    Cleanup A #8, 2026-11-02; company ledger 2026-11-03.)"""
     if current_user.role != 'super_admin':
         return jsonify({"error": "Forbidden — super admin only"}), 403
     apply = (request.args.get('apply') == '1')
-    scope_pid = request.args.get('project')
-    if scope_pid in (None, '', 'all'):
-        return jsonify({"error": "project=<id> is required — the purge runs on one "
-                                 "project at a time ('all' is not accepted)."}), 400
-    try:
-        scope_pid = int(scope_pid)
-    except (TypeError, ValueError):
-        return jsonify({"error": "project must be an integer"}), 400
-    if ProjectSheet.query.get(scope_pid) is None:
-        return jsonify({"error": f"project {scope_pid} not found"}), 404
+    scope = request.args.get('project')
+    if scope in (None, '', 'all'):
+        return jsonify({"error": "project=<id> (release that project's imports to the pool) "
+                                 "or project=pool (delete the unclaimed pool rows) is required."}), 400
+    scope_pid = None
+    if scope != 'pool':
+        try:
+            scope_pid = int(scope)
+        except (TypeError, ValueError):
+            return jsonify({"error": "project must be an integer or 'pool'"}), 400
+        if ProjectSheet.query.get(scope_pid) is None:
+            return jsonify({"error": f"project {scope_pid} not found"}), 404
 
-    # Defense-in-depth: never delete a qbo_sync row that is matched to a receipt
-    # (doc_upload_id set). Confirming a match now flips source→'reconciled', but
-    # rows confirmed before that fix are still source='qbo_sync' with a doc link;
-    # deleting them would lose the receipt's only ledger row. (Code review
-    # 2026-06-04.)
     q = (Transaction.query
          .filter(Transaction.source == 'qbo_sync')
          .filter(Transaction.doc_upload_id.is_(None)))
     if scope_pid is not None:
         q = q.filter(Transaction.project_id == scope_pid)
+    else:
+        q = q.filter(Transaction.project_id.is_(None))
     rows = q.all()
-
-    # Per-project breakdown so the user can confirm scope before deleting.
-    by_proj = {}
-    dates = []
-    ids = []
-    for t in rows:
-        ids.append(t.id)
-        if t.txn_date:
-            dates.append(t.txn_date)
-        p = by_proj.setdefault(t.project_id, {"total": 0, "coded": 0, "uncoded": 0,
-                                              "claimed": 0, "with_doc": 0,
-                                              "amount": 0.0})
-        p["total"] += 1
-        if t.budget_line_id:
-            p["coded"] += 1
-        else:
-            p["uncoded"] += 1
-        if t.claimed_by_project_id:
-            p["claimed"] += 1
-        if t.doc_upload_id:
-            p["with_doc"] += 1
-        p["amount"] += float(t.amount or 0)
-
-    # Context: what is being PRESERVED (so the user sees the blast radius).
-    preserved = {}
-    for src in ('manual_entry', 'doc_upload', 'invoice_split', 'reconciled'):
-        pq = Transaction.query.filter(Transaction.source == src)
-        if scope_pid is not None:
-            pq = pq.filter(Transaction.project_id == scope_pid)
-        preserved[src] = pq.count()
-    # qbo_sync rows kept because they're matched to a receipt (excluded above).
-    _mq = (Transaction.query.filter(Transaction.source == 'qbo_sync')
-           .filter(Transaction.doc_upload_id.isnot(None)))
-    if scope_pid is not None:
-        _mq = _mq.filter(Transaction.project_id == scope_pid)
-    preserved['qbo_sync_matched_kept'] = _mq.count()
-
-    # Project names for readability
-    pnames = {p.id: p.name for p in ProjectSheet.query.all()}
+    dates = [t.txn_date for t in rows if t.txn_date]
+    ids = [t.id for t in rows]
+    coded = sum(1 for t in rows if t.budget_line_id or t.account_code)
+    excluded = sum(1 for t in rows if t.not_project_expense)
+    amount = round(sum(float(t.amount or 0) for t in rows), 2)
     report = {"dry": (not apply), "applied": apply,
-              "scope": ("all projects" if scope_pid is None else f"project {scope_pid}"),
-              "qbo_sync_total": len(rows),
+              "scope": ("pool (unclaimed rows — deleted)" if scope_pid is None
+                        else f"project {scope_pid} (released to the pool)"),
+              "qbo_sync_total": len(rows), "coded": coded, "excluded": excluded,
+              "amount": amount,
               "date_range": ([min(dates), max(dates)] if dates else None),
-              "by_project": {f"{pid_}{(' · '+pnames[pid_]) if pnames.get(pid_) else ''}": v
-                             for pid_, v in sorted(by_proj.items())},
-              "preserved_counts": preserved,
               "errors": []}
-
     if apply and ids:
         try:
             idset = set(ids)
-            # 1) detach children whose parent is being deleted
-            child_q = Transaction.query.filter(
-                Transaction.parent_transaction_id.in_(idset))
-            detached = 0
-            for c in child_q.all():
-                if c.id not in idset:        # don't bother for rows also dying
-                    c.parent_transaction_id = None
-                    detached += 1
-            # 2) release cross-project claims held BY the rows being deleted:
-            #    only siblings that share a deleted row's (qbo_txn_id,
-            #    qbo_txn_type) and are claimed by this project. Claims this
-            #    project holds through rows that survive (receipts, manual
-            #    entries) stay. (#8 — the old code cleared every claim that
-            #    pointed at the project.)
-            _qbo_keys = {(t.qbo_txn_id, t.qbo_txn_type) for t in rows if t.qbo_txn_id}
-            released = 0
-            if _qbo_keys:
-                _sibs = (Transaction.query
-                         .filter(Transaction.claimed_by_project_id == scope_pid)
-                         .filter(~Transaction.id.in_(idset))
-                         .filter(Transaction.qbo_txn_id.in_({k[0] for k in _qbo_keys}))
-                         .all())
-                for sb in _sibs:
-                    if (sb.qbo_txn_id, sb.qbo_txn_type) not in _qbo_keys:
-                        continue
-                    sb.claimed_by_project_id = None
-                    # Mirror _sync_claim_state's release: a sibling we hid
-                    # solely by claiming it comes back into its own pile.
-                    if sb.not_project_expense and not (sb.budget_line_id or sb.account_code):
-                        sb.not_project_expense = False
-                    released += 1
-            db.session.flush()
-            # 3) evidence + splits point at the doomed rows with no cascade
-            _delete_evidence_for_txns(list(idset))
             TransactionSplit.query.filter(TransactionSplit.transaction_id.in_(idset))\
                 .delete(synchronize_session=False)
+            _delete_evidence_for_txns(list(idset))
             Transaction.query.filter(Transaction.backup_of_txn_id.in_(idset)).update(
                 {"backup_of_txn_id": None}, synchronize_session=False)
-            # 4) delete the qbo_sync rows
-            deleted = (Transaction.query
-                       .filter(Transaction.id.in_(idset))
-                       .delete(synchronize_session=False))
-            db.session.commit()
+            if scope_pid is not None:
+                from actuals import release
+                for t in rows:
+                    t.budget_line_id = t.account_code = t.account_code_name = None
+                    t.suggested_budget_line_id = None
+                    t.not_project_expense = False
+                    t.excluded_at = t.excluded_by_user_id = t.excluded_reason = None
+                    t.match_status = 'unmatched'
+                    release(t, why='QuickBooks imports purged for the project', has_splits=False)
+                db.session.commit()
+                report["released"] = len(rows)
+                _note = f'Released {len(rows)} QuickBooks-imported row(s) to the company pool'
+            else:
+                Transaction.query.filter(Transaction.parent_transaction_id.in_(idset)).update(
+                    {"parent_transaction_id": None}, synchronize_session=False)
+                deleted = (Transaction.query
+                           .filter(Transaction.id.in_(idset))
+                           .delete(synchronize_session=False))
+                db.session.commit()
+                report["deleted"] = int(deleted)
+                _note = f'Purged {int(deleted)} unclaimed QuickBooks row(s) from the pool'
             try:
-                _log_activity(action='delete', entity_type='transaction', entity_id=0,
-                              entity_label=f'QBO purge ({int(deleted)} rows)',
-                              project_id=scope_pid, before={'deleted_ids': sorted(idset)[:500]},
-                              note=f'Purged {int(deleted)} QuickBooks-imported row(s); '
-                                   f'released {released} cross-project claim(s)')
+                _log_activity(action='delete' if scope_pid is None else 'update',
+                              entity_type='transaction', entity_id=0,
+                              entity_label=f'QBO purge ({len(rows)} rows)',
+                              project_id=scope_pid, before={'ids': sorted(idset)[:500]},
+                              note=_note)
             except Exception:
                 pass
-            report["deleted"] = int(deleted)
-            report["children_detached"] = detached
-            report["claims_released"] = int(released or 0)
         except Exception as e:
             db.session.rollback()
             report["errors"].append(str(e))
             return jsonify(report), 500
-
     return jsonify(report)
 
 
@@ -555,8 +335,12 @@ def admin_cleanup_estimate_txns():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ACTUALS_HANDOFF Phase 2 (2026-10-30): the whole pool across projects.
+# The COMPANY LEDGER (2026-11-03): every QuickBooks transaction once, plus
+# the manual / CSV / activated-receipt rows, with who claimed it.
 # ═══════════════════════════════════════════════════════════════════════════
+
+LEDGER_STATUSES = ('all', 'claimed', 'unclaimed', 'not_project', 'conflict', 'qbo')
+
 
 def _admin_pool_query_params():
     """Parse the /admin/transactions filters once for both the page and the
@@ -575,22 +359,27 @@ def _admin_pool_query_params():
         if v == '':
             return default
         return v in ('1', 'true', 'yes', 'on')
+    status = (a.get('status') or '').strip().lower()
+    # The pre-ledger checkbox names still work.
+    if status not in LEDGER_STATUSES:
+        status = 'unclaimed' if _flag('hide_claimed') else 'all'
     return {"q": (a.get('q') or '').strip()[:120],
             "project_id": _int('project_id', 0) or None,
             "card": (a.get('card') or '').strip()[:8] or None,
             "from": (a.get('from') or '').strip()[:10] or None,
             "to": (a.get('to') or '').strip()[:10] or None,
-            "hide_claimed": _flag('hide_claimed', False),
+            "status": status,
             "hide_not_project": _flag('hide_not_project', False),
             "limit": _int('limit', 200, 1, 1000),
             "offset": _int('offset', 0, 0)}
 
 
 def _admin_pool_rows(p):
-    """The pool, one row per QBO charge (manual / CSV rows by id), filtered
-    and paged. Returns (rows, total_groups, project_names)."""
+    """The company ledger, filtered and paged: one row per transaction
+    (there is one row per QuickBooks transaction company-wide now).
+    Returns (rows, total, project_names)."""
     from sqlalchemy import or_, and_
-    from actuals import group_pool_rows, signed_amount_value
+    from actuals import signed_amount_value
     from models import ExpenseEvidence
     # Every top-level money row: electronic + hand-typed, plus receipt-born
     # rows once activated into an expense; never split children or backup rows.
@@ -602,6 +391,19 @@ def _admin_pool_rows(p):
                           Transaction.activated_at.isnot(None)))))
     if p["project_id"]:
         q = q.filter(Transaction.project_id == p["project_id"])
+    if p["status"] == 'claimed':
+        q = q.filter(Transaction.project_id.isnot(None), Transaction.qbo_txn_id.isnot(None))
+    elif p["status"] == 'unclaimed':
+        q = q.filter(Transaction.project_id.is_(None))
+    elif p["status"] == 'not_project':
+        q = q.filter(Transaction.not_project_expense == True)          # noqa: E712
+    elif p["status"] == 'conflict':
+        q = q.filter(Transaction.claim_conflict == True)               # noqa: E712
+    elif p["status"] == 'qbo':
+        q = q.filter(Transaction.qbo_txn_id.isnot(None))
+    if p["hide_not_project"]:
+        q = q.filter(or_(Transaction.not_project_expense.is_(None),
+                         Transaction.not_project_expense == False))    # noqa: E712
     if p["card"]:
         q = q.filter(Transaction.card_last4 == p["card"])
     if p["from"]:
@@ -621,14 +423,14 @@ def _admin_pool_rows(p):
         if p["q"].isdigit():
             conds.append(Transaction.id == int(p["q"]))
         q = q.filter(or_(*conds))
-    txns = q.order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc()).all()
+    total = q.count()
+    txns = (q.order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
+            .offset(p["offset"]).limit(p["limit"]).all())
     ids = [t.id for t in txns]
     split_parent_ids = set()
     if ids:
         split_parent_ids = {r[0] for r in db.session.query(TransactionSplit.transaction_id)
                             .filter(TransactionSplit.transaction_id.in_(ids)).distinct().all()}
-    for t in txns:
-        t.has_splits = t.id in split_parent_ids
     evidence_ids = set()
     if ids:
         evidence_ids = {r[0] for r in db.session.query(ExpenseEvidence.transaction_id)
@@ -641,75 +443,62 @@ def _admin_pool_rows(p):
     project_names = {pp.id: pp.name for pp in ProjectSheet.query.all()}
     from budget_calc import FP_COA_NAMES as _COA
     rows = []
-    for rep, members in group_pool_rows(txns):
-        # The claiming project: the member that carries coding / splits, else
-        # the claimed_by_project_id any member points at, else none.
-        claimer = None
-        for m in members:
-            if m.budget_line_id or m.account_code or getattr(m, 'has_splits', False):
-                claimer = m.project_id
-                break
-        if claimer is None:
-            for m in members:
-                if getattr(m, 'claimed_by_project_id', None):
-                    claimer = m.claimed_by_project_id
-                    break
-        # Excluded: every member of the group is not-project and none is
-        # claimed by a project (an unclaimed sibling hidden by a claim is
-        # "claimed", not "excluded").
-        all_np = all(m.not_project_expense for m in members)
-        excluded = bool(all_np and claimer is None)
-        if p["hide_claimed"] and claimer is not None:
-            continue
-        if p["hide_not_project"] and excluded:
-            continue
-        t = rep
-        for m in members:
-            if m.project_id == claimer:
-                t = m
-                break
-        else:
-            # Unclaimed: show the sibling that carries the most detail.
-            t = max(members, key=lambda m: (bool(m.card_last4), bool(m.note), -m.id))
+    for t in txns:
+        has_splits = t.id in split_parent_ids
         line_label = None
         if t.budget_line_id and t.budget_line_id in lines:
             l = lines[t.budget_line_id]
             line_label = f"{l.account_code} · {(l.description or l.account_name or '')[:50]}"
-        elif getattr(t, 'has_splits', False):
+        elif has_splits:
             line_label = "split"
         elif t.account_code:
             line_label = f"{t.account_code} · {_COA.get(t.account_code, '')} (section)"
         backup = ('backup' if (t.id in evidence_ids or (t.doc_upload_id and t.match_status == 'confirmed'))
                   else 'reason' if getattr(t, 'no_charge_reason', None)
                   else 'none')
+        # The bank / card account the money moved on: the card's last four,
+        # else the QuickBooks account display string the sync stored on an
+        # uncoded row ("CC: 1234"), else the payment method / entity type.
+        if t.card_last4:
+            account = f"••{t.card_last4}"
+        elif t.qbo_txn_id and not (t.budget_line_id or t.account_code) and (t.account_code_name or '').strip():
+            account = (t.account_code_name or '')[:40]
+        elif getattr(t, 'payment_method', None):
+            account = (t.payment_method or '').replace('_', ' ').capitalize()
+        elif t.qbo_txn_type == 'BillPayment':
+            account = 'Bank · bill payment'
+        elif t.qbo_txn_type:
+            account = t.qbo_txn_type
+        else:
+            account = ''
+        claimer = t.project_id
         rows.append({
-            "id": t.id, "sibling_ids": [m.id for m in members if m.id != t.id],
+            "id": t.id,
             "qbo_txn_id": t.qbo_txn_id, "qbo_txn_type": t.qbo_txn_type,
             "date": (t.txn_date or '')[:10], "vendor": t.vendor or '—',
             "amount": signed_amount_value(t.amount, t.is_expense),
-            "card_last4": t.card_last4,
+            "card_last4": t.card_last4, "account": account,
             "source": ('receipt' if t.source == 'doc_upload' else (t.source or 'manual_entry')),
             "project_id": claimer, "project": (project_names.get(claimer) if claimer else None),
-            # The row's own project (the claimer's when claimed): where a
-            # click opens it, even when nobody has claimed it yet.
             "row_project_id": t.project_id,
-            "seen_in": sorted({project_names.get(m.project_id, f'#{m.project_id}') for m in members}),
-            "line": line_label, "backup": backup, "excluded": excluded,
+            "line": line_label, "backup": backup,
+            "excluded": bool(t.not_project_expense),
+            "claim_conflict": bool(getattr(t, 'claim_conflict', False)),
+            "claim_conflict_reason": getattr(t, 'claim_conflict_reason', None),
             "payment_method": getattr(t, 'payment_method', None),
         })
-    total = len(rows)
-    return rows[p["offset"]:p["offset"] + p["limit"]], total, project_names
+    return rows, total, project_names
 
 
 @app.route("/admin/transactions.json", methods=["GET"])
 @login_required
 @super_admin_required
 def admin_transactions_json():
-    """The whole transaction pool across projects (Phase 2, 2026-10-30): one
-    row per QBO charge (sibling rows of the same qbo_txn_id collapse; manual /
-    CSV rows by id) with the claiming project, line label, backup state,
-    excluded flag and source. Query params: q (vendor / memo / amount / last
-    four / id), project_id, card, from, to (YYYY-MM-DD), hide_claimed,
+    """The company ledger as JSON (2026-11-03): every transaction once with
+    the claiming project ("Unclaimed" when none), line label, backup state,
+    account and source. Query params: q (vendor / memo / amount / last four
+    / QBO id / row id), project_id, status (all | claimed | unclaimed |
+    not_project | conflict | qbo), card, from, to (YYYY-MM-DD),
     hide_not_project, limit (≤1000), offset."""
     p = _admin_pool_query_params()
     rows, total, _names = _admin_pool_rows(p)
@@ -721,7 +510,7 @@ def admin_transactions_json():
 @login_required
 @super_admin_required
 def admin_transactions_csv():
-    """The pool as a CSV download with the SAME filters as the page and the
+    """The ledger as a CSV download with the SAME filters as the page and the
     JSON (Phase 3, 2026-11-01). Ignores limit / offset: an export is the
     whole filtered set (capped at 20,000 rows). Columns in
     actuals.ADMIN_POOL_CSV_COLUMNS."""
@@ -734,30 +523,35 @@ def admin_transactions_csv():
     _stamp = datetime.utcnow().strftime('%Y-%m-%d')
     return Response(body, mimetype="text/csv",
                     headers={"Content-Disposition":
-                             f'attachment; filename="fpbudget-transactions-{_stamp}.csv"'})
+                             f'attachment; filename="fpbudget-ledger-{_stamp}.csv"'})
 
 
 @app.route("/admin/transactions", methods=["GET"])
 @login_required
 @super_admin_required
 def admin_transactions_page():
-    """The super-admin pool page (Phase 3 design, 2026-11-01): search,
-    project / card / date filters, Hide claimed and Hide not-project, one
-    row per charge with the claiming project, line, backup state and
-    source. A row click opens the charge in the claiming project's
-    workspace (?txn= selects and scrolls to it). The JSON above is the
-    contract; this page is a server-rendered read of the same rows."""
+    """The company ledger page (2026-11-03): search, project / status /
+    card / date filters, one row per transaction with Date · Payee ·
+    Amount · Account · Claimed by · Line · Backup. A row click opens the
+    charge in the claiming project's workspace (?txn= selects and scrolls
+    to it); an unclaimed row opens in the first active project's pool.
+    The JSON above is the contract; this page is a server-rendered read
+    of the same rows."""
+    from models import QBOConnection
+    import json as _json_adm
     p = _admin_pool_query_params()
     rows, total, names = _admin_pool_rows(p)
     projects = sorted(names.items(), key=lambda kv: (kv[1] or '').lower())
-    # Header line: how many projects sync QBO accounts, and the pool size
-    # (unfiltered) so the filtered count has a denominator.
     try:
-        import json as _json_adm
-        syncing = sum(1 for pp in ProjectSheet.query.all()
-                      if pp.qbo_account_ids and _json_adm.loads(pp.qbo_account_ids or '[]'))
+        _qc = QBOConnection.query.first()
+        accounts = len(_json_adm.loads((_qc.enabled_account_ids if _qc else None) or '[]'))
     except Exception:
-        syncing = 0
+        accounts = 0
+    unclaimed = Transaction.query.filter(Transaction.project_id.is_(None),
+                                         Transaction.qbo_txn_id.isnot(None)).count()
+    conflicts = Transaction.query.filter(Transaction.claim_conflict == True).count()   # noqa: E712
+    _first = (ProjectSheet.query.filter(ProjectSheet.status == 'active')
+              .order_by(ProjectSheet.name).first())
     net = round(sum(float(r.get("amount") or 0) for r in rows), 2)
     cards = sorted({r["card_last4"] for r in rows if r.get("card_last4")})
     _mon = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
@@ -770,8 +564,10 @@ def admin_transactions_page():
         except (ValueError, IndexError):
             r["date_short"] = d
     return render_template("admin_transactions.html", rows=rows, total=total,
-                           filters=p, projects=projects, syncing=syncing,
-                           net=net, cards=cards)
+                           filters=p, projects=projects, accounts=accounts,
+                           unclaimed=unclaimed, conflicts=conflicts,
+                           pool_pid=(_first.id if _first else None),
+                           statuses=LEDGER_STATUSES, net=net, cards=cards)
 
 
 # ═══ Phase 5 — Reconcile with QuickBooks (Maintenance tool, 2026-11-03) ═══
@@ -780,9 +576,10 @@ def admin_transactions_page():
 @login_required
 @super_admin_required
 def admin_qbo_reconcile_deletions():
-    """Maintenance → "Reconcile with QuickBooks". For one project
-    (?project=<pid>) or every active project with QuickBooks accounts
-    (?project=all), re-fetch by id the QuickBooks records FPBudget holds
+    """Maintenance → "Reconcile with QuickBooks". Company-wide by default
+    (?project=all — every QuickBooks row once, claimed or in the pool,
+    since the company ledger), or the rows one project claimed
+    (?project=<pid>): re-fetch by id the QuickBooks records FPBudget holds
     from the last 120 days (?days=) and report the ones QuickBooks no
     longer returns — voided or deleted after import. Dry run by default;
     ?apply=1 applies THE deletion rule (qbo_sync.apply_qbo_deletions /
@@ -792,7 +589,6 @@ def admin_qbo_reconcile_deletions():
     reported, the others still run."""
     from models import QBOConnection
     from qbo_sync import reconcile_qbo_deletions
-    import json as _json
     conn = QBOConnection.query.first()
     if not conn or not conn.refresh_token:
         return jsonify({"error": "QuickBooks not connected. Connect it on the Admin hub first.",
@@ -804,8 +600,7 @@ def admin_qbo_reconcile_deletions():
     except (TypeError, ValueError):
         days = 120
     if scope in ('', 'all'):
-        projects = [p for p in ProjectSheet.query.filter(ProjectSheet.status == 'active').all()
-                    if _json.loads(p.qbo_account_ids or '[]')]
+        projects = [None]        # the whole company ledger in one pass
     else:
         try:
             p = ProjectSheet.query.get(int(scope))
@@ -820,8 +615,10 @@ def admin_qbo_reconcile_deletions():
             report.append(reconcile_qbo_deletions(p, conn, db, days=days, apply=apply))
         except Exception as e:
             db.session.rollback()
-            logging.warning(f"[qbo-reconcile] project {p.id} failed: {e}")
-            errors.append({"project_id": p.id, "project": p.name, "error": str(e)[:300]})
+            logging.warning(f"[qbo-reconcile] {'company' if p is None else 'project %s' % p.id} failed: {e}")
+            errors.append({"project_id": (p.id if p is not None else None),
+                           "project": (p.name if p is not None else 'whole company'),
+                           "error": str(e)[:300]})
     n_missing = sum(len(r["missing"]) for r in report)
     n_deleted = sum(len((r.get("applied") or {}).get("deleted") or []) for r in report)
     n_voided = sum(len((r.get("applied") or {}).get("voided") or []) for r in report)
@@ -831,7 +628,7 @@ def admin_qbo_reconcile_deletions():
                           entity_label='Reconcile with QuickBooks',
                           after={"deleted": n_deleted, "voided": n_voided, "days": days},
                           note=f'Reconcile with QuickBooks: {n_deleted} removed, {n_voided} flagged voided '
-                               f'across {len(report)} project(s)')
+                               f'({'whole company' if scope in ('', 'all') else 'project ' + scope})')
         except Exception:
             pass
     return jsonify({"ok": True, "dry": not apply, "days": days,

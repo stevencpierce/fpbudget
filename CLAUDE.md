@@ -81,6 +81,27 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   (`routes/admin_maintenance.py` TOOLS registry), never typed URLs and
   never inside a project. A new admin tool = a route + a TOOLS entry. The
   one-shot repairs that already ran are deleted; do not resurrect them.
+- Company ledger (2026-11-03): ONE row per QuickBooks transaction for the
+  whole company. `Transaction.project_id` on a QuickBooks row means
+  "claimed by"; NULL = in the pool. The ONE rules: `actuals.pool_filter(pid)`
+  (every per-project transaction query — a project's own rows + the
+  unclaimed pool; rollups by budget_line_id need nothing), `actuals.claim_for`
+  / `actuals.release` (every claim signal — line, section, split, receipt,
+  not-project — claims; the last signal gone releases; never write
+  project_id by hand), `qbo_sync.sync_company` (the ONE sync — per-project
+  Sync buttons and the scheduled loop call it; account set + watermarks on
+  `QBOConnection`; `ProjectSheet.qbo_account_ids / sync_through / last_synced
+  / last_cdc_sync` and `claimed_by_project_id` are retired — kept, unread).
+  `_sync_claim_state`, siblings and `uq_transaction_qbo` are gone; the unique
+  index is `uq_transaction_qbo_company` (partial on `claim_conflict IS NOT
+  TRUE`). The data step (`ledger.run_migration`) NEVER runs at boot: the
+  owner previews and runs it from Admin → Maintenance → "Company ledger";
+  until then the per-project copies may still exist and the index is not
+  created (the essential pass only creates it once no duplicate group
+  remains). Conflicts (two projects / payee differs) are flagged
+  `claim_conflict` and settled on /admin/ledger/conflicts; every removal,
+  demotion or release goes through `transaction_merge_log` + "Undo a
+  ledger merge".
 
 ## Splitting app.py (M1, ongoing)
 Route slices move to `routes/<name>.py` — plain modules using `@app.route` on

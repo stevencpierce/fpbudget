@@ -4884,12 +4884,40 @@ def _delete_project_rows(pid):
     BudgetComment.query.filter_by(project_id=pid).delete(synchronize_session=False)
     ScheduleWaypoint.query.filter_by(project_id=pid).delete(synchronize_session=False)
 
-    # 2. Cross-project dup claims pointing AT this project → null the back-ref
-    Transaction.query.filter(Transaction.claimed_by_project_id == pid).update(
-        {"claimed_by_project_id": None}, synchronize_session=False)
+    # 2. Company ledger (2026-11-03): the QuickBooks rows this project
+    #    claimed are the company's record of those charges — they go BACK
+    #    TO THE POOL (coding, receipt link, splits, exclusion cleared;
+    #    project_id NULL) instead of being deleted with the project.
+    _qbo_rows = (Transaction.query
+                 .filter(Transaction.project_id == pid,
+                         Transaction.qbo_txn_id.isnot(None),
+                         Transaction.source != 'invoice_split',
+                         Transaction.parent_transaction_id.is_(None))
+                 .all())
+    _qbo_ids = [t.id for t in _qbo_rows]
+    if _qbo_ids:
+        TransactionSplit.query.filter(TransactionSplit.transaction_id.in_(_qbo_ids))\
+            .delete(synchronize_session=False)
+        _delete_evidence_for_txns(_qbo_ids)
+        Transaction.query.filter(Transaction.backup_of_txn_id.in_(_qbo_ids)).update(
+            {"backup_of_txn_id": None}, synchronize_session=False)
+        for t in _qbo_rows:
+            t.project_id = None
+            t.budget_line_id = t.account_code = t.account_code_name = None
+            t.doc_upload_id = None
+            t.suggested_budget_line_id = None
+            t.match_status = 'unmatched'
+            t.match_confidence = None
+            t.not_project_expense = False
+            t.excluded_at = t.excluded_by_user_id = t.excluded_reason = None
+            t.claim_conflict = False
+            t.claim_conflict_reason = None
+            t.backup_of_txn_id = None
+            t.updated_at = datetime.utcnow()
+        db.session.flush()
 
-    # 3. This project's transactions — null self parent-ref, then delete BEFORE
-    #    DocUpload (transaction.doc_upload_id → doc_upload).
+    # 3. This project's remaining transactions — null self parent-ref, then
+    #    delete BEFORE DocUpload (transaction.doc_upload_id → doc_upload).
     _txn_ids = [r[0] for r in db.session.query(Transaction.id)
                 .filter_by(project_id=pid).all()]
     if _txn_ids:
@@ -5102,7 +5130,8 @@ def _clone_project_data(src_p, new_p, old_slug, new_slug, line_map, loc_id_map):
     """Clone receipts (DocUpload) + actuals (Transaction) from the source project
     to the new one for a fully ISOLATED sandbox: Dropbox paths are remapped to the
     copied folder, and every FK reference (budget line, doc, parent txn, location,
-    duplicate-of) is remapped to the new rows. Cross-project claim is cleared.
+    duplicate-of) is remapped to the new rows. QuickBooks identity is NOT
+    copied (the company ledger holds one row per QuickBooks transaction).
     Returns {docs, txns}. (User 2026-06-18.)"""
     from models import DocUpload as _DU, Transaction as _TX
 
@@ -5151,7 +5180,12 @@ def _clone_project_data(src_p, new_p, old_slug, new_slug, line_map, loc_id_map):
                                          if getattr(t, 'suggested_budget_line_id', None) else None),
             'doc_upload_id': doc_id_map.get(t.doc_upload_id) if t.doc_upload_id else None,
             'parent_transaction_id': None,   # remapped in pass 2
-            'claimed_by_project_id': None,   # don't carry cross-project claims into the sandbox
+            # The company ledger holds ONE row per QuickBooks transaction:
+            # a sandbox copy keeps the money but not the QuickBooks identity.
+            'qbo_txn_id': None, 'qbo_txn_type': None,
+            'claim_conflict': False, 'claim_conflict_reason': None,
+            'note': (((t.note or '') + f' [sandbox copy of QuickBooks {t.qbo_txn_type}/{t.qbo_txn_id}]').strip()[:500]
+                     if t.qbo_txn_id else t.note),
         })
         db.session.add(nt)
         db.session.flush()
@@ -11248,135 +11282,16 @@ def hide_group_label(pid, bid):
 
 def _normalize_vendor(v):
     """'LYFT *RIDE MON 8AM' and 'Lyft' both normalize to 'lyft' for fuzzy
-    sibling matching (used by _sync_claim_state's fuzzy branch, 2026-05-15).
+    vendor matching (2026-05-15).
     Thin alias of actuals.vendor_match_key — the ONE vendor-cleaning rule
     (Cleanup D); the separate processor-prefix list that lived here is gone."""
     from actuals import vendor_match_key
     return vendor_match_key(v)
 
 
-def _sync_claim_state(txn):
-    """Cross-project claim propagation. Two channels:
-
-    (1) **QBO-id match** — siblings with the same
-        (qbo_txn_id, qbo_txn_type) across other projects. Pre-2026-05-15
-        this was the only channel and required both rows to be electronic
-        (had qbo_txn_id). That missed a real workflow: user uploads a
-        receipt in Project A, assigns it to a budget line — the row has
-        no qbo_txn_id (yet?), so claim never fired, and the same expense
-        synced from QBO into Project B showed up uncoded there. User
-        report 2026-05-15: "I have a Lyft charge for $37.93 that is
-        assigned to Car Service in 2026 Q2 Etoro Press Conference and
-        it also is showing up in 2026 FP general operations actuals".
-
-    (2) **Fuzzy match** — siblings on other projects with the same
-        normalized vendor, same amount (to the cent), and txn_date
-        within ±5 days. Bridges the doc-only-vs-QBO-elsewhere gap.
-        Tight enough to avoid false positives (same vendor+amount+date
-        across two projects within a 5-day window is almost certainly
-        the same expense).
-
-    Call this AFTER mutating `txn` (set/clear budget_line_id /
-    account_code / not_project_expense) and BEFORE `db.session.commit()`.
-
-    Rules (apply to siblings from both channels):
-      • If THIS row is claimed (budget_line_id OR account_code OR
-        not_project_expense) → set siblings' claimed_by_project_id to
-        this project_id, AND mark them not_project_expense=True so they
-        drop out of the other project's rollup. Don't trample a claim
-        already held by a third project.
-      • If THIS row was released (no claim flags), clear the claim on
-        any sibling whose claimed_by_project_id == this project_id, and
-        un-mark not_project_expense if it was set by us. Other-project
-        claims (set by yet another project) are left alone.
-
-    Idempotent: safe to call repeatedly.
-    """
-    # Claim signals — any of these on `txn` mean "this project owns the
-    # expense, hide siblings elsewhere". Attaching a receipt counts:
-    # uploading a doc to project A is an affirmative assertion that the
-    # expense lives there. Without this, a user-uploaded receipt in
-    # project A had no effect on a parallel QBO row in project B; the
-    # duplicate sat there until the user remembered to code A's row.
-    # 2026-05-15 user report: Etoro had a Lyft receipt; FP General Ops
-    # had the same Lyft as a separate QBO row that nobody had claimed.
-    is_claimed_now = bool(txn.budget_line_id or txn.account_code
-                          or txn.not_project_expense
-                          or txn.doc_upload_id)
-
-    siblings_by_id = {}  # id → Transaction (dedupe across both channels)
-
-    # ── Channel 1: QBO-id sibling lookup ──────────────────────────────
-    if txn.qbo_txn_id and txn.qbo_txn_type:
-        try:
-            for s in (Transaction.query
-                      .filter(Transaction.qbo_txn_id   == txn.qbo_txn_id,
-                              Transaction.qbo_txn_type == txn.qbo_txn_type,
-                              Transaction.project_id   != txn.project_id)
-                      .all()):
-                siblings_by_id[s.id] = s
-        except Exception as _se:
-            # Likely DDL hasn't run for the indexes yet; safe to skip.
-            logging.warning("[claim-sync] qbo sibling lookup failed (skipping): %s", _se)
-
-    # ── Channel 2: Fuzzy (vendor / amount / date) sibling lookup ──────
-    # Only runs when we have enough signal to match safely. Requires
-    # amount AND date AND a non-trivial vendor name. Doc-only / manual
-    # / reconciled rows all qualify.
-    if txn.amount is not None and txn.txn_date and (txn.vendor or '').strip():
-        try:
-            import datetime as _dt
-            _v_norm = _normalize_vendor(txn.vendor)
-            if _v_norm and len(_v_norm) >= 3:
-                # ±5d date window — same as receipt-first reconciliation.
-                _d0 = _dt.datetime.strptime(txn.txn_date, '%Y-%m-%d').date()
-                _date_lo = (_d0 - _dt.timedelta(days=5)).isoformat()
-                _date_hi = (_d0 + _dt.timedelta(days=5)).isoformat()
-                # Amount: exact match to the cent. Cross-project Lyft
-                # charges of $37.93 vs $37.94 should NOT match — tip
-                # rounding differences could create false positives if
-                # we loosen this.
-                from decimal import Decimal as _Dec
-                _amt = _Dec(str(txn.amount))
-                _candidates = (Transaction.query
-                               .filter(Transaction.project_id   != txn.project_id,
-                                       Transaction.amount       == _amt,
-                                       Transaction.txn_date     >= _date_lo,
-                                       Transaction.txn_date     <= _date_hi)
-                               .all())
-                for s in _candidates:
-                    if s.id in siblings_by_id:
-                        continue
-                    if _normalize_vendor(s.vendor) == _v_norm:
-                        siblings_by_id[s.id] = s
-        except Exception as _fe:
-            # Don't let fuzzy match break the user's primary action.
-            logging.warning("[claim-sync] fuzzy sibling lookup failed (skipping): %s", _fe)
-
-    if not siblings_by_id:
-        return
-
-    if is_claimed_now:
-        for s in siblings_by_id.values():
-            # Don't trample a claim already held by a third project.
-            # Only re-claim if unclaimed or claimed by this project.
-            if s.claimed_by_project_id in (None, txn.project_id):
-                s.claimed_by_project_id = txn.project_id
-                # Drop sibling out of its project's "uncoded" pile.
-                # Preserve the sibling's existing flags only if it's
-                # already coded — we don't want to wipe their work.
-                if not (s.budget_line_id or s.account_code):
-                    s.not_project_expense = True
-    else:
-        for s in siblings_by_id.values():
-            if s.claimed_by_project_id == txn.project_id:
-                s.claimed_by_project_id = None
-                # If the sibling was marked not-project SOLELY because
-                # we claimed it, undo that. Heuristic: if it has no
-                # other coding, we set it; revert.
-                if (s.not_project_expense
-                        and not s.budget_line_id and not s.account_code):
-                    s.not_project_expense = False
+# (_sync_claim_state — the 2026-05 cross-project claim propagation — was
+# retired by the company ledger on 2026-11-03. ONE row per QuickBooks
+# transaction now; actuals.claim_for / actuals.release own the claim.)
 
 
 def _txn_is_split_parent(txn):
@@ -12435,8 +12350,9 @@ def _ai_match_batch(pid, limit=6, force=False):
     # find_match_candidates returns {results:[{charge, candidates, ...}], ...}.
     by_charge = {c["charge"]["id"]: c for c in (cand.get("results") or [])}
 
+    from actuals import pool_filter as _pf_ai, claim_for as _cf_ai
     q = (Transaction.query
-         .filter(Transaction.project_id == pid,
+         .filter(_pf_ai(pid),
                  Transaction.source.in_(('qbo_sync', 'csv_import')),
                  Transaction.match_status == 'unmatched',
                  Transaction.doc_upload_id.is_(None),
@@ -12509,6 +12425,7 @@ def _ai_match_batch(pid, limit=6, force=False):
             txn.match_confidence = round(best_conf, 3)
             txn.match_source = src
             txn.updated_at = datetime.utcnow()
+            _cf_ai(txn, pid, why='receipt suggested (AI)')   # a suggestion claims (company ledger)
             used.add(best_id)
             suggested += 1
     try:
@@ -12753,8 +12670,9 @@ def _run_people_line_scan(pid):
     crew_one, crews, line_labels = _crew_lines_for_project(pid)
     if not crew_one:
         return 0
+    from actuals import pool_filter as _pf_pl
     txns = (Transaction.query
-            .filter(Transaction.project_id == pid,
+            .filter(_pf_pl(pid),
                     Transaction.budget_line_id.is_(None),
                     Transaction.not_project_expense == False,   # noqa: E712
                     Transaction.vendor.isnot(None)).all())
@@ -12866,8 +12784,9 @@ def project_anomalies(pid):
     # (2026-06-22.)
     try:
         _split_parents = _split_parent_id_set(pid)
+        from actuals import pool_filter as _pf_cq
         code_txns = (Transaction.query
-                     .filter(Transaction.project_id == pid,
+                     .filter(_pf_cq(pid),
                              Transaction.budget_line_id.is_(None),
                              Transaction.account_code.is_(None),
                              Transaction.not_project_expense == False,   # noqa: E712
@@ -13027,7 +12946,11 @@ def anomaly_resolve(pid, fid):
                     else:
                         applied = f'un-coded charge #{tid}'
                     try:
-                        _sync_claim_state(tx)
+                        from actuals import claim_for as _cf_rq, release as _rel_rq
+                        if tx.not_project_expense:
+                            _cf_rq(tx, pid, why='marked not a project expense')
+                        else:
+                            _rel_rq(tx, why='un-coded from the review queue')
                     except Exception:
                         pass
         f.resolved = True
@@ -13114,8 +13037,9 @@ def doc_transaction_candidates(pid, uid):
     total = abs(float(doc.amount)) if doc.amount is not None else None
     dcard = (doc.card_last4 or '').strip()
     d_dt = doc.doc_date if doc.doc_date else None
+    from actuals import pool_filter as _pf_dc
     q = (Transaction.query
-         .filter(Transaction.project_id == pid,
+         .filter(_pf_dc(pid),
                  Transaction.source.in_(('qbo_sync', 'csv_import')),
                  Transaction.not_project_expense == False))   # noqa: E712
     if not include_matched:
@@ -20250,9 +20174,14 @@ def activity_undo(pid, bid, aid):
                 db.session.rollback()
                 return jsonify({"ok": False, "error": f"Could not restore the split: {_spe}"}), 400
         txn.updated_at = datetime.utcnow()
-        # Coding / exclusion changed → re-propagate the cross-project claim.
+        # Coding / exclusion changed → the row's claim follows its signals
+        # (company ledger): claimed when any is back, released when none.
         try:
-            _sync_claim_state(txn)
+            from actuals import claim_for as _cf_u, release as _rel_u, is_claimed as _ic_u
+            if _ic_u(txn):
+                _cf_u(txn, pid, why='undo restored the coding')
+            else:
+                _rel_u(txn, why='undo cleared the coding')
         except Exception:
             pass
 
@@ -28015,14 +27944,9 @@ def _do_boot_work():
         # Workers' Comp / Payroll Fee percentages
         "ALTER TABLE budget ADD COLUMN IF NOT EXISTS workers_comp_pct NUMERIC(8,6) DEFAULT 0.03",
         "ALTER TABLE budget ADD COLUMN IF NOT EXISTS payroll_fee_pct NUMERIC(8,6) DEFAULT 0.0175",
-        # Cross-project claim on electronic transactions (2026-05-07).
-        # When project A codes a QBO-sourced txn to a budget line or
-        # marks it not-project, every parallel Transaction row across
-        # other projects (same qbo_txn_id) gets this set to A's id so
-        # the row can be filtered out of B's "uncoded" pile and shown
-        # to admins+ as "claimed elsewhere".
-        "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claimed_by_project_id INTEGER REFERENCES project_sheet(id)",
-        "CREATE INDEX IF NOT EXISTS ix_transaction_claimed_by ON transaction (claimed_by_project_id)",
+        # (The 2026-05-07 cross-project claim column claimed_by_project_id
+        # was retired by the company ledger, 2026-11-03: the column stays in
+        # the database, nothing reads or creates it any more.)
         "CREATE INDEX IF NOT EXISTS ix_transaction_qbo_txn_id ON transaction (qbo_txn_id, qbo_txn_type)",
     ]
     if _is_pg:
@@ -28817,9 +28741,31 @@ def _web_worker_essential_columns():
                      created_at   TIMESTAMP,
                      updated_at   TIMESTAMP
                    )""",
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_transaction_qbo "
-                "  ON transaction (project_id, qbo_txn_id, qbo_txn_type) "
-                "  WHERE qbo_txn_id IS NOT NULL",
+                # Company ledger (2026-11-03, alembic 0025 — mirrored here per
+                # CLAUDE.md). The old per-project unique index is dropped;
+                # the company-wide one (qbo_txn_id, qbo_txn_type) is created
+                # by the ledger migration in Admin → Maintenance once the
+                # per-project copies are collapsed, and here only when no
+                # duplicate group remains (see _company_ledger_index_sql).
+                "DROP INDEX IF EXISTS uq_transaction_qbo",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claim_conflict BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claim_conflict_reason VARCHAR(200)",
+                "ALTER TABLE qbo_connection ADD COLUMN IF NOT EXISTS sync_through VARCHAR(10)",
+                "ALTER TABLE qbo_connection ADD COLUMN IF NOT EXISTS last_synced TIMESTAMP",
+                "ALTER TABLE qbo_connection ADD COLUMN IF NOT EXISTS last_cdc_sync TIMESTAMP",
+                """CREATE TABLE IF NOT EXISTS transaction_merge_log (
+                     id                 SERIAL PRIMARY KEY,
+                     qbo_txn_id         VARCHAR(50),
+                     qbo_txn_type       VARCHAR(20),
+                     kept_txn_id        INTEGER,
+                     removed_txn_id     INTEGER,
+                     removed_project_id INTEGER,
+                     removed_row_json   TEXT,
+                     reason             VARCHAR(120),
+                     restored_at        TIMESTAMP,
+                     restored_txn_id    INTEGER,
+                     created_at         TIMESTAMP
+                   )""",
                 """CREATE TABLE IF NOT EXISTS budget_lever (
                      id            SERIAL PRIMARY KEY,
                      budget_id     INTEGER NOT NULL REFERENCES budget(id) ON DELETE CASCADE,
@@ -28836,9 +28782,6 @@ def _web_worker_essential_columns():
                      sort_order    INTEGER DEFAULT 0,
                      created_at    TIMESTAMP
                    )""",
-                # Cross-project claim (2026-05-07).
-                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claimed_by_project_id INTEGER REFERENCES project_sheet(id)",
-                "CREATE INDEX IF NOT EXISTS ix_transaction_claimed_by ON transaction (claimed_by_project_id)",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_qbo_txn_id ON transaction (qbo_txn_id, qbo_txn_type)",
                 # Line Ledger per-transaction review state (2026-07).
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP",
@@ -29640,10 +29583,9 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()",
                 "ALTER TABLE transaction "
                 "  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
-                # Partial unique on QBO txn id so re-syncs are idempotent.
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_transaction_qbo "
-                "  ON transaction (project_id, qbo_txn_id, qbo_txn_type) "
-                "  WHERE qbo_txn_id IS NOT NULL",
+                # (uq_transaction_qbo — the per-project partial unique — was
+                # dropped by the company ledger, 2026-11-03; see
+                # _web_worker_essential_columns and alembic 0025.)
                 "CREATE INDEX IF NOT EXISTS ix_transaction_budget_line "
                 "  ON transaction (budget_line_id)",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_doc_upload "
@@ -29743,6 +29685,24 @@ def _web_worker_essential_columns():
                 except Exception as _e:
                     conn.rollback()
                     logging.error(f"[WORKER-BOOT] essential-col FAILED: {sql} → {_e}")
+            # Company ledger unique index (2026-11-03): only once the
+            # per-project copies are collapsed — otherwise the CREATE would
+            # fail every boot. The Maintenance run creates it at its end.
+            try:
+                from ledger import DUP_GROUPS_SQL, COMPANY_INDEX_SQL
+                cur.execute(DUP_GROUPS_SQL)
+                _dups = cur.fetchone()[0]
+                if _dups == 0:
+                    cur.execute(COMPANY_INDEX_SQL)
+                    conn.commit()
+                    logging.info("[WORKER-BOOT] essential-col OK: uq_transaction_qbo_company")
+                else:
+                    conn.rollback()
+                    logging.warning(f"[WORKER-BOOT] {_dups} duplicate QuickBooks groups remain — "
+                                    "run Admin → Maintenance → Company ledger")
+            except Exception as _e:
+                conn.rollback()
+                logging.error(f"[WORKER-BOOT] company index check failed: {_e}")
             cur.close()
         finally:
             conn.close()
@@ -31225,7 +31185,6 @@ def docs_inbox_batch(pid):
                 txn.account_code_name   = None
                 txn.match_status        = 'unmatched'
                 txn.updated_at          = datetime.utcnow()
-                _sync_claim_state(txn)
                 db.session.commit()
                 try:
                     _amt = float(txn.amount or 0)
@@ -31736,19 +31695,10 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
             except Exception as _ae:
                 logging.warning(f"[docs/upload] ai categorize failed for txn "
                                 f"#{auto_txn.id}: {_ae}")
-            # Cross-project claim: a receipt upload is an affirmative
-            # "this expense belongs here" signal. Fire _sync_claim_state
-            # so any QBO sibling on another project (same vendor + amount
-            # + date within ±5d) gets claimed_by_project_id set and
-            # not_project_expense=True, dropping it out of that project's
-            # uncoded pile. Without this, user uploads a Lyft receipt to
-            # Etoro and the same Lyft in FP General Ops sits there
-            # uncoded until they remember to fix it.
-            try:
-                _sync_claim_state(auto_txn)
-            except Exception as _ce:
-                logging.warning(f"[docs/upload] cross-project claim failed "
-                                f"for txn #{auto_txn.id}: {_ce}")
+            # (The 2026-05 fuzzy cross-project claim on upload is gone with
+            # the company ledger: the receipt row waits for the auto-matcher,
+            # which claims the QuickBooks charge for this project when it
+            # suggests the pair.)
             db.session.commit()
             logging.info(f"[docs/upload] Created Transaction #{auto_txn.id} "
                          f"from DocUpload #{upload.id} (vendor={upload.vendor!r}, "
@@ -32217,17 +32167,13 @@ if not os.getenv('RUN_BOOT_TASKS'):
 
 
 def _qbo_auto_sync_loop():
-    """Automatic QuickBooks pull (owner 2026-10-30: "we should
-    automatically pull in all QuickBooks charges into every project, as
-    long as that account is selected on the project"). Every ~30 minutes
+    """Automatic QuickBooks pull (owner 2026-10-30 / 2026-11-03: "all
+    transactions from our QuickBooks show up all the time"). Twice a day
     one worker (system_task_log claim, same pattern as the drop sweep)
-    runs sync_project for every ACTIVE project that has QBO accounts
-    selected — watermark-driven, so each cycle only pulls what's new.
-    Twice a day (owner 2026-10-31: "QuickBooks can run twice a day — it
-    doesn't need to run every 30 minutes"); ⟳ Sync now covers urgency.
-    Cross-project claiming (_sync_claim_state) already guarantees a
-    charge coded in one project drops out of every other project's pile.
-    Fail-open everywhere."""
+    runs qbo_sync.sync_company — ONE pull of every account in the company
+    set into the shared pool; watermark-driven, so each cycle only pulls
+    what's new. ⟳ Sync now on any project covers urgency and refreshes
+    the pool for all. Fail-open everywhere."""
     import time as _time
     from sqlalchemy import text as _sql_text
     _INTERVAL_S = 12 * 3600   # twice a day (owner 2026-10-31)
@@ -32259,8 +32205,7 @@ def _qbo_auto_sync_loop():
                 qconn = QBOConnection.query.first()
                 if not qconn or not qconn.refresh_token:
                     continue       # QBO not connected — nothing to pull
-                import json as _json_qa
-                from qbo_sync import sync_project as _sp, sync_vendors as _sv
+                from qbo_sync import sync_company as _sc, sync_vendors as _sv
                 # Vendor mirror first (Documents Phase 3): QuickBooks →
                 # FPBudget only, so the project syncs below attribute
                 # their charges to freshly linked Payees. Fail-open.
@@ -32273,35 +32218,30 @@ def _qbo_auto_sync_loop():
                         db.session.rollback()
                     except Exception:
                         pass
-                n_proj = n_rows = n_err = 0
-                for prj in ProjectSheet.query.filter(
-                        ProjectSheet.status == 'active').all():
+                try:
+                    r = _sc(qconn, db) or {}
+                    logging.info(f"[qbo-auto] cycle done: imported={r.get('imported', 0)} "
+                                 f"enriched={r.get('enriched', 0)} reconciled={r.get('reconciled', 0)} "
+                                 f"cdc={r.get('cdc_additions', 0)} ambiguous={r.get('ambiguous', 0)}")
+                except Exception as _pe:
+                    logging.warning(f"[qbo-auto] company sync failed: {_pe}")
                     try:
-                        if not _json_qa.loads(prj.qbo_account_ids or '[]'):
-                            continue
-                        n_proj += 1
-                        r = _sp(prj, qconn, db) or {}
-                        n_rows += int(r.get('imported', 0) or 0) + int(r.get('cdc_additions', 0) or 0)
-                        # Phase 5: THE matching engine after every sync —
-                        # suggestions only, never confirmed. Fail-open.
-                        try:
-                            from actuals import refresh_match_suggestions as _rms
-                            _rms(prj.id)
-                        except Exception as _me:
-                            logging.warning(f"[qbo-auto] matching for project {prj.id} failed: {_me}")
-                            try:
-                                db.session.rollback()
-                            except Exception:
-                                pass
-                    except Exception as _pe:
-                        n_err += 1
-                        logging.warning(f"[qbo-auto] project {prj.id} failed: {_pe}")
+                        db.session.rollback()
+                    except Exception:
+                        pass
+                # Phase 5: THE matching engine after every sync — per active
+                # project, over its pool (own rows + the unclaimed company
+                # rows). Suggestions only, never confirmed. Fail-open.
+                from actuals import refresh_match_suggestions as _rms
+                for prj in ProjectSheet.query.filter(ProjectSheet.status == 'active').all():
+                    try:
+                        _rms(prj.id)
+                    except Exception as _me:
+                        logging.warning(f"[qbo-auto] matching for project {prj.id} failed: {_me}")
                         try:
                             db.session.rollback()
                         except Exception:
                             pass
-                logging.info(f"[qbo-auto] cycle done: projects={n_proj} "
-                             f"new_rows={n_rows} errors={n_err}")
         except Exception as _le:
             logging.warning(f"[qbo-auto] cycle aborted: {_le}")
 
@@ -38037,6 +37977,7 @@ import routes.actuals_admin  # noqa: E402,F401
 import routes.payees  # noqa: E402,F401
 import routes.qbo_admin  # noqa: E402,F401
 import routes.admin_maintenance  # noqa: E402,F401
+import routes.ledger_admin  # noqa: E402,F401
 
 
 if __name__ == "__main__":

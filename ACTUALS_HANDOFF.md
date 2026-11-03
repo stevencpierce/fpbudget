@@ -82,6 +82,22 @@ No new tables for the core flow; the `Transaction`, `DocUpload` and `ExpenseEvid
 
 Keep money as `db.Numeric`. Keep `claimed_by_project_id` as the cross-project lock and keep calling `_sync_claim_state()` after every coding change, including recover. Splits are within one project only for now: every `transaction_split` row carries the parent's `project_id`, and the UI offers lines from this project alone. Credits and refunds count as negative amounts, as in QuickBooks: `_signed_amount` becomes `CASE WHEN is_expense THEN amount ELSE -amount`, and a refund assigned to a line reduces that line's actual.
 
+## Company ledger (2026-11-03)
+
+Supersedes the per-project copies described below. ONE row per QuickBooks
+transaction for the whole company; `project_id` on a QuickBooks row is
+"claimed by" (NULL = the pool every project's Actuals shows). Rules and
+helpers: `actuals.pool_filter`, `actuals.claim_for` / `release`,
+`qbo_sync.sync_company`, `ledger.py` (migration preview / run, review
+actions, merge log). The migration is started by hand from Admin →
+Maintenance → "Company ledger — preview / run" after reading the preview;
+it never runs at deploy. See CLAUDE.md "Company ledger" for the full rule
+set. Owner-decided live resolutions (Lyft 28032 → GrubHub, 28026 → GrubHub
+with GINTS's SiegeWorks receipt staying coded as its own row, 28088 → GINTS,
+the two $4,500 bill payments released to unclaimed with their invoices back
+to Receipts to place) are applied BY HAND on /admin/ledger/conflicts and the
+"Release a charge to unclaimed" tool after the run — never by the migration.
+
 ## QuickBooks sync
 
 The sync already does what the request asks, with one limit worth stating plainly: the QuickBooks Online API exposes only transactions that have been accepted into the books. Bank-feed items still sitting in QuickBooks' For Review tab are not reachable by any API, so a charge appears in FPBudget only after someone (or a QuickBooks bank rule) accepts it. Accepting is enough; it does not need to be categorized correctly in QuickBooks, because FPBudget assigns the budget line.
