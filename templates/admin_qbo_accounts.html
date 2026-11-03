@@ -59,7 +59,8 @@
       </div>
       <div class="qa-foot">
         <span class="s" id="qa-status">{{ d.enabled|length }} selected</span>
-        <button type="button" class="pay-btn primary" id="qa-save">Save accounts</button>
+        {% if current_user.is_admin %}<button type="button" class="pay-btn primary" id="qa-save">Save accounts</button>
+        {% else %}<span class="s">Read-only — the company account set is changed by an admin.</span>{% endif %}
       </div>
     {% endif %}
   </div>

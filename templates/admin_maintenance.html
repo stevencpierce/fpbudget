@@ -69,7 +69,9 @@
           <span class="mono" style="opacity:.7">{{ t.method if t.method != 'FORM' else 'POST' }} {{ t.url }}</span>
         </div>
         <div class="act">
-          {% if t.method == 'FORM' %}
+          {% if t.owner_only and not current_user.is_super_admin %}
+            <span class="pay-chip sq bad" title="Mass / irreversible delete — only the Super Admin runs this">Super Admin only</span>
+          {% elif t.method == 'FORM' %}
             <form method="POST" action="{{ t.url }}" class="confirm-form" data-msg="{{ t.confirm }}" style="display:contents">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="pay-btn adm-btn-danger">Scan now</button>

@@ -127,7 +127,7 @@ def api_me():
     """Who am I + which projects can I touch. The app builds its whole
     home screen (project picker, role-based tabs) from this one call."""
     projects = _docs_accessible_projects(current_user)
-    if current_user.is_admin:
+    if current_user.has_all_project_access:
         roles = {p.id: "owner" for p in projects}
     else:
         rows = ProjectAccess.query.filter_by(user_id=current_user.id).all()

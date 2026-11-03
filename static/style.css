@@ -6182,3 +6182,25 @@ tr.line-row.discussion-row { background: color-mix(in srgb, var(--accent) 6%, tr
 .adm-fields input { height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--bg-input); color: var(--text); font: inherit; font-size: .85rem; }
 .adm-fields input:focus { outline: none; border-color: var(--accent); }
+
+
+/* ── AI Agent badge + session pill (2026-11-03) ───────────────────────────
+   Shown next to every name that belongs to the AI assistant's account
+   (role ai_agent), and as a pill in the header while it is signed in. Its
+   own violet so it never reads as an admin / role chip. */
+.ai-agent-badge {
+  display: inline-flex; align-items: center; gap: .2rem;
+  margin-left: .35rem; padding: .05rem .45rem; border-radius: 999px;
+  font-size: .68rem; font-weight: 700; letter-spacing: .02em; line-height: 1.5;
+  white-space: nowrap; vertical-align: middle;
+  color: #7c3aed; background: color-mix(in srgb, #7c3aed 14%, var(--bg-2, #fff));
+  border: 1px solid color-mix(in srgb, #7c3aed 45%, transparent);
+}
+[data-theme="dark"] .ai-agent-badge { color: #c4b5fd; }
+.ai-agent-session-pill {
+  display: inline-flex; align-items: center; gap: .3rem;
+  padding: .15rem .6rem; border-radius: 999px; margin-left: .6rem;
+  font-size: .72rem; font-weight: 700; white-space: nowrap;
+  color: #fff; background: #7c3aed; border: 1px solid #6d28d9;
+}
+.collab-avatar.ai-agent { outline: 2px solid #7c3aed; outline-offset: 1px; }

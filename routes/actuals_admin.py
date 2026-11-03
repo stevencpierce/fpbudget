@@ -15,13 +15,13 @@ from datetime import (datetime)
 from flask import (jsonify, redirect, render_template, request, url_for)
 from flask_login import (current_user, login_required)
 
-from app import (app, _NON_LEDGER_DOC_CATEGORIES, _delete_evidence_for_txns, _log_activity, super_admin_required)
+from app import (app, _NON_LEDGER_DOC_CATEGORIES, _delete_evidence_for_txns, _log_activity, maintenance_required)
 from models import (DocUpload, ProjectSheet, Transaction, TransactionSplit, db)
 
 
 @app.route("/admin/backup/transactions.json", methods=["GET"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_backup_transactions():
     """READ-ONLY archive: every transaction's coding-relevant fields as JSON.
     Pulled before/after risky fixes so coding can be diffed and restored
@@ -62,7 +62,7 @@ def qbo_repair_refunds():
     no local row too. DRY-RUN by default; ?apply=1 to write. Admin only.
     Body/params: project=<pid> (required), start_date, end_date (YYYY-MM-DD;
     default = last 365 days → today). (Code review 2026-06-04.)"""
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'can_open_admin', False):
         return jsonify({"error": "Forbidden — admin only"}), 403
     from models import QBOConnection
     conn = QBOConnection.query.first()
@@ -123,10 +123,15 @@ def qbo_imports_purge(pid=None):
     rows and rows carrying a receipt are NEVER touched. Dry-run by
     default; ?apply=1 to write. Super-admin only. (User 2026-06-01;
     Cleanup A #8, 2026-11-02; company ledger 2026-11-03.)"""
-    if current_user.role != 'super_admin':
+    if not getattr(current_user, 'can_run_maintenance', False):
         return jsonify({"error": "Forbidden — super admin only"}), 403
     apply = (request.args.get('apply') == '1')
     scope = request.args.get('project')
+    # project=pool permanently DELETES the unclaimed pool rows — owner only.
+    # The per-project scope only releases rows (they stay), so the AI Agent
+    # may run that one.
+    if scope == 'pool' and not getattr(current_user, 'is_super_admin', False):
+        return jsonify({"error": "Forbidden — purging the pool is super admin only"}), 403
     if scope in (None, '', 'all'):
         return jsonify({"error": "project=<id> (release that project's imports to the pool) "
                                  "or project=pool (delete the unclaimed pool rows) is required."}), 400
@@ -211,7 +216,7 @@ def qbo_imports_purge(pid=None):
 # super admin a way to list them (GET) and delete them (POST).
 # 2026-05-14 per user report.
 @app.route("/admin/cleanup-estimate-txns", methods=["GET", "POST"])
-@super_admin_required
+@maintenance_required
 def admin_cleanup_estimate_txns():
     from flask import request, render_template_string
     # Find every Transaction whose linked doc has a non-ledger category.
@@ -492,7 +497,7 @@ def _admin_pool_rows(p):
 
 @app.route("/admin/transactions.json", methods=["GET"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_transactions_json():
     """The company ledger as JSON (2026-11-03): every transaction once with
     the claiming project ("Unclaimed" when none), line label, backup state,
@@ -508,7 +513,7 @@ def admin_transactions_json():
 
 @app.route("/admin/transactions.csv", methods=["GET"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_transactions_csv():
     """The ledger as a CSV download with the SAME filters as the page and the
     JSON (Phase 3, 2026-11-01). Ignores limit / offset: an export is the
@@ -528,7 +533,7 @@ def admin_transactions_csv():
 
 @app.route("/admin/transactions", methods=["GET"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_transactions_page():
     """The company ledger page (2026-11-03): search, project / status /
     card / date filters, one row per transaction with Date · Payee ·
@@ -574,7 +579,7 @@ def admin_transactions_page():
 
 @app.route("/admin/qbo-reconcile-deletions", methods=["POST"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_qbo_reconcile_deletions():
     """Maintenance → "Reconcile with QuickBooks". Company-wide by default
     (?project=all — every QuickBooks row once, claimed or in the pool,

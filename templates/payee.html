@@ -195,7 +195,7 @@
         {% endif %}
         <div class="pay-card-f">
           <span style="display:inline-flex;align-items:center;gap:6px" id="pp-sync-status"><span class="pay-dot {{ 'ok' if not d.paperwork_unsynced and d.paperwork else '' }}"></span>{% if not d.paperwork %}Nothing to sync{% elif d.paperwork_unsynced %}{{ d.paperwork_unsynced }} not yet in Dropbox{% else %}Synced to Dropbox{% endif %}</span>
-          {% if current_user.role == 'super_admin' %}<button type="button" class="btn btn-xs btn-outline" id="pp-sync-btn" onclick="payeeSyncDocs({{ id.id }})">Sync to Dropbox</button>{% endif %}
+          {% if current_user.can_run_maintenance %}<button type="button" class="btn btn-xs btn-outline" id="pp-sync-btn" onclick="payeeSyncDocs({{ id.id }})">Sync to Dropbox</button>{% endif %}
         </div>
       </section>
 
@@ -398,7 +398,7 @@ window.payeeResolveDup = async function(uid, action){
   } catch (e) { alert('Error: ' + e.message); }
 };
 
-{% if current_user.role == 'super_admin' %}
+{% if current_user.can_run_maintenance %}
 window.payeeSyncDocs = async function(cid){
   var btn = document.getElementById('pp-sync-btn'), st = document.getElementById('pp-sync-status');
   btn.disabled = true; st.textContent = 'Copying…';

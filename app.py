@@ -832,7 +832,7 @@ def _budget_write_gate():
         return jsonify({"error": _lock_err}), 403
     if budget.budget_mode == 'estimated' and not budget.is_actual:
         from flask_login import current_user as _cu
-        if getattr(_cu, 'role', None) in ('super_admin', 'admin'):
+        if getattr(_cu, 'has_all_project_access', False):
             return
         _acc = None
         try:
@@ -1039,6 +1039,17 @@ def day_type_meta(value):
             "chip": (v.upper() if v else ""), "order": 98}
 
 
+def _ai_badge(subject=None):
+    """Jinja `ai_badge(user_or_flag)` → the "AI Agent" badge markup, or ''.
+    The ONE server-side badge; JS uses FP.aiBadge (static/fp-utils.js)."""
+    from markupsafe import Markup
+    flag = subject if isinstance(subject, bool) else bool(getattr(subject, 'is_ai_agent', False))
+    if not flag:
+        return Markup('')
+    return Markup('<span class="ai-agent-badge" title="Action taken by the AI assistant (Claude)">'
+                  '<span aria-hidden="true">\u2726</span> AI Agent</span>')
+
+
 @app.context_processor
 def inject_globals():
     # APP_COMMIT: the build this page was rendered by. base.html compares it
@@ -1046,6 +1057,7 @@ def inject_globals():
     # when they diverge — long-lived tabs running stale JS have caused three
     # separate "the fix doesn't work" reports. (User 2026-07.)
     return {"GOOGLE_MAPS_API_KEY": GOOGLE_MAPS_API_KEY,
+            "ai_badge": _ai_badge,
             "APP_COMMIT": (os.getenv('RENDER_GIT_COMMIT') or '')[:12] or 'unknown',
             # Location / location-day vocabularies + resolvers for every template.
             "LOCATION_TYPES": LOCATION_TYPES,
@@ -1392,7 +1404,7 @@ def admin_crew_docs_backfill():
     to `limit` docs per call and reports what's left. crew_dbx_path doubles
     as the done-marker, so re-running never duplicates. The client (crew.html
     "Sync all" button) keeps calling until copied == 0."""
-    if not current_user.is_authenticated or getattr(current_user, 'role', None) != 'super_admin':
+    if not current_user.is_authenticated or not getattr(current_user, 'can_run_maintenance', False):
         return jsonify({"error": "super admin only"}), 403
     try:
         limit = max(1, min(int(request.args.get('limit', 100)), 300))
@@ -1430,7 +1442,7 @@ def admin_crew_docs_backfill():
 def admin_dropbox_status():
     # Super admin check inline — super_admin_required decorator is defined
     # further down in this module, can't apply it at import time here.
-    if not current_user.is_authenticated or getattr(current_user, 'role', None) != 'super_admin':
+    if not current_user.is_authenticated or not getattr(current_user, 'can_run_maintenance', False):
         return jsonify({"error": "super admin only"}), 403
     """Diagnostic: show current Dropbox config + test connection + check
     the template folder exists. Super-admin only. Paste the JSON back to
@@ -1496,7 +1508,7 @@ def admin_veryfi_status():
     """Diagnostic: check Veryfi env vars + try a lightweight API call.
     Mirrors /admin/dropbox/status — paste the JSON back when uploads fail
     with 401/other Veryfi errors."""
-    if not current_user.is_authenticated or getattr(current_user, 'role', None) != 'super_admin':
+    if not current_user.is_authenticated or not getattr(current_user, 'can_run_maintenance', False):
         return jsonify({"error": "super admin only"}), 403
     out = {
         "env": {
@@ -1983,7 +1995,7 @@ def admin_docs_dup_coding_audit(pid):
     Changes nothing. (User 2026-06-17.)"""
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
@@ -2042,7 +2054,7 @@ def admin_docs_scan_audit(pid):
     answer 'why isn't this receipt showing up?'. (User 2026-06-02.)"""
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
@@ -2136,7 +2148,7 @@ def admin_docs_import_missing(pid):
     Dry-run by default; ?apply=1 to write. (User 2026-06-02.)"""
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
@@ -2373,7 +2385,7 @@ def admin_docs_source_audit(pid):
     Body: {"source_path": "<path>"}. Makes NO writes. (User 2026-06-03.)"""
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
@@ -2516,7 +2528,7 @@ def admin_docs_source_import(pid):
     slow; run repeatedly to drain a large backlog). (User 2026-06-03.)"""
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
@@ -2941,7 +2953,7 @@ def admin_docs_source_import_drain(pid):
     catch stragglers (dedup makes it safe). (User 2026-06-03.)"""
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
@@ -3051,7 +3063,7 @@ def admin_docs_reconcile_project(pid):
     # themselves without flagging an admin.
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         # Non-admins must have editor or higher access on this project.
         access = ProjectAccess.query.filter_by(
             project_id=pid, user_id=current_user.id
@@ -3704,6 +3716,40 @@ def admin_required_403(f):
     return decorated
 
 
+# ── AI Agent role (2026-11-03) ─────────────────────────────────────────────
+# admin_required / admin_required_403 / super_admin_required keep their exact
+# meaning (owner + admin powers) and never admit the ai_agent role. Routes
+# the AI Agent may reach say so explicitly with one of these:
+#   maintenance_required     User.can_run_maintenance  (super_admin, ai_agent)
+#   admin_hub_required(_403) User.can_open_admin       (super_admin, admin, ai_agent)
+def maintenance_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated or not getattr(current_user, 'can_run_maintenance', False):
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated
+
+
+def admin_hub_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated or not getattr(current_user, 'can_open_admin', False):
+            flash("Not authorized", "error")
+            return redirect(url_for('dashboard'))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def admin_hub_required_403(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated or not getattr(current_user, 'can_open_admin', False):
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated
+
+
 _FORCE_PW_ALLOWED = {"profile", "logout", "login", "static",
                      "reset_password", "forgot_password",
                      "callsheet_view_public", "callsheet_confirm_public",
@@ -3771,7 +3817,7 @@ def enforce_project_access():
     pid = (request.view_args or {}).get('pid')
     if pid is None or not current_user.is_authenticated:
         return
-    if getattr(current_user, 'role', None) in ('super_admin', 'admin'):
+    if getattr(current_user, 'has_all_project_access', False):
         return
     pa = ProjectAccess.query.filter_by(project_id=pid,
                                        user_id=current_user.id).first()
@@ -3795,7 +3841,7 @@ def _user_project_role(pid):
     Returns 'admin' for site admins, the ProjectAccess.role string for
     project members, or None if the user has no access.
     """
-    if current_user.role in ('super_admin', 'admin'):
+    if getattr(current_user, 'has_all_project_access', False):
         return 'owner'
     pa = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
     return pa.role if pa else None
@@ -3965,7 +4011,7 @@ def _scoped_activity_query(budget_id=None, project_id=None):
     if not current_user.is_authenticated:
         return q.filter(ActivityLog.id == -1)  # nothing
     role = current_user.role
-    if role == 'super_admin':
+    if getattr(current_user, 'can_run_maintenance', False):  # super_admin + ai_agent: every row
         return q
     if role == 'admin':
         accessible = [pa.project_id for pa in
@@ -4126,7 +4172,7 @@ def readyz():
 
 @app.route("/admin/dbx-ls")
 @login_required
-@admin_required
+@admin_hub_required
 def dbx_ls():
     """Debug: list contents of the Dropbox ops root and find namespace IDs."""
     try:
@@ -4207,7 +4253,7 @@ def budget_presence(pid, bid):
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     _presence.setdefault(bid, {})
     _presence[bid][current_user.id] = {
-        "name": current_user.name or current_user.email.split("@")[0],
+        "name": current_user.actor_label,   # AI Agent carries its tag
         "seen": datetime.utcnow(),
     }
     _presence_cleanup(bid)
@@ -4310,7 +4356,7 @@ _AVATAR_COLORS = [
 _recent_edits = {}
 _CONFLICT_WINDOW = 2  # seconds
 _ROLE_PRIORITY = {
-    'super_admin': 4, 'admin': 3, 'line_producer': 2,
+    'super_admin': 4, 'admin': 3, 'line_producer': 2, 'ai_agent': 1,
     'dept_head': 1, 'docs_only': 0,
 }
 
@@ -4384,7 +4430,7 @@ def _check_and_emit_conflicts(bid, line_id, data):
         return
     try:
         my_id = current_user.id
-        my_name = current_user.name or current_user.email.split("@")[0]
+        my_name = current_user.actor_label
         my_role = getattr(current_user, 'role', 'line_producer')
     except Exception:
         return
@@ -4462,7 +4508,7 @@ def _ws_emit_tab_refresh(bid, tab):
         return
     try:
         user_id = current_user.id
-        user_name = current_user.name or current_user.email.split("@")[0]
+        user_name = current_user.actor_label   # AI Agent carries its tag
     except Exception:
         user_id, user_name = 0, "someone"
     room = f"budget_{bid}"
@@ -4480,7 +4526,7 @@ def _ws_emit_field_change(bid, line_id, result_data):
         return
     try:
         user_id = current_user.id
-        user_name = current_user.name or current_user.email.split("@")[0]
+        user_name = current_user.actor_label   # AI Agent carries its tag
     except Exception:
         user_id = 0
         user_name = "someone"
@@ -4503,7 +4549,7 @@ def _ws_emit_field_change(bid, line_id, result_data):
 @app.route("/")
 @login_required
 def dashboard():
-    if current_user.role in ('super_admin', 'admin'):
+    if getattr(current_user, 'has_all_project_access', False):
         all_projects = ProjectSheet.query.order_by(ProjectSheet.name).all()
     else:
         accessible_ids = [
@@ -4542,7 +4588,7 @@ def dashboard():
 
 def _company_health_gate():
     return (current_user.is_authenticated
-            and current_user.role in ('super_admin', 'admin'))
+            and current_user.can_open_admin)
 
 
 def _project_est_working_by_section(project_id):
@@ -4982,6 +5028,8 @@ def _delete_project_rows(pid):
 @login_required
 def project_delete(pid):
     # Only super_admin can permanently delete projects
+    if getattr(current_user, 'is_ai_agent', False):
+        abort(403)   # the AI Agent never deletes projects (2026-11-03)
     if getattr(current_user, 'role', None) != 'super_admin':
         flash("Only a super admin can permanently delete projects.", "error")
         return redirect(url_for("dashboard"))
@@ -5016,7 +5064,7 @@ def project_rename(pid):
     name (preserving the YYYY-MM prefix from the old slug if present
     so historical sort-order isn't disturbed).
     """
-    if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         flash("Only admins can rename projects.", "error")
         return redirect(url_for("dashboard"))
     p = ProjectSheet.query.get_or_404(pid)
@@ -5421,7 +5469,7 @@ def project_duplicate(pid):
     web worker). Returns JSON {job_id}; poll /projects/duplicate-status/<job_id>.
     include_data=1 also clones receipts + transactions into an isolated sandbox.
     Admin/super_admin only. (Background since 2026-06-18.)"""
-    if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         return jsonify({"error": "Only admins can duplicate projects."}), 403
     src_p = ProjectSheet.query.get_or_404(pid)
     new_name = (request.form.get("name") or "").strip() or f"{src_p.name} (copy)"
@@ -5818,6 +5866,8 @@ def project_archive(pid):
 @login_required
 def projects_bulk_delete():
     """Delete multiple projects at once. Expects form field 'project_ids' (repeatable)."""
+    if getattr(current_user, 'is_ai_agent', False):
+        abort(403)   # the AI Agent never deletes projects (2026-11-03)
     if getattr(current_user, 'role', None) != 'super_admin':
         flash("Only a super admin can permanently delete projects.", "error")
         return redirect(url_for("dashboard"))
@@ -5979,7 +6029,7 @@ def project_reactivate(pid):
 
 @app.route("/admin/import-dropbox", methods=["POST"])
 @login_required
-@admin_required
+@admin_hub_required
 def admin_import_dropbox():
     """Scan Dropbox ops root for project folders and import any missing ones."""
     try:
@@ -6319,7 +6369,7 @@ def budget_new(pid):
 
     # Notify the project's Super/Admin audience that a new version was created.
     try:
-        _who = current_user.name or current_user.email
+        _who = current_user.actor_label if current_user.is_ai_agent else (current_user.name or current_user.email)
         _budget_link = url_for('budget_view', pid=pid, bid=b.id, _external=True)
         _notify_project_event(
             pid,
@@ -6812,6 +6862,7 @@ def budget_comments_list(pid, bid):
     for cm in q.order_by(BudgetComment.created_at.asc()).all():
         out.append({"id": cm.id,
                     "author": (cm.author.name or cm.author.email) if cm.author else '—',
+                    "author_ai_agent": bool(cm.author and cm.author.is_ai_agent),
                     "mine": bool(cm.author_id == current_user.id),
                     "body": cm.body,
                     "created_at": cm.created_at.isoformat() + 'Z' if cm.created_at else None})
@@ -6874,8 +6925,8 @@ def budget_comments_add(pid, bid):
                 if _first in tokens or _eprefix in tokens:
                     _send_email(
                         u.email,
-                        f"💬 {current_user.name or current_user.email} mentioned you — {proj.name if proj else ''}",
-                        (f"{current_user.name or current_user.email} mentioned you in a "
+                        f"💬 {current_user.actor_label if current_user.is_ai_agent else (current_user.name or current_user.email)} mentioned you — {proj.name if proj else ''}",
+                        (f"{current_user.actor_label if current_user.is_ai_agent else (current_user.name or current_user.email)} mentioned you in a "
                          f"comment on {_where} ({proj.name if proj else ''}):\n\n"
                          f"“{body_txt}”\n\nOpen the budget: {_link}"))
     except Exception:
@@ -6890,7 +6941,7 @@ def budget_comments_delete(pid, cid):
     from models import BudgetComment
     cm = BudgetComment.query.filter_by(id=cid, project_id=pid).first_or_404()
     if cm.author_id != current_user.id and \
-            getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+            not getattr(current_user, 'has_all_project_access', False):
         return jsonify({"error": "Only the author or an admin can delete a comment."}), 403
     db.session.delete(cm)
     db.session.commit()
@@ -7171,7 +7222,7 @@ def budget_version_meta(pid, bid):
     if "internal_label" in data:
         budget.internal_label = (data.get("internal_label") or '').strip()[:120] or None
     if "locked" in data:
-        if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+        if not getattr(current_user, 'has_all_project_access', False):
             return jsonify({"error": "Only admins can lock or unlock a version."}), 403
         budget.locked = bool(data.get("locked"))
     budget.updated_at = datetime.utcnow()
@@ -7365,7 +7416,7 @@ def budget_audit_json(pid, bid):
     deliberately does NOT run sync_schedule_driven_lines, so it audits the
     DB exactly as stored.
     """
-    if not current_user.is_authenticated or current_user.role != 'super_admin':
+    if not current_user.is_authenticated or not getattr(current_user, 'can_run_maintenance', False):
         abort(403)
 
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
@@ -9657,13 +9708,17 @@ def budget_view(pid, bid):
                     .limit(5).all())
         _ra_uids = {r.user_id for r in _ra_rows if r.user_id}
         _ra_names = {}
+        _ra_ai = set()
         if _ra_uids:
             for _u in User.query.filter(User.id.in_(list(_ra_uids))).all():
                 _ra_names[_u.id] = (_u.name or _u.email or '').split('@')[0]
+                if _u.is_ai_agent:
+                    _ra_ai.add(_u.id)
         for _r in _ra_rows:
             recent_activity.append({
                 'text': _activity_sentence(_r),
                 'who': _ra_names.get(_r.user_id) or 'System',
+                'who_ai_agent': _r.user_id in _ra_ai,
                 'when': _r.created_at,
             })
     except Exception as _rae:
@@ -9686,12 +9741,16 @@ def budget_view(pid, bid):
                     .order_by(_BC_ov.created_at.asc()).all())
         _cl_uids = {r[3] for r in _cl_rows if r[3]}
         _cl_names = {}
+        _cl_ai = set()
         if _cl_uids:
             for _u in User.query.filter(User.id.in_(list(_cl_uids))).all():
                 _cl_names[_u.id] = (_u.name or _u.email or '').split('@')[0]
+                if _u.is_ai_agent:
+                    _cl_ai.add(_u.id)
         for _lid, _body, _at, _uid in _cl_rows:
             comment_latest[_lid] = {'body': (_body or '')[:400],
                                     'who': _cl_names.get(_uid, ''),
+                                    'who_ai_agent': _uid in _cl_ai,
                                     'when': _at}
     except Exception as _cle:
         logging.warning(f"[overview] latest comments failed: {_cle}")
@@ -12770,7 +12829,7 @@ def _anomaly_to_dict(f):
 def project_anomalies(pid):
     """Unresolved review-queue items for the Dashboard Action Center."""
     ProjectSheet.query.get_or_404(pid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         if not ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first():
             return jsonify({"error": "Forbidden"}), 403
     from models import AnomalyFlag
@@ -13026,7 +13085,7 @@ def doc_transaction_candidates(pid, uid):
     UNMATCHED charges; ?include_matched=1 also returns already-matched ones so
     you can search across everything. Read-only. (User 2026-06-17.)"""
     ProjectSheet.query.get_or_404(pid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         if not ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first():
             return jsonify({"error": "Forbidden"}), 403
     doc = DocUpload.query.filter_by(id=uid, project_id=pid).first_or_404()
@@ -14113,7 +14172,7 @@ def estimate_share_create(pid, bid):
     """Create a client-facing estimate share for this budget. Freezes a
     snapshot, returns a public link, and optionally emails the client.
     (User 2026-06-03.)"""
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
@@ -14181,7 +14240,7 @@ def estimate_share_create(pid, bid):
     sender_name = None
     reply_to = None
     if send_as_me:
-        sender_name = (current_user.name or current_user.email)
+        sender_name = (current_user.actor_label if current_user.is_ai_agent else (current_user.name or current_user.email))
         reply_to = current_user.email
     # Signature line: the sender's name when sending as me, else company/prepared-by.
     signature = (sender_name if send_as_me else None) or \
@@ -14287,7 +14346,7 @@ def estimate_share_create(pid, bid):
     # Notify the project's Super/Admin audience once, listing all recipients.
     try:
         _budget_link = url_for('budget_view', pid=pid, bid=bid, _external=True)
-        _who = current_user.name or current_user.email
+        _who = current_user.actor_label if current_user.is_ai_agent else (current_user.name or current_user.email)
         _recip_lines = []
         for r in results:
             if not r['email'] and not r['name']:
@@ -14371,7 +14430,7 @@ def _can_access_project(pid, edit=False):
     """True if current_user may view (edit=False) or mutate (edit=True) project
     pid. Admins/super always pass; others need a ProjectAccess row (and an
     editor-ish role for edit). Returns bool."""
-    if current_user.role in ('super_admin', 'admin'):
+    if getattr(current_user, 'has_all_project_access', False):
         return True
     access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
     if not access:
@@ -14742,7 +14801,7 @@ def project_logos_set_default(pid):
 @login_required
 def estimate_share_revoke(sid):
     s = EstimateShare.query.get_or_404(sid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=s.project_id, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
@@ -14776,7 +14835,7 @@ def _serialize_estimate_share(s):
 def estimate_share_list_project(pid):
     """All client estimate links sent for this project (across budget versions),
     newest first — powers the 'Manage sent estimates' panel. (User 2026-06-04.)"""
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access:
             return jsonify({"error": "Forbidden"}), 403
@@ -14791,7 +14850,7 @@ def estimate_share_delete(sid):
     """Permanently remove a share record (vs. revoke, which just disables the
     link but keeps the audit row). (User 2026-06-04.)"""
     s = EstimateShare.query.get_or_404(sid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=s.project_id, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
@@ -14802,7 +14861,7 @@ def estimate_share_delete(sid):
 
 @app.route("/admin/coa-audit", methods=["GET", "POST"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_coa_audit():
     """Find + fix chart-of-account drift left by the 2026-04 renumber (which
     rewrote budget_line codes but NOT the denormalized account_code /
@@ -15963,6 +16022,7 @@ def budget_present_json(pid, bid):
         if _last and _last.user_id:
             _u = User.query.get(_last.user_id)
             revision["by"] = _u.name if _u else None
+            revision["by_ai_agent"] = bool(_u and _u.is_ai_agent)
         _mean = (ActivityLog.query
                  .filter(ActivityLog.budget_id == bid,
                          ActivityLog.entity_type == 'budget_line',
@@ -15974,6 +16034,7 @@ def budget_present_json(pid, bid):
             revision["last_meaningful"] = {
                 "at": _mean.created_at.isoformat() + 'Z' if _mean.created_at else None,
                 "by": _mu.name if _mu else None,
+                "by_ai_agent": bool(_mu and _mu.is_ai_agent),
                 "summary": _mean.note or (
                     f"{_mean.action.title()}: {_mean.entity_label or 'line'}"),
                 "delta": float(_mean.dollar_delta or 0),
@@ -16292,7 +16353,7 @@ def admin_meal_status():
     stored under the wrong mode is invisible to the sync), headcounts
     split by day_type, and the meal auto-lines' stored qty/days/total
     plus sync_omit (a frozen line never updates from the schedule)."""
-    if getattr(current_user, 'role', None) != 'super_admin':
+    if not getattr(current_user, 'can_run_maintenance', False):
         abort(403)
     import json as _json_ms
     q = (request.args.get('project') or '').strip()
@@ -16371,7 +16432,7 @@ def admin_crew_lookup():
     matching ?q=<name>, with the exact fields that gate picker
     visibility, and says whether the crew pickers would include each.
     ?activate=<crew_id> flips a row back to active."""
-    if getattr(current_user, 'role', None) != 'super_admin':
+    if not getattr(current_user, 'can_run_maintenance', False):
         abort(403)
     q = (request.args.get('q') or '').strip()
     act_id = request.args.get('activate', type=int)
@@ -19904,6 +19965,7 @@ def activity_feed(pid, bid):
             "when":         r.created_at.isoformat() if r.created_at else None,
             "who_id":       r.user_id,
             "who":          r.user.name or r.user.email if r.user else "—",
+            "who_ai_agent": bool(r.user and r.user.is_ai_agent),
             "action":       r.action,
             "entity_type":  r.entity_type,
             "entity_id":    r.entity_id,
@@ -19916,7 +19978,7 @@ def activity_feed(pid, bid):
                              and ((r.entity_type == 'budget_line' and r.action in ('create', 'update', 'delete'))
                                   or (r.entity_type == 'schedule_day' and r.action in ('create', 'update', 'delete'))
                                   or r.entity_type in ('transaction', 'transaction_match'))
-                             and (getattr(current_user, 'role', None) in ('admin', 'super_admin')
+                             and (getattr(current_user, 'has_all_project_access', False)
                                   or r.user_id == current_user.id)),
             "field_changes": fc,
             "note":         r.note or None,
@@ -19959,7 +20021,7 @@ def activity_undo(pid, bid, aid):
         abort(403)
     # Permission (User 2026-06-16): admins/super-admins undo anything; everyone
     # else only their own actions.
-    if (getattr(current_user, 'role', None) not in ('admin', 'super_admin')
+    if (not getattr(current_user, 'has_all_project_access', False)
             and row.user_id != current_user.id):
         return jsonify({"ok": False, "error": "You can only undo your own actions."}), 403
 
@@ -20253,7 +20315,7 @@ def activity_undo_batch(pid, bid):
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     _require_project_role(pid, 'editor')
     ids = (request.get_json(silent=True) or {}).get('ids') or []
-    is_admin = getattr(current_user, 'role', None) in ('admin', 'super_admin')
+    is_admin = getattr(current_user, 'has_all_project_access', False)
     undone, failed, touched_budget = 0, [], False
     for aid in ids:
         try:
@@ -22451,7 +22513,7 @@ def _require_global_editor():
     role on at least one project. Viewer-only / docs-only accounts could
     previously read the full crew PII database and mutate shared records via
     these routes (security audit C1, 2026-07-20)."""
-    if getattr(current_user, 'role', None) in ('super_admin', 'admin'):
+    if getattr(current_user, 'has_all_project_access', False):
         return
     ok = (ProjectAccess.query
           .filter(ProjectAccess.user_id == current_user.id,
@@ -24214,7 +24276,7 @@ def admin_ai_ping():
     """Health check for the AI layer (spec §1/§9). Returns provider status; with
     ?test=1 runs ONE live categorize against a sample (uses a Claude call if the
     key is set). Super-admin/admin only. (User 2026-06-17.)"""
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'can_open_admin', False):
         return jsonify({"error": "Forbidden"}), 403
     import ai_layer
     out = {"status": ai_layer.status()}
@@ -25144,7 +25206,7 @@ def _touch_budget(bid):
     db.session.execute(text("UPDATE budget SET updated_at = :now WHERE id = :id"),
                        {"now": now, "id": bid})
     try:
-        name = current_user.name or current_user.email.split("@")[0]
+        name = current_user.actor_label   # "last edited by" — AI Agent carries its tag
     except Exception:
         name = "someone"
     _budget_last_editor[bid] = {"name": name, "at": now}
@@ -26366,7 +26428,7 @@ def cs_normalize_schedule(cs_data, rich_key, legacy_key):
 
 @app.route("/admin", methods=["GET"])
 @login_required
-@admin_required
+@admin_hub_required
 def admin_panel():
     users          = User.query.order_by(User.name).all()
     projects       = ProjectSheet.query.filter(ProjectSheet.status != 'archived').order_by(ProjectSheet.name).all()
@@ -26386,7 +26448,7 @@ def admin_panel():
 
 @app.route("/admin/budget-diff", methods=["GET"])
 @login_required
-@admin_required
+@admin_hub_required
 def admin_budget_diff():
     """Compare two budgets field-by-field and return every line where
     they differ. Built 2026-05-26 because a user reported "the new
@@ -26585,19 +26647,20 @@ def admin_budget_diff():
 
 @app.route("/admin/users/create", methods=["POST"])
 @login_required
-@admin_required
+@admin_required_403
 def admin_user_create():
     email     = request.form.get("email", "").strip().lower()
     name      = request.form.get("name", "").strip()
     role      = request.form.get("role", "line_producer")
     dept_code = request.form.get("dept_code", type=int)
 
-    # Admin cannot create super_admin
-    if current_user.role == 'admin' and role == 'super_admin':
-        flash("Admins cannot create Super Admin accounts.", "error")
+    # Admin cannot create super_admin or ai_agent (only the owner grants the
+    # AI Agent its company-wide maintenance reach).
+    if current_user.role == 'admin' and role in ('super_admin', 'ai_agent'):
+        flash("Admins cannot create Super Admin or AI Agent accounts.", "error")
         return redirect(url_for("admin_panel"))
 
-    valid_roles = ('super_admin', 'admin', 'line_producer', 'dept_head', 'docs_only')
+    valid_roles = ('super_admin', 'admin', 'ai_agent', 'line_producer', 'dept_head', 'docs_only')
     if role not in valid_roles:
         role = 'line_producer'
 
@@ -26644,12 +26707,12 @@ Please log in and change your password on your first visit.
 
 @app.route("/admin/users/<int:uid>/edit", methods=["POST"])
 @login_required
-@admin_required
+@admin_required_403
 def admin_user_edit(uid):
     u = User.query.get_or_404(uid)
     # Admin cannot change a super_admin's role
-    if current_user.role == 'admin' and u.role == 'super_admin':
-        flash("Admins cannot edit Super Admin accounts.", "error")
+    if current_user.role == 'admin' and u.role in ('super_admin', 'ai_agent'):
+        flash("Admins cannot edit Super Admin or AI Agent accounts.", "error")
         return redirect(url_for("admin_panel"))
 
     name      = request.form.get("name", "").strip()
@@ -26658,11 +26721,11 @@ def admin_user_edit(uid):
     dept_code = request.form.get("dept_code", type=int)
 
     # Admin cannot assign super_admin role
-    if current_user.role == 'admin' and role == 'super_admin':
-        flash("Admins cannot assign the Super Admin role.", "error")
+    if current_user.role == 'admin' and role in ('super_admin', 'ai_agent'):
+        flash("Admins cannot assign the Super Admin or AI Agent role.", "error")
         return redirect(url_for("admin_panel"))
 
-    valid_roles = ('super_admin', 'admin', 'line_producer', 'dept_head', 'docs_only')
+    valid_roles = ('super_admin', 'admin', 'ai_agent', 'line_producer', 'dept_head', 'docs_only')
     if role not in valid_roles:
         role = u.role
 
@@ -26683,7 +26746,7 @@ def admin_user_edit(uid):
 
 @app.route("/admin/users/<int:uid>/toggle-active", methods=["POST"])
 @login_required
-@admin_required
+@admin_required_403
 def admin_user_toggle_active(uid):
     if uid == current_user.id:
         flash("You cannot deactivate yourself.", "error")
@@ -26698,9 +26761,15 @@ def admin_user_toggle_active(uid):
 
 @app.route("/admin/users/<int:uid>/reset-password", methods=["POST"])
 @login_required
-@admin_required
+@admin_required_403
 def admin_user_reset_password(uid):
     u = User.query.get_or_404(uid)
+    # The temp password is shown on screen, so an admin resetting the AI
+    # Agent would be signing in as it — owner only. (Deactivating it stays
+    # open to admins: that is the kill switch.)
+    if current_user.role == 'admin' and u.role == 'ai_agent':
+        flash("Only the Super Admin can reset the AI Agent's password.", "error")
+        return redirect(url_for("admin_panel"))
     temp_pw = secrets.token_urlsafe(8)
     u.set_password(temp_pw)
     u.must_change_password = True
@@ -26730,15 +26799,15 @@ https://fp-budget.onrender.com/login
 
 @app.route("/admin/users/<int:uid>/delete", methods=["POST"])
 @login_required
-@admin_required
+@admin_required_403
 def admin_user_delete(uid):
     if uid == current_user.id:
         flash("You cannot delete your own account.", "error")
         return redirect(url_for("admin_panel"))
     u = User.query.get_or_404(uid)
     # Admin can only delete line_producer and dept_head; super_admin can delete anyone except self
-    if current_user.role == 'admin' and u.role in ('super_admin', 'admin'):
-        flash("Admins cannot delete admin or super_admin accounts.", "error")
+    if current_user.role == 'admin' and u.role in ('super_admin', 'admin', 'ai_agent'):
+        flash("Admins cannot delete admin, super_admin or AI Agent accounts.", "error")
         return redirect(url_for("admin_panel"))
     ProjectAccess.query.filter_by(user_id=uid).delete()
     db.session.delete(u)
@@ -26820,7 +26889,7 @@ def api_catalog():
 
 @app.route("/admin/catalog")
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_catalog_view():
     """Super admin catalog editor page."""
     items = CatalogItem.query.order_by(
@@ -26987,7 +27056,7 @@ def admin_catalog_reorder():
 
 @app.route("/admin/catalog/stats")
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_catalog_stats():
     """Diagnostic: return counts per category_code in the CatalogItem
     table, flagging any that are legacy (pre-renumber) codes. Useful
@@ -27193,7 +27262,7 @@ def _role_mapping_to_dict(m):
 
 @app.route("/admin/role-mapping")
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_role_mapping_view():
     """Super admin page for editing role_tag → MMB/ShowBiz account mappings."""
     from models import RoleTagMapping as _RTM
@@ -27242,7 +27311,7 @@ def admin_role_mapping_update(mid):
 
 @app.route("/admin/reports/qe-audit.csv")
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_qe_audit_csv():
     """Task 4: one-time audit comparing JS QE_CATEGORIES_FROZEN against
     CatalogItem rows in the DB. Produces a CSV the super admin can use to
@@ -27516,7 +27585,7 @@ def _find_split_candidates():
 
 @app.route("/admin/migrate/split-labor/preview")
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_migrate_split_labor_preview():
     """Count how many labor lines would be split (dry run)."""
     candidates = _find_split_candidates()
@@ -27553,7 +27622,7 @@ def admin_migrate_split_labor_preview():
 
 @app.route("/admin/migrate/resync-all", methods=["POST"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_migrate_resync_all():
     """One-time: re-run sync_schedule_driven_lines for every budget in the
     system. Reconciles meals, flights, hotel, mileage, per diem, working meals,
@@ -27583,7 +27652,7 @@ def admin_migrate_resync_all():
 
 @app.route("/admin/migrate/split-labor", methods=["POST"])
 @login_required
-@super_admin_required
+@maintenance_required
 def admin_migrate_split_labor_run():
     """Execute the one-time labor-line split migration."""
     candidates = _find_split_candidates()
@@ -27639,7 +27708,7 @@ def admin_migrate_split_labor_run():
 
 def _user_can_access_project(pid):
     """Return True if the current user may access project pid."""
-    if current_user.role in ('super_admin', 'admin'):
+    if getattr(current_user, 'has_all_project_access', False):
         return True
     return ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first() is not None
 
@@ -27654,6 +27723,8 @@ def project_share(pid):
     # account to edit rights. (Review CR-2/HIGH-3, 2026-06-04.)
     if request.method == "POST":
         _require_project_role(pid, 'owner')
+        if getattr(current_user, 'is_ai_agent', False):
+            abort(403)  # ACL change — never the AI Agent's (2026-11-03)
     project = ProjectSheet.query.get_or_404(pid)
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
@@ -27694,6 +27765,10 @@ def project_share_remove(pid):
     # ACL change — owner/admin only (same rule as adding; previously any
     # member could remove collaborators. Tightened 2026-08-19.)
     _require_project_role(pid, 'owner')
+    # ACL changes are never the AI Agent's (it may not change anyone's access
+    # or role — 2026-11-03).
+    if getattr(current_user, 'is_ai_agent', False):
+        abort(403)
     uid = request.form.get("user_id", type=int)
     if uid:
         ProjectAccess.query.filter_by(project_id=pid, user_id=uid).delete()
@@ -27712,6 +27787,10 @@ def project_share_role(pid):
     if not _user_can_access_project(pid):
         abort(403)
     _require_project_role(pid, 'owner')
+    # ACL changes are never the AI Agent's (it may not change anyone's access
+    # or role — 2026-11-03).
+    if getattr(current_user, 'is_ai_agent', False):
+        abort(403)
     uid = request.form.get("user_id", type=int)
     role = (request.form.get("role") or '').strip()
     if role not in ('owner', 'editor', 'viewer', 'docs_only'):
@@ -30487,7 +30566,7 @@ if not os.getenv('RUN_BOOT_TASKS'):
 def _docs_accessible_projects(user):
     """Return active ProjectSheet rows visible to this user for docs."""
     active_filter = (ProjectSheet.status == 'active')
-    if user.role in ('super_admin', 'admin'):
+    if getattr(user, 'has_all_project_access', False):
         return ProjectSheet.query.filter(active_filter).order_by(ProjectSheet.name).all()
     owned = (db.session.query(ProjectSheet)
              .join(ProjectAccess, ProjectAccess.project_id == ProjectSheet.id)
@@ -30516,7 +30595,7 @@ def docs_dashboard():
 def docs_project(pid):
     project = ProjectSheet.query.get_or_404(pid)
     # Access check
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access:
             abort(403)
@@ -31873,7 +31952,7 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
 @login_required
 def docs_upload_post(pid):
     project = ProjectSheet.query.get_or_404(pid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access:
             return jsonify({"error": "Forbidden"}), 403
@@ -32301,7 +32380,7 @@ def admin_sub_budget_status():
     count, WHICH budget each membership's line lives on (name / mode /
     version status), and whether resolution onto the canonical budget
     finds them. Read-only. ?pid=N narrows to one project."""
-    if getattr(current_user, 'role', None) != 'super_admin':
+    if not getattr(current_user, 'can_run_maintenance', False):
         abort(403)
     _pid_filter = request.args.get('pid', type=int)
     q = SubBudget.query
@@ -32371,7 +32450,7 @@ def admin_docs_cleanup_errors():
          newest (it carries the latest failure reason), trash the rest.
     GET = dry run (counts + samples). POST with ?apply=1 executes.
     ?pid=<project> scopes to one project."""
-    if getattr(current_user, 'role', None) != 'super_admin':
+    if not getattr(current_user, 'can_run_maintenance', False):
         abort(403)
     apply_it = request.args.get('apply') == '1' and request.method == 'POST'
     pid = request.args.get('pid', type=int)
@@ -32439,7 +32518,7 @@ def admin_docs_find():
     Answers "where did my file actually land": which project, what
     status, duplicate flags, who it's linked to. ?q=<fragment> or
     ?pid=<project> (newest 50)."""
-    if getattr(current_user, 'role', None) != 'super_admin':
+    if not getattr(current_user, 'can_run_maintenance', False):
         abort(403)
     q = (request.args.get('q') or '').strip()
     pid = request.args.get('pid', type=int)
@@ -32482,7 +32561,7 @@ def admin_drop_sweep_status(pid=None):
     and, per active project, whether its _INBOX exists in Dropbox — with a
     reason when it can't. Read-only except ?provision=1, which creates any
     missing folders right now instead of waiting for the next cycle."""
-    if getattr(current_user, 'role', None) != 'super_admin':
+    if not getattr(current_user, 'can_run_maintenance', False):
         abort(403)
     from sqlalchemy import text as _sql_text
     last_run = None
@@ -32620,7 +32699,7 @@ def docs_upload_retry_filing(uid):
     'pending' rows from before the current_user.username bug fix)."""
     upload = DocUpload.query.get_or_404(uid)
     # Access check
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(
             project_id=upload.project_id, user_id=current_user.id).first()
         if not access:
@@ -32731,7 +32810,7 @@ def _split_integrity_child_target(k):
 def docs_split_integrity():
     # Destructive/one-time repair tool — super-admin only before outside
     # users arrive (tools audit 2026-07-20).
-    if getattr(current_user, 'role', None) != 'super_admin':
+    if not getattr(current_user, 'can_run_maintenance', False):
         abort(403)
     """One-time repair crawler for PHANTOM itemization splits (2026-07).
 
@@ -32769,7 +32848,7 @@ def docs_split_integrity():
       ?dry=0           — perform the heals (mutations ONLY here).
       ?pid=<id>        — scope to a single project.
     """
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         return jsonify({"error": "Forbidden"}), 403
 
     dry = (request.values.get("dry", "1").strip().lower() not in ("0", "false", "no"))
@@ -33670,7 +33749,7 @@ def docs_resolve_duplicate(uid):
     confirm = It's a duplicate (bury this copy), replace = this newer copy
     supersedes the original (Phase 2 paperwork: a fresh W-9 or ID)."""
     upload = DocUpload.query.get_or_404(uid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         if upload.uploader_id != current_user.id:
             return jsonify({"error": "Forbidden"}), 403
     _body = request.get_json(silent=True) or {}
@@ -33708,7 +33787,7 @@ def docs_dup_links(pid):
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
     ProjectSheet.query.get_or_404(pid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         if not ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first():
             return jsonify({"error": "Forbidden"}), 403
     raw = (request.get_json(silent=True) or {}).get("ids") or []
@@ -33772,7 +33851,7 @@ def docs_resolve_duplicates_batch(pid):
             up = DocUpload.query.filter_by(id=uid, project_id=pid).first()
             if not up:
                 errors.append({"uid": uid, "error": "not found"}); continue
-            if current_user.role not in ('super_admin', 'admin') and up.uploader_id != current_user.id:
+            if not getattr(current_user, 'has_all_project_access', False) and up.uploader_id != current_user.id:
                 errors.append({"uid": uid, "error": "forbidden"}); continue
             ok, info, err = _apply_dup_resolution(up, action, force=force, link_mode=link_mode)
             (results if ok else errors).append(info if ok else {"uid": uid, "error": err})
@@ -33881,7 +33960,7 @@ def docs_upload_delete(uid):
 def docs_trash_list(pid):
     """Docs Trash: soft-deleted documents for this project, newest first.
     (User 2026-06-11 — recoverable deletes.)"""
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access:
             return jsonify({"error": "Forbidden"}), 403
@@ -33917,7 +33996,7 @@ def docs_upload_restore(uid):
     to their original locations, restore the prior status, and recreate the
     Actuals transaction for ledger types. (User 2026-06-11.)"""
     upload = DocUpload.query.get_or_404(uid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         if upload.uploader_id != current_user.id:
             return jsonify({"error": "Forbidden"}), 403
     if upload.status != 'deleted':
@@ -33988,7 +34067,7 @@ def docs_upload_purge(uid):
     delete, now only reachable from there). Dropbox copies stay in /_TRASH/
     until the 30-day purge. (User 2026-06-11.)"""
     upload = DocUpload.query.get_or_404(uid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not current_user.is_admin:
         if upload.uploader_id != current_user.id:
             return jsonify({"error": "Forbidden"}), 403
     if upload.status != 'deleted':
@@ -34042,7 +34121,7 @@ def docs_bulk_delete(pid):
     ids = [int(i) for i in (data.get("ids") or []) if str(i).isdigit()]
     if not ids:
         return jsonify({"error": "No ids provided"}), 400
-    is_admin = current_user.role in ('super_admin', 'admin')
+    is_admin = getattr(current_user, 'has_all_project_access', False)
     rows = DocUpload.query.filter(DocUpload.id.in_(ids),
                                   DocUpload.project_id == pid).all()
     deleted, skipped, labels, done_ids = 0, 0, [], []
@@ -34102,7 +34181,7 @@ def docs_purge_ghosts(pid):
     Returns {deleted: N, ids: [...]}.
     """
     ProjectSheet.query.get_or_404(pid)
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         return jsonify({"error": "Admin only"}), 403
     # Ghost = no Dropbox file behind the row. Review rows now point at
     # _UPLOADS_PENDING/ so they have a path; only error/legacy rows with
@@ -34175,7 +34254,7 @@ def docs_export_csv(pid):
     for u in rows:
         uploader = ''
         if u.uploader:
-            uploader = u.uploader.name or u.uploader.email or ''
+            uploader = (u.uploader.actor_label if u.uploader.is_ai_agent else (u.uploader.name or u.uploader.email or ''))
         w.writerow([
             u.id,
             u.uploaded_at.strftime('%Y-%m-%d %H:%M') if u.uploaded_at else '',
@@ -34220,7 +34299,7 @@ def docs_upload_rename(uid):
     upload = DocUpload.query.get_or_404(uid)
 
     # Auth: admins can rename anything; regular users only their own.
-    if current_user.role not in ('super_admin', 'admin'):
+    if not getattr(current_user, 'has_all_project_access', False):
         if upload.uploader_id != current_user.id:
             return jsonify({"error": "Forbidden"}), 403
 
@@ -34325,7 +34404,7 @@ def _docs_check_row_access(upload, require_editor=False):
     / type or itemize it — the central enforce_project_access gate exempts
     docs endpoints for viewers (uploads are allowed), so this is the only
     editor check they get."""
-    if current_user.role in ('super_admin', 'admin'):
+    if getattr(current_user, 'has_all_project_access', False):
         return None
     if upload.project_id is None:
         return jsonify({"error": "Forbidden"}), 403
@@ -35837,7 +35916,7 @@ def person_update(pid, cmid):
 
 @app.route("/vendors/audit", methods=["GET"])
 @login_required
-@admin_required_403
+@admin_hub_required_403
 def vendors_audit():
     """READ-ONLY ghost-vendor audit (User 2026-07.): is_vendor CrewMember rows
     that NOTHING references — no per-project loan-out link, no global loan-out
@@ -36501,7 +36580,7 @@ def admin_recent_errors():
     ring (/tmp/fpb-errors). Exists because a traceback must be reachable even
     when Sentry misses the event and Render's log window has scrolled past.
     Super-admin only. (2026-07-22, Van Cliburn crash debugging.)"""
-    if getattr(current_user, 'role', None) != 'super_admin':
+    if not getattr(current_user, 'can_run_maintenance', False):
         abort(403)
     import glob as _glob
     import html as _html
@@ -37569,7 +37648,7 @@ def docs_upload_update(uid):
 #   /admin/debug/line/306?account_code=3500&description=Flights
 # 2026-05-08.
 @app.route("/admin/debug/line/<int:bid>")
-@super_admin_required
+@maintenance_required
 def debug_line(bid):
     from flask import jsonify, request
     from models import Budget, BudgetLine, ScheduleDay
@@ -37683,7 +37762,7 @@ def debug_line(bid):
 # in real time. Companion to /admin/debug/line/<bid> (which returns JSON
 # for a single line). 2026-05-08 (Option B of sweep). Super-admin gated.
 @app.route("/admin/debug/budget/<int:bid>")
-@super_admin_required
+@maintenance_required
 def debug_budget_calc_trace(bid):
     from flask import render_template_string
     from models import Budget, BudgetLine, ScheduleDay
@@ -37974,7 +38053,7 @@ def _unhandled_exception(e):
     _admin_trace = ''
     try:
         from flask_login import current_user as _cu
-        if getattr(_cu, 'is_authenticated', False) and getattr(_cu, 'role', None) == 'super_admin':
+        if getattr(_cu, 'is_authenticated', False) and getattr(_cu, 'can_run_maintenance', False):
             import html as _html
             _admin_trace = ('<hr><p style="color:#888;font-size:.85em">super-admin debug:</p>'
                             '<pre style="white-space:pre-wrap;font-size:12px;background:#f8f8f8;'
