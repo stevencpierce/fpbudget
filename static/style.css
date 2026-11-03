@@ -87,6 +87,9 @@ a:hover { text-decoration: underline; }
 .nav-links { display: flex; align-items: center; gap: 1.25rem; }
 .nav-links a { color: var(--text-muted); font-size: .875rem; }
 .nav-links a:hover { color: var(--text); text-decoration: none; }
+.nav-dropdown .dropdown-menu { right: auto; left: -8px; min-width: 150px; }
+.nav-dropdown .dropdown-menu a { font-size: .85rem; }
+.nav-dropdown:focus-within .dropdown-menu { display: block; }
 .theme-toggle {
   background: none;
   border: 1px solid var(--border);

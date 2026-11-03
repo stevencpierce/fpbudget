@@ -26295,11 +26295,17 @@ def admin_panel():
     users          = User.query.order_by(User.name).all()
     projects       = ProjectSheet.query.filter(ProjectSheet.status != 'archived').order_by(ProjectSheet.name).all()
     project_access = ProjectAccess.query.all()
+    # Hub sections (Cleanup E, 2026-11-02): Company status chips and the
+    # Maintenance tool count come from routes/admin_maintenance (imported at
+    # the bottom of this module, hence the lazy import).
+    from routes.admin_maintenance import company_status, TOOLS
     return render_template("admin.html",
                            users=users,
                            projects=projects,
                            project_access=project_access,
-                           coa_sections=FP_COA_SECTIONS)
+                           coa_sections=FP_COA_SECTIONS,
+                           status=company_status(),
+                           tool_count=len(TOOLS))
 
 
 @app.route("/admin/budget-diff", methods=["GET"])
