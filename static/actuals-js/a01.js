@@ -67,13 +67,16 @@
   AW.txnUrl = (tid, tail) => `/projects/${PID}/actuals/transaction/${tid}/${tail}`;
 
   // ── State ────────────────────────────────────────────────────────────
-  const VIEWS = ['unclaimed', 'assigned', 'needs_backup', 'receipts', 'not_project', 'sync'];
+  const VIEWS = ['unclaimed', 'assigned', 'needs_backup', 'receipts', 'duplicates', 'not_project', 'sync'];
   const S = AW.state = {
     data: null, view: VIEWS.includes(AJ.initialView) ? AJ.initialView : 'unclaimed',
     q: '', card: '', from: '', to: '',
     sel: new Set(), lastIdx: null, rows: [],      // rows: txn rows in render order (for shift-click)
     lineFilter: null, loading: false, focusTxn: AJ.focusTxn || null,
     byId: new Map(), lineById: new Map(), sectionOfLine: new Map(),
+    // Phase 5: the selected receipt (Receipts view), the charge ticked in
+    // the candidate panel, and the charge Find backup is open on.
+    selDoc: null, pickCharge: null, findFor: null, docById: new Map(),
   };
 
   // ── Data ─────────────────────────────────────────────────────────────
@@ -86,6 +89,11 @@
       S.byId = new Map();
       (d.transactions || []).forEach(t => S.byId.set(t.id, t));
       (d.not_project || []).forEach(t => S.byId.set(t.id, t));
+      S.docById = new Map();
+      (d.receipts || []).forEach(r => S.docById.set(r.doc_id, r));
+      if (S.selDoc && !S.docById.has(S.selDoc)) S.selDoc = null;
+      if (S.pickCharge && !S.byId.has(S.pickCharge)) S.pickCharge = null;
+      if (S.findFor && !S.byId.has(S.findFor)) S.findFor = null;
       S.lineById = new Map(); S.sectionOfLine = new Map();
       ((d.budget || {}).sections || []).forEach(sec => (sec.lines || []).forEach(l => {
         S.lineById.set(l.id, l); S.sectionOfLine.set(l.id, sec);
@@ -145,6 +153,7 @@
     if (view === 'needs_backup') return txns.filter(t => (t.flags.red || []).includes('needs_backup'));
     if (view === 'receipts') return d.receipts || [];
     if (view === 'not_project') return d.not_project || [];
+    if (view === 'duplicates') return (d.duplicates || []).flatMap(g => g.members.map(m => S.byId.get(m.id) || m));
     return [];
   };
   AW.touchesLine = (t, lid) => (t.assigned_line && t.assigned_line.id === lid)
@@ -162,6 +171,9 @@
     document.querySelectorAll('#aw-views .aw-view').forEach(b => {
       if (b.dataset.view === S.view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
     });
+    // Phase 5: the Matches-to-review chip (both directions are the same pairs).
+    const rc = $('aw-reviewchip');
+    if (rc) { rc.hidden = !(c.matches_to_review > 0); rc.querySelector('[data-count="matches_to_review"]').textContent = c.matches_to_review || 0; }
     // Sync status in the header.
     const sy = d.sync || {};
     $('aw-syncdot').classList.toggle('off', !sy.connected);
@@ -180,7 +192,7 @@
       sel.innerHTML = '<option value="">All cards</option>' + want.map(c => `<option value="${esc(c)}">••${esc(c)}</option>`).join('');
       sel.value = S.card;
     }
-    renderBudget();
+    if (AW.panelActive && AW.panelActive()) { if (AW.renderPanel) AW.renderPanel(); } else renderBudget();
     renderTable();
     renderActionBar();
     if (AW.renderRecent) AW.renderRecent();
@@ -203,6 +215,10 @@
   }
   function flagChip(t) {
     const red = t.flags.red || [], yel = t.flags.yellow || [];
+    if (red.includes('voided_in_qbo')) return '<span class="aw-flag red">Voided in QuickBooks</span>';
+    // A possible duplicate outranks the red flags here: the person should
+    // settle whether it is one charge or two before coding it.
+    if (yel.includes('possible_duplicate') && t.dup_group) return `<button type="button" class="aw-flag yellow linky" data-act="open-dup" data-key="${esc(t.dup_group)}" title="Open this duplicate group">Possible duplicate</button>`;
     if (red.includes('no_line')) return '<span class="aw-flag red">No line</span>';
     if (red.includes('split_mismatch')) return '<span class="aw-flag red">Split does not sum</span>';
     if (red.includes('needs_backup')) return '<span class="aw-flag red">Needs backup</span>';
@@ -226,7 +242,10 @@
     if (t.assigned_line) return `<span class="aw-chip solid" title="${esc(t.assigned_line.label)}"><span>${esc(t.assigned_line.label)}</span></span>`;
     if (t.section_only) return `<span class="aw-chip solid" title="Coded to the section, no line yet"><span>${esc(t.section_only.label)} · section</span></span>`;
     if (t.receipt_suggestion && !t.suggested_line) {
-      return `<span class="aw-chip info" title="A receipt looks like this charge"><span>Receipt suggested · ${Math.round((t.receipt_suggestion.confidence || 0) * 100)}%</span></span>`;
+      const rs = t.receipt_suggestion;
+      return `<span class="aw-match"><span class="aw-chip info${rs.strong ? ' strong' : ''}" title="${esc((rs.reasons || []).join(' · ') || 'A receipt looks like this charge')}"><span>Receipt suggested · ${Math.round((rs.confidence || 0) * 100)}%</span></span>
+        <button type="button" class="aw-btn sm" data-act="confirm-match" data-tid="${t.id}" title="Approve the match (M)">Approve</button>
+        <button type="button" class="aw-btn sm" data-act="dismiss-match" data-tid="${t.id}" title="Not a match">No</button></span>`;
     }
     if (t.suggested_line) {
       const conf = Math.round((t.suggested_line.confidence || 0) * 100);
@@ -250,7 +269,9 @@
       <div class="aw-cell">${sourceChip(t)}</div>
       <div class="aw-cell">${lineCell(t, view)}</div>
       <div class="aw-cell flagcell">${flagChip(t)}<span class="aw-rowacts">
-        <button type="button" class="aw-btn sm" data-act="assign-one" data-tid="${t.id}" ${container ? 'disabled title="Split or itemized rows carry their coding on the sublines"' : ''}>${AW.isAssigned(t) ? 'Move' : 'Assign'}</button>
+        ${view === 'needs_backup' && !t.receipt
+          ? `<button type="button" class="aw-btn sm" data-act="find-backup" data-tid="${t.id}" title="Ranked receipts for this charge">Find backup</button>`
+          : `<button type="button" class="aw-btn sm" data-act="assign-one" data-tid="${t.id}" ${container ? 'disabled title="Split or itemized rows carry their coding on the sublines"' : ''}>${AW.isAssigned(t) ? 'Move' : 'Assign'}</button>`}
         <button type="button" class="aw-btn sm icon" data-act="menu" data-tid="${t.id}" aria-label="More actions for ${esc(t.vendor)}" aria-haspopup="menu">
           <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="2" cy="6" r="1.3"/><circle cx="6" cy="6" r="1.3"/><circle cx="10" cy="6" r="1.3"/></svg>
         </button></span></div>
@@ -275,6 +296,15 @@
       host.setAttribute('aria-label', 'Receipts inbox');
       summary.textContent = `${rows.length} receipt${rows.length === 1 ? '' : 's'} waiting`;
       host.innerHTML = renderReceipts(rows);
+      hint.innerHTML = 'Click a receipt to see the charges it could back · tick a charge there, then Link to selected · <kbd>M</kbd> confirms a suggested match · drag a receipt onto a charge in the panel';
+      return;
+    }
+    if (S.view === 'duplicates') {
+      host.setAttribute('aria-label', 'Possible duplicate charges');
+      const groups = (d.duplicates || []), voided = (d.voided || []);
+      summary.textContent = `${groups.length} group${groups.length === 1 ? '' : 's'}${voided.length ? ` · ${voided.length} voided in QuickBooks` : ''}`;
+      host.innerHTML = AW.renderDuplicates ? AW.renderDuplicates(groups, voided, matchesFilters) : '';
+      hint.innerHTML = 'Each group is one event that arrived twice. Keep both remembers your answer; Delete the extra moves its coding to the keeper first · <kbd>D</kbd> opens the selected row\'s group';
       return;
     }
     if (S.view === 'not_project') {
@@ -321,7 +351,7 @@
     const all = $('aw-selall');
     if (all) { all.checked = S.rows.length > 0 && S.rows.every(t => S.sel.has(t.id)); all.indeterminate = !all.checked && S.rows.some(t => S.sel.has(t.id)); }
     hint.innerHTML = S.view === 'unclaimed'
-      ? 'Drag rows onto a budget line, or select and press <kbd>A</kbd> to assign · <kbd>N</kbd> marks not project · <kbd>Esc</kbd> clears'
+      ? 'Drag rows onto a budget line, or select and press <kbd>A</kbd> to assign · <kbd>N</kbd> marks not project · <kbd>M</kbd> approves a suggested receipt · <kbd>Esc</kbd> clears'
       : S.view === 'assigned' ? 'Drag a row onto another line to move it · the row menu has Unassign, Split, Attach and Add reason'
       : 'Attach a receipt, link one from the inbox, or give a reason from the row menu';
     if (S.lineFilter && S.view === 'assigned') {
@@ -336,26 +366,36 @@
       assigned: S.lineFilter ? 'Nothing is assigned to this line yet.' : 'Nothing assigned yet. Drag a charge from Unclaimed onto a line.',
       needs_backup: 'Every assigned charge has a receipt or a reason.',
       receipts: 'No receipts waiting. Uploads land here until they are matched.',
+      duplicates: 'No charge looks like a repeat of another. Groups appear when the same amount and vendor post twice within a few days.',
       not_project: 'Nothing has been excluded. Mark a charge Not project and it waits here.',
     })[S.view] || 'Nothing here.';
   }
 
   function renderReceipts(rows) {
     if (!rows.length) return `<p class="aw-empty">${emptyText()}</p>`;
-    const selOne = S.sel.size === 1 ? S.byId.get(Array.from(S.sel)[0]) : null;
+    // "Link to selected" needs BOTH a receipt (this row selected) and a
+    // charge: one ticked in the candidate panel, or one selected in
+    // Unclaimed / Assigned before coming here. (Steven, Nov 3: "it says
+    // Link to selected, but there's nowhere to select a charge".)
+    const selCharge = S.pickCharge ? S.byId.get(S.pickCharge) : (S.sel.size === 1 ? S.byId.get(Array.from(S.sel)[0]) : null);
     let html = `<div role="row" class="aw-hrow"><div class="aw-cell"></div><div class="aw-cell">Date</div><div class="aw-cell">Receipt</div>
-      <div class="aw-cell right">Amount</div><div class="aw-cell">Status</div><div class="aw-cell">Actions</div></div>`;
+      <div class="aw-cell right">Amount</div><div class="aw-cell">Match</div><div class="aw-cell">Actions</div></div>`;
     rows.forEach(r => {
       const status = [];
       if (r.conflict) status.push(`<span class="aw-chip solid" title="Claimed by another project"><span>Claimed by ${esc(r.conflict.claimed_by)}</span></span>`);
-      if (r.suggested_charge_id) {
-        const c = S.byId.get(r.suggested_charge_id);
-        status.push(`<button type="button" class="aw-chip info" data-act="goto" data-tid="${r.suggested_charge_id}" title="Open the charge this receipt looks like"><span>Suggested for ${esc(c ? c.vendor : 'a charge')}${c ? ' · ' + money(c.amount) : ''}</span></button>`);
+      const sc = r.suggested_charge;
+      if (sc) {
+        const pct = Math.round((sc.confidence || 0) * 100);
+        status.push(`<span class="aw-match"><span class="aw-chip info${sc.strong ? ' strong' : ''}" title="${esc((sc.reasons || []).join(' · '))}"><span>Matches charge · ${esc(sc.vendor)} · ${esc(shortDate(sc.date))} · ${money(sc.amount)} · ${pct}%</span></span>
+          <button type="button" class="aw-btn sm" data-act="confirm-match" data-tid="${sc.id}" title="Approve the match (M)">Confirm</button>
+          <button type="button" class="aw-btn sm" data-act="dismiss-match" data-tid="${sc.id}" title="Separate them; not suggested again">Not a match</button></span>`);
       }
       if (r.dup_pending) status.push('<span class="aw-flag yellow">Possible duplicate</span>');
       if (!status.length) status.push('<span class="aw-flag none">Waiting</span>');
-      const linkTitle = selOne ? `Link to ${selOne.vendor} ${money(selOne.amount)}` : 'Select one charge in Unclaimed or Assigned first';
-      html += `<div role="row" class="aw-row" data-doc="${r.doc_id}" tabindex="0">
+      const selected = S.selDoc === r.doc_id;
+      const canLink = selected && !!selCharge;
+      const linkTitle = canLink ? `Link to ${selCharge.vendor} ${money(selCharge.amount)}` : 'Select a receipt and a charge';
+      html += `<div role="row" class="aw-row" data-doc="${r.doc_id}" tabindex="0" aria-selected="${selected}" draggable="true">
         <div class="aw-cell" style="padding-right:0"><a href="/docs/upload/${r.doc_id}/raw" target="_blank" rel="noopener" aria-label="Open ${esc(r.name)}"><img class="aw-thumb" src="${esc(r.thumb)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'"></a></div>
         <div class="aw-cell num muted">${esc(shortDate(r.date))}</div>
         <div class="aw-cell" style="flex-direction:column;align-items:flex-start;justify-content:center;gap:1px">
@@ -363,10 +403,10 @@
           <a class="ell muted" style="font-size:11px;max-width:100%" href="/docs/upload/${r.doc_id}/raw" target="_blank" rel="noopener">${esc(r.name)}</a>
         </div>
         <div class="aw-cell num right amt">${r.amount != null ? money(r.amount) : '—'}</div>
-        <div class="aw-cell">${status.join(' ')}</div>
+        <div class="aw-cell" style="overflow:visible">${status.join(' ')}</div>
         <div class="aw-cell" style="gap:6px">
-          <button type="button" class="aw-btn sm" data-act="link-selected" data-doc="${r.doc_id}" ${selOne ? '' : 'disabled'} title="${esc(linkTitle)}">Link to selected</button>
-          <button type="button" class="aw-btn sm primary" data-act="create-expense" data-doc="${r.doc_id}">Create expense</button>
+          <button type="button" class="aw-btn sm${canLink ? ' primary' : ''}" data-act="link-selected" data-doc="${r.doc_id}" ${canLink ? '' : 'disabled'} title="${esc(linkTitle)}">Link to selected</button>
+          <button type="button" class="aw-btn sm" data-act="create-expense" data-doc="${r.doc_id}">Create expense</button>
           <button type="button" class="aw-btn sm danger" data-act="receipt-not-project" data-doc="${r.doc_id}" data-txn="${r.txn_id || ''}">Not project</button>
         </div>
       </div>`;
@@ -520,7 +560,7 @@
     const ts = AW.selectedTxns();
     const tot = AW.selTotal();
     const one = ts.length === 1 ? ts[0] : null;
-    $('aw-selinfo').textContent = `${n} selected · ${money(tot)}` + (one && S.view === 'receipts' ? ` · ${one.vendor}` : '');
+    $('aw-selinfo').textContent = `${n} selected · ${money(tot)}` + (one && S.view === 'receipts' ? ` · ${one.vendor} — now pick a receipt` : '');
     const inReceipts = S.view === 'receipts';
     bar.querySelector('[data-act="split"]').disabled = n !== 1 || (one && AW.isContainer(one) && !(one.splits && one.splits.length));
     bar.querySelector('[data-act="attach"]').disabled = n !== 1 || (one && !!one.receipt);
@@ -566,6 +606,7 @@
   AW.setView = function (v) {
     if (!VIEWS.includes(v)) return;
     S.view = v;
+    if (v !== 'receipts' && S.selDoc) { S.selDoc = null; S.pickCharge = null; if (AW.closePanel) AW.closePanel(true); }
     if (v !== 'assigned') S.lineFilter = null;
     S.lastIdx = null;
     AW.render();
@@ -599,9 +640,13 @@
     if (ghost) { if (AW.actions && AW.actions['accept-suggestion']) AW.actions['accept-suggestion'](ghost, e); return; }
     if (e.target.closest('a')) return;
     const row = e.target.closest('.aw-row[data-tid][data-idx]');
-    if (row) clickRow(row, e);
+    if (row) { clickRow(row, e); return; }
+    const drow = e.target.closest('.aw-row[data-doc]');
+    if (drow && S.view === 'receipts' && AW.selectDoc) AW.selectDoc(+drow.dataset.doc);
   });
   $('aw-table').addEventListener('keydown', e => {
+    const drow = e.target.closest && e.target.closest('.aw-row[data-doc]');
+    if (drow && e.target === drow && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); if (AW.selectDoc) AW.selectDoc(+drow.dataset.doc); return; }
     const row = e.target.closest && e.target.closest('.aw-row[data-tid][data-idx]');
     if (!row || e.target !== row) return;
     if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); clickRow(row, e); }
@@ -618,7 +663,7 @@
     if (AW.actions && AW.actions[b.dataset.act]) AW.actions[b.dataset.act](b, e);
   });
   document.getElementById('aw').addEventListener('click', e => {
-    const b = e.target.closest('.aw-head [data-act]'); if (!b) return;
+    const b = e.target.closest('.aw-head [data-act], .aw-filters [data-act]'); if (!b) return;
     if (AW.actions && AW.actions[b.dataset.act]) AW.actions[b.dataset.act](b, e);
   });
   // Budget pane: click a line → list its transactions; Enter/Space on a
@@ -653,7 +698,24 @@
     const tag = (e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.key === 'Escape') { if (S.sel.size) { AW.clearSelection(); e.preventDefault(); } if (AW.closeMenu) AW.closeMenu(); return; }
+    if (e.key === 'Escape') {
+      if (S.sel.size) { AW.clearSelection(); e.preventDefault(); }
+      else if (AW.panelActive && AW.panelActive()) { AW.closePanel(); e.preventDefault(); }
+      if (AW.closeMenu) AW.closeMenu(); return;
+    }
+    // Phase 5: M approves the selected suggestion (charge side or receipt
+    // side), D opens the selected row's duplicate group.
+    if (e.key === 'm' || e.key === 'M') {
+      let tid = null;
+      if (S.view === 'receipts' && S.selDoc) { const r = S.docById.get(S.selDoc); tid = r && r.suggested_charge_id; }
+      else if (S.sel.size === 1) { const t = S.byId.get(Array.from(S.sel)[0]); tid = t && t.receipt_suggestion ? t.id : null; }
+      if (tid && AW.actions) { e.preventDefault(); AW.actions['confirm-match']({ dataset: { tid: String(tid) } }); }
+      return;
+    }
+    if (e.key === 'd' || e.key === 'D') {
+      if (S.sel.size === 1) { const t = S.byId.get(Array.from(S.sel)[0]); if (t && t.dup_group && AW.openDupGroup) { e.preventDefault(); AW.openDupGroup(t.dup_group); } }
+      return;
+    }
     if (!S.sel.size || S.view === 'receipts' || S.view === 'not_project') return;
     if (e.key === 'a' || e.key === 'A') { e.preventDefault(); if (AW.actions) AW.actions.assign(); }
     if (e.key === 'n' || e.key === 'N') { e.preventDefault(); if (AW.actions) AW.actions['not-project'](); }

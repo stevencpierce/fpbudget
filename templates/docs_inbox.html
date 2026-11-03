@@ -611,13 +611,25 @@
       if (sc && sc.label) {
         var lab = document.createElement('span');
         lab.className = 'inbx-sugg';
-        lab.textContent = sc.label;
+        // Actuals Phase 5: the suggestion reads on the receipt side too —
+        // "Matches charge · <date · vendor · amount> · 88%".
+        lab.textContent = 'Matches charge · ' + sc.label + (sc.confidence != null ? ' · ' + Math.round(sc.confidence * 100) + '%' : '');
+        lab.title = (sc.reasons && sc.reasons.length) ? sc.reasons.join(' · ') : 'Suggested by the matching engine — confirm or reject';
         zone.appendChild(lab);
       }
       var btn = document.createElement('button');
-      btn.type = 'button'; btn.className = 'inbx-btn-match'; btn.textContent = '✓ Match';
+      btn.type = 'button'; btn.className = 'inbx-btn-match'; btn.textContent = '✓ Confirm';
       btn.addEventListener('click', function (e) { e.stopPropagation(); confirmMatch(doc.id); });
       zone.appendChild(btn);
+      if (sc && sc.id) {
+        var nbtn = document.createElement('button');
+        nbtn.type = 'button'; nbtn.className = 'inbx-btn-match'; nbtn.style.background = 'transparent';
+        nbtn.style.border = '1px solid var(--border)'; nbtn.style.color = 'var(--text-muted)';
+        nbtn.textContent = 'Not a match';
+        nbtn.title = 'Separate them; this pair will not be suggested again';
+        nbtn.addEventListener('click', function (e) { e.stopPropagation(); rejectMatch(doc.id, sc.id); });
+        zone.appendChild(nbtn);
+      }
     } else if (doc.state === 'needs_coding') {
       // Deterministic person/PO line suggestion → one-click "✓ Code".
       var sl = doc.txn && doc.txn.suggested_line;
@@ -761,6 +773,24 @@
         toast('Could not confirm match.', 'err');
       }
     }).catch(function () { toast('Network error confirming match.', 'err'); });
+  }
+
+  // Phase 5: "Not a match" on the receipt row — the SAME route the charge
+  // row uses (dismiss-suggestion, remembered in match_rejection).
+  function rejectMatch(docId, tid) {
+    var hdr = { 'Content-Type': 'application/json' };
+    fetch('/projects/' + PID + '/actuals/transaction/' + tid + '/dismiss-suggestion',
+          { method: 'POST', credentials: 'same-origin', headers: hdr, body: JSON.stringify({ remember: true }) })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { toast((res.d && res.d.error) || 'Could not separate them.', 'err'); return; }
+        var doc = ALL.filter(function (x) { return x.id === docId; })[0];
+        if (doc && doc.txn) { doc.txn.suggested_charge = null; }
+        var el = rowEl(docId);
+        if (el) { var zone = el.querySelector('.inbx-zone'); if (zone && doc) fillZone(zone, doc); }
+        toast('Not a match. It will not be suggested again.', 'ok');
+      })
+      .catch(function () { toast('Network error.', 'err'); });
   }
 
   // Single-row deterministic "✓ Code": POST the suggested budget line to the

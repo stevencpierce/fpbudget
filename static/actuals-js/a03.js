@@ -317,11 +317,20 @@
 
   // ── Link an inbox receipt to the selected charge (Receipts view) ─────
   A['link-selected'] = async btn => {
-    const t = selOne('link a receipt to'); if (!t) return;
+    // Phase 5: the charge is the one ticked in the candidate panel, else
+    // the single charge selected in Unclaimed / Assigned.
     const doc = +btn.dataset.doc;
+    const t = S.pickCharge ? S.byId.get(S.pickCharge) : (S.sel.size === 1 ? S.byId.get(Array.from(S.sel)[0]) : null);
+    if (!t) { AW.toast('Select a receipt and a charge: tick a charge in the panel on the right.', 'yellow'); return; }
+    await AW.linkDocToCharge(doc, t.id);
+  };
+  AW.linkDocToCharge = async function (doc, tid) {
+    const t = S.byId.get(tid) || {};
     try {
-      const r = await AW.post(AW.txnUrl(t.id, 'link-doc'), { doc_upload_id: doc });
-      AW.toast(`Receipt linked to ${t.vendor} ${money(t.amount)}`, '', { activityId: r.activity_id });
+      const r = await AW.post(AW.txnUrl(tid, 'link-doc'), { doc_upload_id: doc });
+      AW.toast(`Receipt linked to ${t.vendor || 'the charge'} ${money(t.amount)}`, '', { activityId: r.activity_id });
+      S.pickCharge = null; S.selDoc = null; S.findFor = null;
+      if (AW.closePanel) AW.closePanel(true);
       AW.clearSelection(); await AW.load();
     } catch (e) { AW.toast('Could not link: ' + (e.message || e), 'red'); }
   };
@@ -483,13 +492,15 @@
     items.push({ hr: true });
     if (t.receipt) items.push({ act: 'unmatch', label: 'Unlink the receipt' });
     else {
-      if (t.receipt_suggestion) { items.push({ act: 'confirm-match', label: `Confirm receipt match (${Math.round((t.receipt_suggestion.confidence || 0) * 100)}%)` }); items.push({ act: 'dismiss-match', label: 'Not a match' }); }
+      if (t.receipt_suggestion) { items.push({ act: 'confirm-match', label: `Approve receipt match (${Math.round((t.receipt_suggestion.confidence || 0) * 100)}%)` }); items.push({ act: 'dismiss-match', label: 'Not a match' }); }
+      items.push({ act: 'find-backup', label: 'Find backup' });
       items.push({ act: 'attach', label: 'Attach receipt' });
       items.push({ act: 'add-reason', label: t.no_charge_reason ? 'Edit the missing-backup reason' : 'Add missing-backup reason' });
     }
+    if (t.dup_group) { items.push({ hr: true }); items.push({ act: 'open-dup', label: 'Open the duplicate group', key: t.dup_group }); }
     items.push({ hr: true });
     items.push({ act: 'not-project', label: 'Not a project expense', danger: true });
-    menu.innerHTML = items.map(i => i.hr ? '<hr>' : `<button type="button" role="menuitem" data-act="${i.act}" data-tid="${t.id}" class="${i.danger ? 'danger' : ''}">${esc(i.label)}</button>`).join('');
+    menu.innerHTML = items.map(i => i.hr ? '<hr>' : `<button type="button" role="menuitem" data-act="${i.act}" data-tid="${t.id}" ${i.key ? `data-key="${esc(i.key)}"` : ''} class="${i.danger ? 'danger' : ''}">${esc(i.label)}</button>`).join('');
     const r = btn.getBoundingClientRect();
     menu.style.top = Math.min(window.innerHeight - 320, r.bottom + 4) + 'px';
     menu.style.left = Math.max(8, r.right - 220) + 'px';
@@ -498,7 +509,7 @@
   };
   menu.addEventListener('click', e => {
     const b = e.target.closest('[data-act]'); if (!b) return;
-    const act = b.dataset.act; const fake = { dataset: { tid: b.dataset.tid } };
+    const act = b.dataset.act; const fake = { dataset: { tid: b.dataset.tid, key: b.dataset.key } };
     AW.closeMenu();
     if (A[act]) A[act](fake, e);
   });
@@ -521,7 +532,8 @@
     b.disabled = true; b.textContent = 'Syncing';
     try {
       const r = await AW.post(`/projects/${PID}/actuals/sync-now`, body);
-      AW.toast(`QuickBooks sync: +${r.imported || 0} new, ${r.enriched || 0} enriched, ${r.reconciled || 0} matched to receipts, ${r.cdc_additions || 0} via change capture`, '');
+      AW.toast(`QuickBooks sync: +${r.imported || 0} new, ${r.enriched || 0} enriched, ${r.match_suggestions || 0} receipt matches suggested, ${r.cdc_additions || 0} via change capture`
+        + (r.qbo_deleted ? `, ${r.qbo_deleted} removed (deleted in QuickBooks)` : '') + (r.qbo_voided ? `, ${r.qbo_voided} flagged voided — see Duplicates` : ''), '');
       await AW.load();
     } catch (e) {
       AW.toast('Sync failed: ' + (e.message || e), 'red');
