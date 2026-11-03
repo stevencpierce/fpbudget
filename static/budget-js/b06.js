@@ -5,83 +5,22 @@
 (function() {
   const _pid = window.__BJ["b06__pid"];
   const _bid = window.__BJ["b06__bid"];
-  // _ctxLineId and _ctxLineRow are declared globally so allInRecalc/allInApply can access them
-
-  const menu = document.getElementById('budget-row-ctx-menu');
-
-  function _showCtxMenuAt(row, x, y) {
-    _ctxLineId  = parseInt(row.dataset.id);
+  // _ctxLineId and _ctxLineRow are declared globally (b08.js) so
+  // allInRecalc / allInApply / applyKitFee can read the targeted row.
+  //
+  // The labor right-click menu that lived here (Add Kit Fee / Agent Fee /
+  // Custom Fee / Discussion + the Insert / Duplicate / Move parity items)
+  // is gone (2026-11-03): every row action now sits in the ONE row menu
+  // (#line-row-menu, b12.js), which shows the fee items on labor rows
+  // only. The fee modals stay here; b12 opens them through
+  // window.openFeeModalFor / window.openAgentFeeModalFor.
+  function _targetRow(lineId) {
+    const row = document.querySelector(`.line-row[data-id="${lineId}"]`);
+    if (!row) return false;
+    _ctxLineId  = parseInt(lineId);
     _ctxLineRow = row;
-    // Change Group… only applies to role-grouped sections (2000), matching
-    // the non-labor menu.
-    const _cgBtn = document.getElementById('ctx-labor-change-group');
-    if (_cgBtn) _cgBtn.style.display = (parseInt(row.dataset.code || '0') === 2000) ? '' : 'none';
-    menu.style.visibility = 'hidden';
-    menu.style.left = '0px';
-    menu.style.top  = '0px';
-    menu.classList.remove('hidden');
-    requestAnimationFrame(() => {
-      const mw = menu.offsetWidth, mh = menu.offsetHeight;
-      menu.style.left = Math.max(4, Math.min(x + 4, window.innerWidth  - mw - 12)) + 'px';
-      menu.style.top  = Math.max(4, Math.min(y + 4, window.innerHeight - mh - 12)) + 'px';
-      menu.style.visibility = '';
-    });
+    return true;
   }
-
-  // Right-click on any labor row opens the context menu
-  document.addEventListener('contextmenu', function(e) {
-    const row = e.target.closest('.labor-line');
-    if (!row) { menu.classList.add('hidden'); return; }
-    e.preventDefault();
-    _showCtxMenuAt(row, e.clientX, e.clientY);
-  });
-
-  // Insert / Spacer / Sub-header / Move / Duplicate parity with non-labor
-  // rows. These reuse the shared window.lineInsert/lineDuplicate/move
-  // helpers (which the ⋮ button already drives on labor rows); we just
-  // point them at the right-clicked row first. 2026-05-20.
-  menu.querySelectorAll('.labor-rowop').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      menu.classList.add('hidden');
-      if (!_ctxLineId) return;
-      const code = _ctxLineRow ? (_ctxLineRow.dataset.code || '') : '';
-      if (window._setLineMenuTarget) window._setLineMenuTarget(_ctxLineId, code);
-      switch (this.dataset.op) {
-        case 'insert-above':  window.lineInsert('above'); break;
-        case 'insert-below':  window.lineInsert('below'); break;
-        case 'duplicate':     window.lineDuplicate(); break;
-        case 'spacer-above':  window.lineInsert('above', 'spacer'); break;
-        case 'spacer-below':  window.lineInsert('below', 'spacer'); break;
-        case 'header-above':  window.lineInsert('above', 'header'); break;
-        case 'header-below':  window.lineInsert('below', 'header'); break;
-        case 'move':          window.openLineMoveModal(); break;
-        case 'change-group':  window.openChangeGroupModal(); break;
-      }
-    });
-  });
-
-  // Long-press (500ms) on touch devices — triggers context menu without right-click
-  let _lpTimer = null, _lpRow = null, _lpX = 0, _lpY = 0;
-  document.addEventListener('touchstart', function(e) {
-    const row = e.target.closest('.labor-line');
-    if (!row || e.target.closest('.editable') || e.target.closest('select')) return;
-    const t = e.touches[0];
-    _lpX = t.clientX; _lpY = t.clientY; _lpRow = row;
-    _lpTimer = setTimeout(() => {
-      if (_lpRow) {
-        _showCtxMenuAt(_lpRow, _lpX, _lpY);
-      }
-    }, 500);
-  }, { passive: true });
-  document.addEventListener('touchend',   () => { clearTimeout(_lpTimer); _lpTimer = null; });
-  document.addEventListener('touchmove',  () => { clearTimeout(_lpTimer); _lpTimer = null; });
-
-  // Close on outside click
-  document.addEventListener('click', function(e) {
-    if (!e.target.closest('#budget-row-ctx-menu')) {
-      menu.classList.add('hidden');
-    }
-  });
 
   // Add Kit Fee / Custom Fee — one centered modal, two flavors (owner
   // 2026-09-01: "right click as we do for a kit fee… wardrobe fees…
@@ -89,7 +28,6 @@
   // right line_tag + default description.
   let _kitFeeTag = 'kit_fee';
   function _openFeeModal(tag) {
-    menu.classList.add('hidden');
     if (!_ctxLineId || !_ctxLineRow) return;
     _kitFeeTag = tag;
     const isKit = tag === 'kit_fee';
@@ -113,25 +51,17 @@
     document.getElementById('kit-fee-modal').classList.remove('hidden');
     setTimeout(() => document.getElementById('kit-fee-rate').focus(), 50);
   }
-  document.getElementById('ctx-add-kit-fee').addEventListener('click', () => _openFeeModal('kit_fee'));
-  const _customFeeBtn = document.getElementById('ctx-add-custom-fee');
-  if (_customFeeBtn) _customFeeBtn.addEventListener('click', () => _openFeeModal('custom_fee'));
-
-  // 🚩 Discussion note on labor rows (owner 2026-09-10).
-  const _discBtn = document.getElementById('ctx-discussion-note');
-  if (_discBtn) _discBtn.addEventListener('click', function() {
-    menu.classList.add('hidden');
-    if (!_ctxLineId) return;
-    if (typeof window.editDiscussionNote === 'function') window.editDiscussionNote(_ctxLineId);
-  });
+  // Row menu → Fees → Add Kit Fee / Add Custom Fee (tag = kit_fee | custom_fee).
+  window.openFeeModalFor = function(lineId, tag) {
+    if (!_targetRow(lineId)) return;
+    _openFeeModal(tag || 'kit_fee');
+  };
 
   // Agent / Rep fee (owner 2026-09-01): usually a % of the pre-tax/fringe
   // subtotal (rides the line's agent_pct so it tracks rate changes live),
   // or a flat child line when they're paid an odd fixed amount.
-  const _agentFeeBtn = document.getElementById('ctx-add-agent-fee');
-  if (_agentFeeBtn) _agentFeeBtn.addEventListener('click', function() {
-    menu.classList.add('hidden');
-    if (!_ctxLineId || !_ctxLineRow) return;
+  window.openAgentFeeModalFor = function(lineId) {
+    if (!_targetRow(lineId)) return;
     window._agentFeeLineId = _ctxLineId;
     const parentDesc = (_ctxLineRow.querySelector('.editable[data-field="description"]')?.textContent || '').trim();
     const sub = document.getElementById('agent-fee-modal-subtitle');
@@ -149,7 +79,7 @@
     if (typeof window._agentFeePreview === 'function') window._agentFeePreview();
     document.getElementById('agent-fee-modal').classList.remove('hidden');
     setTimeout(() => document.getElementById('agent-fee-pct').focus(), 50);
-  });
+  };
 
   window._agentFeePreview = function() {
     const el = document.getElementById('agent-fee-preview');
@@ -277,7 +207,7 @@
   // re-enabling is a one-line template change.
   const _allInBtn = document.getElementById('ctx-all-in-total');
   if (_allInBtn) _allInBtn.addEventListener('click', function() {
-    menu.classList.add('hidden');
+    if (typeof window._closeLineMenus === 'function') window._closeLineMenus(false);
     if (!_ctxLineId || !_ctxLineRow) return;
     // Reset modal
     document.getElementById('all-in-amount').value = '';

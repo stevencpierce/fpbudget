@@ -1401,6 +1401,37 @@
           <td class="col-rowact"></td>
         </tr>
   {%- endmacro %}
+  {# ── Row menu button + internal-note dot (the ONE row menu, 2026-11-03) ──
+     Every row kind renders the same "⋯" button; b12.js shows / hides the
+     menu's items by data-kind. kind: line | header | spacer | section.
+     For a section header, `lid` is the section's first row (the reference
+     for "insert at top" / "duplicate section") and may be none. #}
+  {% macro _row_menu_btn(kind, lid, code, label, has_lever=false, has_po=false, sec_name='') -%}
+    <button type="button" class="line-act-btn line-row-menu-btn" data-id="{{ lid or '' }}" data-code="{{ code }}" data-kind="{{ kind }}"
+            {% if kind == 'line' %}data-has-lever="{{ '1' if has_lever else '0' }}" data-has-po="{{ '1' if has_po else '0' }}"{% endif %}
+            {% if sec_name %}data-sec-name="{{ sec_name | e }}"{% endif %}
+            aria-label="{{ label }}" aria-haspopup="menu" aria-expanded="false" title="{{ label }}"
+            onclick="openLineRowMenu(this)"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg></button>
+  {%- endmacro %}
+  {# The internal-note lock-dot + hover card. Rendered for lines, sub-headers
+     and spacers (all BudgetLine rows — one note store, BudgetComment). Hidden
+     (.line-note-empty) until the row has a note; the ⋯ → Note → Internal
+     note item is how a note gets added from the far right. #}
+  {% macro _note_dot(ln, label) -%}
+    {% set _cm_latest = comment_latest.get(ln.id) %}
+    <span class="line-note-wrap {% if not comment_counts.get(ln.id) %}line-note-empty{% endif %}" data-line-id="{{ ln.id }}">
+      <button type="button" class="line-note-dot" aria-label="Internal note on this {{ label }}" aria-describedby="line-note-{{ ln.id }}"
+              onclick='openComments({{ ln.id }}, {{ ((ln.description or ln.account_name or label) | truncate(40)) | tojson }})'>
+        <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+      </button>
+      {% if _cm_latest %}
+      <div id="line-note-{{ ln.id }}" role="tooltip" class="line-note-card">
+        <span class="line-note-card-head">Internal note <span class="line-note-card-meta">· {{ _cm_latest.who }}{% if _cm_latest.when %} · {{ _cm_latest.when | in_tz(budget.timezone, '%b %-d') }}{% endif %}{% if comment_counts.get(ln.id, 0) > 1 %} · {{ comment_counts.get(ln.id) }} notes{% endif %}</span></span>
+        <span class="line-note-card-body">{{ _cm_latest.body }}</span>
+      </div>
+      {% endif %}
+    </span>
+  {%- endmacro %}
   <div id="working-budget-wrap">
   {% for sec in sections %}
   {% set ns = namespace(sec_subtotal=0, sec_ot=0, sec_fringe=0, sec_total=0, has_labor=false, has_agent_or_disc=false, line_counter=0, kit_total=0, kit_working=0, sec_agent=0, sec_disc=0, prev_sub_group=None) %}
@@ -1518,6 +1549,11 @@
       {% endif %}
       <button class="btn btn-xs btn-ghost add-line-btn"
               onclick="addLineInSection({{ sec.code }}, '{{ sec.name }}')">+ Line</button>
+      {# The section's row menu (Add at top / Duplicate section). Its
+         reference row is the section's first editable row. #}
+      {% set _sec_first_ns = namespace(id=none) %}
+      {% for _fl in sec.lines if _sec_first_ns.id is none and _fl.line_tag not in ('fringe_rollup', 'auto_calc') %}{% set _sec_first_ns.id = _fl.id %}{% endfor %}
+      {{ _row_menu_btn('section', _sec_first_ns.id, sec.code, 'Section menu', sec_name=sec.name) }}
       <span class="section-total-badge">{{ (ns.sec_total + _sec_fee_add) | currency }}</span>
     </div>
     <table class="data-table line-table {{ 'has-labor' if ns.has_labor else 'no-labor' }} {{ 'has-working' if working_exists else '' }}">
@@ -1655,12 +1691,12 @@
                          color:var(--text-muted);opacity:.35;font-size:.75rem;cursor:grab;
                          padding:2px 4px;user-select:none">⋮⋮</span>
             <div style="height:14px;border-top:1px dashed var(--border);margin:0 32px"></div>
+            <span style="position:absolute;left:30px;top:50%;transform:translateY(-50%);line-height:0">{{ _note_dot(ln, 'spacer') }}</span>
           </td>
           <td class="col-act" style="padding:0"></td>
           <td class="col-rowact" style="padding:0">
             <span class="line-actions" role="group" aria-label="Actions for this spacer">
-              <button type="button" class="line-act-btn line-add-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" aria-label="Add below" aria-haspopup="menu" title="Add below" onclick="openLineAddMenu(this)"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg></button>
-              <button type="button" class="line-act-btn line-row-menu-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-kind="spacer" aria-label="Spacer menu" aria-haspopup="menu" title="Spacer menu" onclick="openLineRowMenu(this)"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg></button>
+              {{ _row_menu_btn('spacer', ln.id, ln.account_code, 'Spacer menu') }}
             </span>
           </td>
         </tr>
@@ -1695,6 +1731,7 @@
                          letter-spacing:.04em;text-transform:uppercase;
                          color:{{ _h_color or 'var(--accent)' }};
                          min-width:200px;display:inline-block">{{ ln.description or '' }}</span>
+            {{ _note_dot(ln, 'sub-header') }}
             <span class="header-format-toolbar" style="margin-left:14px;display:inline-flex;gap:2px;vertical-align:middle">
               <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="bold" data-id="{{ ln.id }}"
                       title="Bold" style="padding:1px 7px;font-weight:700;{% if _h_bold %}background:rgba(91,138,249,.18){% endif %}">B</button>
@@ -1723,8 +1760,7 @@
           <td class="col-act"></td>
           <td class="col-rowact">
             <span class="line-actions" role="group" aria-label="Actions for this sub-header">
-              <button type="button" class="line-act-btn line-add-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" aria-label="Add below" aria-haspopup="menu" title="Add below" onclick="openLineAddMenu(this)"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg></button>
-              <button type="button" class="line-act-btn line-row-menu-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-kind="header" aria-label="Sub-header menu" aria-haspopup="menu" title="Sub-header menu" onclick="openLineRowMenu(this)"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg></button>
+              {{ _row_menu_btn('header', ln.id, ln.account_code, 'Sub-header menu') }}
             </span>
           </td>
         </tr>
@@ -1809,19 +1845,7 @@
                   title="A lever is built on this line — open Assumptions to edit it">
               <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path></svg>Lever</span>
             {% endif %}
-            {% set _cm_latest = comment_latest.get(ln.id) %}
-            <span class="line-note-wrap {% if not comment_counts.get(ln.id) %}line-note-empty{% endif %}" data-line-id="{{ ln.id }}">
-              <button type="button" class="line-note-dot" aria-label="Internal note on this line" aria-describedby="line-note-{{ ln.id }}"
-                      onclick='openComments({{ ln.id }}, {{ ((ln.description or ln.account_name or "line") | truncate(40)) | tojson }})'>
-                <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-              </button>
-              {% if _cm_latest %}
-              <div id="line-note-{{ ln.id }}" role="tooltip" class="line-note-card">
-                <span class="line-note-card-head">Internal note <span class="line-note-card-meta">· {{ _cm_latest.who }}{% if _cm_latest.when %} · {{ _cm_latest.when | in_tz(budget.timezone, '%b %-d') }}{% endif %}{% if comment_counts.get(ln.id, 0) > 1 %} · {{ comment_counts.get(ln.id) }} notes{% endif %}</span></span>
-                <span class="line-note-card-body">{{ _cm_latest.body }}</span>
-              </div>
-              {% endif %}
-            </span>
+            {{ _note_dot(ln, 'line') }}
             {% if ln.discussion_note %}
             <div class="discussion-note-text" style="font-size:.72rem;margin-top:.1rem;color:#fbbf24;font-style:italic">
               🗣 {{ ln.discussion_note }}
@@ -2435,23 +2459,11 @@
             {% endif %}
           </td>
           <td class="col-rowact">
-            {# Row actions (LineActions artboard, Cleanup C): revealed on
-               hover / focus-within. "+" adds below (line / sub-header /
-               spacer / duplicate); "⋯" holds Flag, Note and Line actions.
-               The old always-visible "+ PO 💬 ⋮ ✕" cluster is gone. The cell
-               sticks to the right edge so the buttons never scroll away. #}
+            {# Row actions: ONE "⋯" button → the one row menu (Add / Fees /
+               Flag / Note / Line), revealed on hover / focus-within. The cell
+               sticks to the right edge so the button never scrolls away. #}
             <span class="line-actions" role="group" aria-label="Actions for {{ (ln.description or ln.account_name or 'this line') | e }}">
-              <button type="button" class="line-act-btn line-add-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
-                      aria-label="Add below this line" aria-haspopup="menu" aria-expanded="false" title="Add below"
-                      onclick="openLineAddMenu(this)">
-                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
-              </button>
-              <button type="button" class="line-act-btn line-row-menu-btn" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
-                      data-has-lever="{{ '1' if ln.id in lever_line_ids else '0' }}" data-has-po="{{ '1' if _po is defined and _po else '0' }}"
-                      aria-label="Line menu" aria-haspopup="menu" aria-expanded="false" title="Line menu"
-                      onclick="openLineRowMenu(this)">
-                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg>
-              </button>
+              {{ _row_menu_btn('line', ln.id, ln.account_code, 'Line menu', has_lever=(ln.id in lever_line_ids), has_po=(_po is defined and _po)) }}
             </span>
           </td>
         </tr>
@@ -8675,30 +8687,19 @@ async function _cmLoad() {
     _cmSyncButton(cs.length);
   } catch (e) { list.innerHTML = '<div style="color:#e0a13a">Could not load comments.</div>'; }
 }
-// Keep the row's 💬 chip live: amber + count while the line has notes,
-// dimmed when the last one is deleted. (2026-09-16.)
+// Keep the row's note dot live: shown while the line has notes, hidden
+// when the last one is deleted. Works for lines, sub-headers and spacers
+// (the same .line-note-wrap). The hover card refreshes on the next load.
 function _cmSyncButton(n) {
   if (!_cmLineId) return;
   const row = document.querySelector(`.line-row[data-id="${_cmLineId}"]`);
-  const btn = row && row.querySelector('.line-comments-btn');
-  if (!btn) return;
-  btn.classList.toggle('has-notes', n > 0);
-  btn.style.opacity = n > 0 ? '1' : '.4';
-  btn.title = n > 0
-    ? `${n} internal note${n !== 1 ? 's' : ''} on this line — click to read`
-    : 'Add an internal note to this line';
-  let cnt = btn.querySelector('.cm-count');
-  if (n > 0) {
-    if (!cnt) {
-      cnt = document.createElement('span');
-      cnt.className = 'cm-count';
-      cnt.style.cssText = 'font-size:.66rem;font-weight:700;color:#fbbf24;margin-left:2px';
-      btn.appendChild(cnt);
-    }
-    cnt.textContent = n;
-  } else if (cnt) {
-    cnt.remove();
-  }
+  const wrap = row && row.querySelector('.line-note-wrap');
+  if (!wrap) return;
+  wrap.classList.toggle('line-note-empty', !(n > 0));
+  const dot = wrap.querySelector('.line-note-dot');
+  if (dot) dot.title = n > 0
+    ? `${n} internal note${n !== 1 ? 's' : ''} — click to read`
+    : 'Add an internal note';
 }
 function openComments(lineId, label) {
   _cmLineId = lineId;
@@ -8740,7 +8741,7 @@ document.addEventListener('click', e => {
   const pop = document.getElementById('comments-popup');
   if (pop && !pop.classList.contains('hidden')
       && !e.target.closest('#comments-popup')
-      && !e.target.closest('.line-comments-btn, .notes-btn, .line-note-dot, #line-row-menu')) closeComments();
+      && !e.target.closest('.notes-btn, .line-note-dot, #line-row-menu, .line-row-menu-btn')) closeComments();
 });
 
 // ── Pull-in from another version (2026-07-22) ────────────────────────────
@@ -9178,72 +9179,62 @@ async function _saveSettingsInner() {
   </div>
 </div>
 
-<!-- ── Budget Row Context Menu (right-click on labor rows) ─────────────────── -->
-<div id="budget-row-ctx-menu" class="budget-ctx-menu hidden">
-  <button type="button" class="ctx-menu-item" id="ctx-add-kit-fee">🔧 Add Kit Fee</button>
-  <button type="button" class="ctx-menu-item" id="ctx-add-agent-fee">💼 Add Agent / Rep Fee</button>
-  <button type="button" class="ctx-menu-item" id="ctx-add-custom-fee">👔 Add Custom Fee…</button>
-  <button type="button" class="ctx-menu-item" id="ctx-discussion-note">🚩 Discussion note…</button>
-  {# All-in Total PAUSED (owner 2026-09-01: "not fully vetted — remove until
-     we're ready"). Modal + JS stay dormant; restore by re-adding:
-     <button type="button" class="ctx-menu-item" id="ctx-all-in-total">💰 Enter All-in Total</button> #}
-  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
-  <button type="button" class="ctx-menu-item labor-rowop" data-op="insert-above">Insert Row Above</button>
-  <button type="button" class="ctx-menu-item labor-rowop" data-op="insert-below">Insert Row Below</button>
-  <button type="button" class="ctx-menu-item labor-rowop" data-op="duplicate">Duplicate Row</button>
-  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
-  <button type="button" class="ctx-menu-item labor-rowop" data-op="spacer-above">Insert Spacer Above</button>
-  <button type="button" class="ctx-menu-item labor-rowop" data-op="spacer-below">Insert Spacer Below</button>
-  <button type="button" class="ctx-menu-item labor-rowop" data-op="header-above">Insert Sub-header Above</button>
-  <button type="button" class="ctx-menu-item labor-rowop" data-op="header-below">Insert Sub-header Below</button>
-  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
-  <button type="button" class="ctx-menu-item labor-rowop" data-op="move">Move to…</button>
-  <button type="button" class="ctx-menu-item labor-rowop" data-op="change-group" id="ctx-labor-change-group" style="display:none">Change Group…</button>
-</div>
-
-<!-- ── Schedule-driven Line Context Menu (right-click on auto-managed lines) ── -->
-<div id="sync-line-ctx-menu" class="budget-ctx-menu hidden">
-  <button type="button" class="ctx-menu-item" id="ctx-toggle-sync-omit"></button>
-</div>
-
-<!-- ── Row "+" menu: add below this line (LineActions artboard) ─────────── -->
-<div id="line-add-menu" class="line-row-menu hidden" role="menu" aria-label="Add">
-  <button type="button" role="menuitem" onclick="lineInsert('below')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h9M19 15v6M16 18h6"></path></svg>Line below</button>
-  <button type="button" role="menuitem" onclick="lineInsert('below', 'header')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"></path></svg>Sub-header</button>
-  <button type="button" role="menuitem" onclick="lineInsert('below', 'spacer')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18M3 19h18M4 12h2M9 12h2M14 12h2M19 12h1"></path></svg>Spacer</button>
-  <button type="button" role="menuitem" class="line-menu-line-only" onclick="lineDuplicate()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>Duplicate line</button>
-</div>
-
-<!-- ── Row "⋯" menu: Flag / Note / Line (LineActions artboard) ─────────── -->
-<div id="line-row-menu" class="line-row-menu line-row-menu-wide hidden" role="menu" aria-label="Line menu">
-  <div class="line-menu-group line-menu-line-only">
+<!-- ── The ONE row menu (2026-11-03): every row kind, one "⋯", one menu ──────
+     Items show / hide by row kind (b12.js _applyKind): .line-menu-line-only,
+     .line-menu-has-line, .line-menu-section-only, .line-menu-header-only,
+     .line-menu-labor-only, .line-menu-sync-only; .line-menu-needs-row hides
+     when a section has no rows yet. Viewers get the Note group only — the
+     server refuses their writes anyway (Cleanup A). -->
+{% set _rm_can_write = (proj_role != 'viewer') %}
+<div id="line-row-menu" class="line-row-menu line-row-menu-wide hidden" role="menu" aria-label="Row menu" data-kind="line">
+  {% if _rm_can_write %}
+  <div class="line-menu-group">
+    <div class="line-menu-label">Add</div>
+    <button type="button" role="menuitem" class="line-menu-section-only" onclick="addLineMenuSection()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h9M19 15v6M16 18h6"></path></svg>Line…</button>
+    <button type="button" role="menuitem" class="line-menu-has-line" onclick="lineInsert('above')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18h18M3 12h18M3 6h9M19 3v6M16 6h6"></path></svg>Line above</button>
+    <button type="button" role="menuitem" class="line-menu-has-line" onclick="lineInsert('below')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h9M19 15v6M16 18h6"></path></svg>Line below</button>
+    <button type="button" role="menuitem" class="line-menu-needs-row" onclick="lineInsert('below', 'header')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"></path></svg><span class="line-menu-two"><span>Sub-header</span><span class="line-menu-sub line-menu-section-only">At the top of the section</span></span></button>
+    <button type="button" role="menuitem" class="line-menu-needs-row" onclick="lineInsert('below', 'spacer')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18M3 19h18M4 12h2M9 12h2M14 12h2M19 12h1"></path></svg><span class="line-menu-two"><span>Spacer</span><span class="line-menu-sub line-menu-section-only">At the top of the section</span></span></button>
+    <button type="button" role="menuitem" class="line-menu-needs-row" id="line-menu-dup-btn" onclick="lineDuplicate()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><span class="line-menu-two"><span id="line-menu-dup-label">Duplicate line</span><span class="line-menu-sub line-menu-header-only">Copies the lines under it, names kept</span><span class="line-menu-sub line-menu-section-only">Every row, appended at the end of the section</span></span></button>
+  </div>
+  <div class="line-menu-group">
+    <div class="line-menu-label">Fees</div>
+    <button type="button" role="menuitem" class="line-menu-labor-only" onclick="feeMenuLine('kit_fee')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>Add kit fee…</button>
+    <button type="button" role="menuitem" class="line-menu-labor-only" onclick="feeMenuLine('agent_fee')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-4V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v3H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zM10 4h4v3h-4z"></path></svg>Add agent / rep fee…</button>
+    <button type="button" role="menuitem" class="line-menu-labor-only" onclick="feeMenuLine('custom_fee')"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>Add custom fee…</button>
+  </div>
+  <div class="line-menu-group">
     <div class="line-menu-label">Flag</div>
-    <button type="button" role="menuitem" onclick="discussionNoteMenuLine()">
+    <button type="button" role="menuitem" class="line-menu-line-only" onclick="discussionNoteMenuLine()">
       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9fb8ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
       <span class="line-menu-two"><span>Discussion point</span><span class="line-menu-sub">Shows in Assumptions and the client deck</span></span>
     </button>
-    <button type="button" role="menuitem" id="line-menu-lever-btn" onclick="leverMenuLine()">
+    <button type="button" role="menuitem" class="line-menu-line-only" id="line-menu-lever-btn" onclick="leverMenuLine()">
       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f3a35a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path></svg>
       <span class="line-menu-two"><span>Lever</span><span class="line-menu-sub">A cost the client can choose</span></span>
     </button>
   </div>
-  <div class="line-menu-group line-menu-line-only">
+  {% endif %}
+  <div class="line-menu-group">
     <div class="line-menu-label">Note</div>
-    <button type="button" role="menuitem" onclick="noteMenuLine()">
+    <button type="button" role="menuitem" class="line-menu-has-line" onclick="noteMenuLine()">
       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
       <span class="line-menu-two"><span>Internal note</span><span class="line-menu-sub">Never leaves FPBudget</span></span>
     </button>
   </div>
+  {% if _rm_can_write %}
   <div class="line-menu-group">
     <div class="line-menu-label">Line</div>
     <button type="button" role="menuitem" class="line-menu-line-only" onclick="attachPoMenuLine()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg><span id="line-menu-po-label">Attach PO</span></button>
     {% if sub_budgets_for_project %}
     <button type="button" role="menuitem" class="line-menu-line-only" onclick="subBudgetMenuLine()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><path d="M17 14v7M14 17h7"></path></svg>Add to sub-budget…</button>
     {% endif %}
-    <button type="button" role="menuitem" onclick="openLineMoveModal()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"></path></svg>Move to section…</button>
-    <button type="button" role="menuitem" id="line-menu-change-group-btn" onclick="openChangeGroupModal()" style="display:none">Change group…</button>
-    <button type="button" role="menuitem" class="line-menu-danger" onclick="deleteMenuLine()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"></path></svg>Delete line</button>
+    <button type="button" role="menuitem" class="line-menu-has-line" onclick="openLineMoveModal()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"></path></svg>Move to section…</button>
+    <button type="button" role="menuitem" class="line-menu-line-only" id="line-menu-change-group-btn" onclick="openChangeGroupModal()" style="display:none">Change group…</button>
+    <button type="button" role="menuitem" class="line-menu-sync-only" onclick="syncOmitMenuLine()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 4.9l14.2 14.2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z"></path></svg><span id="line-menu-sync-label">Omit from auto-calc</span></button>
+    <button type="button" role="menuitem" class="line-menu-has-line line-menu-danger" onclick="deleteMenuLine()"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"></path></svg><span id="line-menu-delete-label">Delete line</span></button>
   </div>
+  {% endif %}
 </div>
 
 <!-- ── Change Group Modal (section 2000 role_group picker) ─────────────────── -->
@@ -9417,9 +9408,9 @@ async function _saveSettingsInner() {
 <div id="line-duplicate-confirm-modal" class="modal hidden">
   <div class="modal-overlay" onclick="window._lineDupResolve && window._lineDupResolve(null)"></div>
   <div class="modal-box" style="min-width:420px;max-width:520px">
-    <h2 style="margin-bottom:6px">Duplicate Line</h2>
+    <h2 id="line-duplicate-confirm-title" style="margin-bottom:6px">Duplicate Line</h2>
     <p style="font-size:.9rem;margin:0 0 6px 0">
-      Also duplicate the <strong>schedule days</strong> associated with this line?
+      Also duplicate the <strong>schedule days</strong> associated with the copied line(s)?
     </p>
     <p class="muted" style="font-size:.78rem;margin:0 0 16px 0">
       Choose <strong>Yes</strong> to copy the line and its schedule days.

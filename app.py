@@ -10263,100 +10263,146 @@ def line_insert(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/duplicate", methods=["POST"])
 @login_required
 def line_duplicate(pid, bid, lid):
-    """Duplicate a budget line, placing the new row directly below the source.
+    """Duplicate a line, a sub-header block, or a whole section (one
+    endpoint, body `scope`: line | block | section — the row menu, 2026-11-03).
 
-    Copies all value fields (rate/days/fringe/agent/schedule config/etc.) but
-    CLEARS individual assignment (assigned_crew_id=NULL, no CrewAssignment
-    rows). The source line's ScheduleDay rows are copied only when the
-    caller sets duplicate_schedule=true in the POST body (default). When
-    false, the duplicate starts with no schedule days — the user can build
-    a fresh schedule for it.
+      line     — the source row; the copy lands directly below it.
+      block    — the source must be a sub-header (line_tag='header'): the
+                 header AND every row under it down to the next sub-header /
+                 spacer / end of section; the copies land directly below the
+                 block, in order, names kept.
+      section  — every row of the source's account section (sub-headers,
+                 lines, spacers, kit-fee children), appended at the end of
+                 that section. Computed rows (fringe_rollup / auto_calc) are
+                 managed by the calc and are never copied.
+
+    Every copy keeps its value fields (rate/days/fringe/agent/schedule config)
+    and its INTERNAL NOTES (BudgetComment rows on the line) but CLEARS the
+    individual assignment (assigned_crew_id=NULL, no CrewAssignment rows),
+    the discussion flag and any lever (levers reference the original line
+    only), and the frozen cross-version snapshots. Kit-fee children copied
+    with their parent follow the copied parent. ScheduleDay rows are copied
+    only when `duplicate_schedule` is true (default). One transaction: any
+    failure rolls back every row.
     """
-    from models import ScheduleDay
+    from models import ScheduleDay, BudgetComment
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     src = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
 
     _req_body = request.get_json(silent=True) or {}
     # Default true for backward compat with callers that don't pass the flag.
     duplicate_schedule = bool(_req_body.get("duplicate_schedule", True))
+    scope = (_req_body.get("scope") or "line").lower()
+    if scope not in ("line", "block", "section"):
+        return jsonify({"error": "scope must be line, block or section"}), 400
+    if scope == "block" and src.line_tag != "header":
+        return jsonify({"error": "Only a sub-header can be duplicated as a block."}), 400
+
+    # The section's rows in DISPLAY order — (account_code, sort_order, id),
+    # the order budget_view renders. "Section" is the COA section the grid
+    # groups by (section_for_code — the ONE rule), so a legacy budget whose
+    # lines carry sub-codes (2601, 2602 …) still copies and re-seats the
+    # whole 2600 block the way the page shows it.
+    _sec = _section_for_code(src.account_code, _FIRST_SECTION)
+    section_lines = [
+        ln for ln in BudgetLine.query.filter_by(budget_id=bid)
+        .order_by(BudgetLine.account_code, BudgetLine.sort_order, BudgetLine.id).all()
+        if _section_for_code(ln.account_code, _FIRST_SECTION) == _sec]
+    src_idx = next((i for i, ln in enumerate(section_lines) if ln.id == src.id), 0)
+    _managed = ('fringe_rollup', 'auto_calc')
+
+    if scope == "line":
+        sources = [src]
+        insert_at = src_idx + 1
+    elif scope == "block":
+        sources = [src]
+        for ln in section_lines[src_idx + 1:]:
+            if ln.line_tag in ('header', 'spacer'):
+                break
+            if ln.line_tag in _managed:
+                continue
+            sources.append(ln)
+        # A managed row inside the block is skipped but still sits in the
+        # section order — the copies go after the LAST source row.
+        last_src_idx = max(i for i, ln in enumerate(section_lines) if ln in sources)
+        insert_at = last_src_idx + 1
+    else:
+        sources = [ln for ln in section_lines if ln.line_tag not in _managed]
+        insert_at = len(section_lines)
+    if not sources:
+        return jsonify({"error": "Nothing to duplicate."}), 400
 
     try:
-        # Build the new row with every value field copied from src, but with
-        # assigned_crew_id cleared and a fresh sort_order (placed just after src).
-        new_ln = BudgetLine(
-            budget_id        = src.budget_id,
-            account_code     = src.account_code,
-            account_name     = src.account_name,
-            description      = src.description,
-            is_labor         = src.is_labor,
-            estimated_total  = src.estimated_total,
-            payroll_co       = src.payroll_co,
-            quantity         = src.quantity,
-            days             = src.days,
-            rate             = src.rate,
-            rate_type        = src.rate_type,
-            est_ot           = src.est_ot,
-            fringe_type      = src.fringe_type,
-            agent_pct        = src.agent_pct,
-            note             = src.note,
-            # When the user says "no" to duplicating the schedule, the new
-            # row should land in plain estimated mode — not the blue/italic
-            # schedule-driven look. Forcing use_schedule=False here mirrors
-            # the empty ScheduleDay set we're about to leave behind.
-            # (User 2026-05-28: "if you do not copy the schedule, it
-            # should go back to the estimated mode, not scheduled mode by
-            # default.")
-            use_schedule     = src.use_schedule if duplicate_schedule else False,
-            days_unit        = src.days_unit,
-            days_per_week    = src.days_per_week,
-            parent_line_id   = src.parent_line_id,
-            line_tag         = src.line_tag,
-            sync_omit        = src.sync_omit,
-            role_group       = src.role_group,
-            unit_rate        = src.unit_rate,
-            assigned_crew_id = None,                     # <-- cleared
-            catalog_item_id  = src.catalog_item_id,
-            # Frozen cross-version snapshots are NOT copied (owner
-            # 2026-09-22: duplicated a Working line to split one
-            # Estimated item in two, and both halves showed the full
-            # $3,000 Estimated — the copy had inherited working_total).
-            # The copy is a NEW line: it has no Estimated counterpart
-            # of its own and no manually-keyed actual.
-            working_total    = None,
-            manual_actual    = None,
-            # Keep the clone-provenance link so the grid can show which
-            # Estimated line this copy was split from. Claim-once
-            # resolution in budget_view stops it double-claiming the
-            # original's Estimated dollars.
-            source_line_id   = src.source_line_id,
-            schedule_labels  = src.schedule_labels,
-            sort_order       = 0,                        # placeholder, reseated below
-        )
-        db.session.add(new_ln)
-        db.session.flush()                               # populate new_ln.id
+        id_map = {}       # source id → copy
+        new_lines = []
+        for s in sources:
+            new_ln = BudgetLine(
+                budget_id        = s.budget_id,
+                account_code     = s.account_code,
+                account_name     = s.account_name,
+                description      = s.description,
+                is_labor         = s.is_labor,
+                estimated_total  = s.estimated_total,
+                payroll_co       = s.payroll_co,
+                quantity         = s.quantity,
+                days             = s.days,
+                rate             = s.rate,
+                rate_type        = s.rate_type,
+                est_ot           = s.est_ot,
+                fringe_type      = s.fringe_type,
+                agent_pct        = s.agent_pct,
+                # A sub-header's formatting rides in `note` (JSON) — kept.
+                note             = s.note,
+                # When the user says "no" to duplicating the schedule, the new
+                # row lands in plain estimated mode — not the blue/italic
+                # schedule-driven look. (User 2026-05-28.)
+                use_schedule     = s.use_schedule if duplicate_schedule else False,
+                days_unit        = s.days_unit,
+                days_per_week    = s.days_per_week,
+                # Re-pointed below once every copy has an id.
+                parent_line_id   = s.parent_line_id,
+                line_tag         = s.line_tag,
+                sync_omit        = s.sync_omit,
+                role_group       = s.role_group,
+                unit_rate        = s.unit_rate,
+                assigned_crew_id = None,                     # <-- cleared
+                catalog_item_id  = s.catalog_item_id,
+                # Frozen cross-version snapshots are NOT copied (owner
+                # 2026-09-22: both halves of a split showed the full
+                # Estimated). The copy is a NEW line.
+                working_total    = None,
+                manual_actual    = None,
+                # Keep the clone-provenance link so the grid can show which
+                # Estimated line this copy was split from.
+                source_line_id   = s.source_line_id,
+                schedule_labels  = s.schedule_labels,
+                discussion_note  = None,                     # flags don't copy
+                sort_order       = 0,                        # re-seated below
+            )
+            db.session.add(new_ln)
+            new_lines.append(new_ln)
+        db.session.flush()                                   # ids for every copy
+        for s, n in zip(sources, new_lines):
+            id_map[s.id] = n
+        # Kit-fee / child rows follow THEIR copied parent; a child whose
+        # parent was not part of the copy keeps pointing at the original.
+        for n in new_lines:
+            if n.parent_line_id in id_map:
+                n.parent_line_id = id_map[n.parent_line_id].id
 
-        # Re-seat sort_order so the copy sits immediately after the source in
-        # its section. Fetch all section rows, re-index sequentially, inserting
-        # the new line directly after the source.
-        section_lines = BudgetLine.query.filter_by(
-            budget_id=bid, account_code=src.account_code
-        ).filter(BudgetLine.id != new_ln.id).order_by(
-            BudgetLine.sort_order, BudgetLine.id
-        ).all()
-        src_idx = next((i for i, ln in enumerate(section_lines) if ln.id == src.id), 0)
-        section_lines.insert(src_idx + 1, new_ln)
-        for i, ln in enumerate(section_lines):
+        # Re-seat sort_order: the copies go in at insert_at, in order.
+        ordered = section_lines[:insert_at] + new_lines + section_lines[insert_at:]
+        for i, ln in enumerate(ordered):
             ln.sort_order = i
 
-        # Duplicate the source line's ScheduleDay rows when requested.
-        # crew_member_id is cleared — the copy starts with no individual
-        # attached even if the schedule days are copied.
+        # Schedule days (crew_member_id cleared — the copy starts with no
+        # individual attached even when its days are copied).
         if duplicate_schedule:
-            src_sched = ScheduleDay.query.filter_by(budget_line_id=src.id).all()
-            for sd in src_sched:
+            src_ids = [s.id for s in sources]
+            for sd in ScheduleDay.query.filter(ScheduleDay.budget_line_id.in_(src_ids)).all():
                 db.session.add(ScheduleDay(
                     budget_id       = sd.budget_id,
-                    budget_line_id  = new_ln.id,
+                    budget_line_id  = id_map[sd.budget_line_id].id,
                     crew_member_id  = None,                  # <-- cleared
                     date            = sd.date,
                     episode         = sd.episode,
@@ -10369,16 +10415,56 @@ def line_duplicate(pid, bid, lid):
                     schedule_mode   = sd.schedule_mode,
                 ))
 
+        # Internal notes DO copy (line-level threads; schedule person-day
+        # threads stay with the original's days).
+        try:
+            src_ids = [s.id for s in sources]
+            for cm in (BudgetComment.query
+                       .filter(BudgetComment.budget_id == bid,
+                               BudgetComment.budget_line_id.in_(src_ids),
+                               BudgetComment.day_date.is_(None))
+                       .order_by(BudgetComment.created_at.asc()).all()):
+                db.session.add(BudgetComment(
+                    project_id=pid, budget_id=bid,
+                    budget_line_id=id_map[cm.budget_line_id].id,
+                    author_id=cm.author_id, body=cm.body, created_at=cm.created_at))
+        except Exception as _cme:
+            # The comment table is optional on old installs — never let a
+            # note stop the duplicate.
+            logging.warning(f"[duplicate] notes not copied: {_cme}")
+
         # NOTE: CrewAssignment rows are intentionally NOT copied. The duplicate
         # is a fresh unassigned role — user fills it in via the normal flow.
 
         db.session.commit()
         _touch_budget(bid)
         db.session.commit()
-        return jsonify({"ok": True, "id": new_ln.id})
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
+
+    # Activity log — one entry per operation; _log_activity owns its own
+    # commit + rollback so it can never break this route.
+    try:
+        first = new_lines[0]
+        _what = {"line": "line", "block": "sub-header block", "section": "section"}[scope]
+        _log_activity(
+            action='create', entity_type='budget_line',
+            entity_id=first.id, entity_label=first.description or first.account_name,
+            budget_id=bid, project_id=pid,
+            before=None, after=_budget_line_snapshot(first),
+            dollar_delta=sum(float(n.estimated_total or 0) for n in new_lines),
+            note=(f"Duplicated {_what} from line #{src.id}: {len(new_lines)} row"
+                  f"{'s' if len(new_lines) != 1 else ''} "
+                  f"(ids {', '.join(str(n.id) for n in new_lines)})"),
+        )
+    except Exception as _e:
+        logging.warning(f"[activity] line_duplicate log failed: {_e}")
+        try: db.session.rollback()
+        except Exception: pass
+    return jsonify({"ok": True, "id": new_lines[0].id,
+                    "ids": [n.id for n in new_lines], "count": len(new_lines),
+                    "scope": scope})
 
 
 def _resolve_sister_budget(edited_budget):
