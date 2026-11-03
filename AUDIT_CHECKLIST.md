@@ -527,3 +527,65 @@ Tests: `tests/unit/test_admin_access.py` (6, app-booting, self-skipping).
   through the session-authed `/admin/docs/project/<pid>/reprocess-unpaired`
   (the browser has no CRON_TOKEN).
 
+
+## 🧹 Cleanup F — tests that actually run (2026-11-02, branch `cleanup/f-tests`)
+CI runs both suites for real: the unit job installs the app's real
+dependencies (so the app-booting modules run instead of skipping), and a
+new `e2e` job runs the Playwright suite against a seeded local app.
+Route snapshot vs main: IDENTICAL. No app code changed.
+
+- [x] F1 — `scripts/seed_local.py` (from the scratchpad seed used all day):
+  argparse `--db / --port / --host / --keep / --no-serve`, boots app.py on
+  sqlite, seeds fringes / payroll profiles / FP Standard via `budget_calc`,
+  a super-admin (`local-admin@thefp.tv` / `localpass-123`), a line
+  producer (`local-editor@thefp.tv`), two projects, a Working budget,
+  transactions in every Actuals state and three receipts. Boot-time
+  background threads stay off (`RUN_BOOT_TASKS=0`).
+- [x] F2 — `requirements-ci.txt` = `-r requirements.txt` + `pytest<10`
+  (nothing left out on purpose: every prod package ships a wheel; the
+  workflow apt-installs Pango for weasyprint). Unit suite in a venv built
+  that way: **287 passed, 0 skipped** (was 231 passed / **49 skipped** with
+  the old five-package install). CI now fails the unit step on ANY skip.
+- [x] F3 — Allure retired: `pytest.ini` loses `--alluredir`,
+  `tests/requirements-test.txt` loses allure, conftest / helpers write
+  failure and step screenshots to `tests/artifacts/` (gitignored; CI
+  uploads it on failure), `tests/dashboard.py` reads them from there and no
+  longer passes `--alluredir`.
+- [x] F4 — Browser suite against the seeded app: **92 tests, 90 pass, 2
+  skip** (link-doc: the UI-created project has no receipts; docs upload:
+  needs Veryfi + Dropbox env), ~4 min. A module-scoped `project` fixture
+  (one FP Standard project per module) replaced the per-test create/delete
+  (14 min → 4 min). Per file:
+  * rewritten against the current screens — `test_tools.py` (Import &
+    Templates under More ▾; Apply Template / Export cards are gone),
+    `test_contacts.py` (tab is "People"), `test_project_locations.py`
+    (under More ▾, modal title asserted), `test_project_settings.py`
+    (Cleanup C groups, "Open Admin" link, name round-trips through Save;
+    `#set-fee` is gone), `test_callsheets.py` (?view= switcher replaced the
+    audience pills and schedule notes), `test_export.py` (Export Options
+    dialog; PDF bytes checked by fetching the URL the dialog builds, CSV
+    via download), `test_admin.py` (Cleanup E nav + hub sections +
+    /admin/maintenance; non-admin blocked with "Not authorized"),
+    `test_collab.py` (shared project, Socket.IO presence avatars, python
+    socket client join → presence_update — the whole module was skipped
+    before), `test_projects.py` (search / filter / sort assert on the
+    cards instead of screenshots), `test_schedule.py` (Next Week = +7
+    days), `test_docs.py` (+ `?tab=docs` redirect; upload gated on env),
+    `test_budget.py` (sections from the template, add a line through the
+    modal and see the Top Sheet grand total move, Overview default).
+  * deleted — `test_topsheet.py`, `test_versions.py` (folded into
+    `test_budget.py`; they only looked for elements "if visible"),
+    `test_actuals_workspace.py::test_register_redirects` (`/register` was
+    removed in Cleanup B).
+  * kept — `test_auth.py`, `test_actuals_workspace.py` (Phase 3).
+- [x] F5 — `.github/workflows/ci.yml`: pip cache on both jobs, Playwright
+  chromium only (browser cache), `timeout-minutes` 15 / 30, app started
+  in the background and polled on `/readyz` ("db":"up"), app log and
+  failure screenshots surfaced. `CLAUDE.md` verify list gains the e2e
+  line; `tests/README.md` says how to run both suites.
+- [ ] F6 — Found, not fixed (app code is out of scope here): the Single
+  Line modal's "Flat total $" box is sent with `rate: 0`, and
+  `upsert_line` treats an explicit `rate` as "recompute the total", so a
+  flat non-labor line lands at $0.00 (`templates/budget.html`
+  `submitAddLine` + app.py `upsert_line` non-labor block). The test adds
+  its line through the per-unit rate instead.

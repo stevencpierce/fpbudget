@@ -1,7 +1,10 @@
-# Minimal CI safety net (audit C4, 2026-07-20). Every check here maps to a
-# class of bug that actually shipped: py_compile (syntax), Jinja parse
+# CI safety net (audit C4, 2026-07-20; Cleanup F, 2026-11-02). Every check maps
+# to a class of bug that actually shipped: py_compile (syntax), Jinja parse
 # (template errors), route audit (the ed2aeca 4-day 500), js_check (the
-# 6abf125 TDZ crash class). Runs on every push and PR — no secrets needed.
+# 6abf125 TDZ crash class), the unit suite (boots app.py on sqlite with the
+# REAL dependencies, so the app-booting modules run instead of skipping) and
+# the browser suite (Playwright against scripts/seed_local.py). Runs on every
+# push and PR — no secrets needed.
 name: CI
 on:
   push:
@@ -10,16 +13,21 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-ci.txt
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
       - name: Python compile
-        run: python -m py_compile app.py models.py budget_calc.py actuals.py ai_layer.py fp_analyzer.py qbo_sync.py external_export.py wsgi.py
+        run: python -m py_compile app.py models.py budget_calc.py actuals.py ai_layer.py fp_analyzer.py qbo_sync.py external_export.py wsgi.py scripts/seed_local.py
       - name: Jinja parse all templates
         run: |
           pip install jinja2 --quiet
@@ -39,10 +47,65 @@ jobs:
         run: python scripts/route_audit.py app.py routes/*.py
       - name: Inline JS syntax check
         run: python scripts/js_check.py
-      - name: Unit tests
-        # tests/unit imports actuals.py and qbo_sync.py, which import SQLAlchemy, Flask-Login,
-        # Flask-SQLAlchemy (via models.py) and requests at module level. Install
-        # just those, pinned like requirements.txt, so the step stays fast.
+      - name: Install app + test dependencies
+        # weasyprint (a module-level import in app.py) loads Pango at import time.
         run: |
-          pip install --quiet pytest "flask<4" "flask-login<1" "flask-sqlalchemy<4" "sqlalchemy<2.1" "requests<3"
-          python -m pytest tests/unit -q --confcutdir=tests/unit -o addopts=""
+          sudo apt-get install -y --no-install-recommends libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 >/dev/null
+          pip install --quiet -r requirements-ci.txt
+      - name: Unit tests
+        # Fails if any module SKIPS: every app-booting module must actually run here.
+        run: |
+          python -m pytest tests/unit -q --confcutdir=tests/unit -o addopts="" -rs | tee unit.log
+          if grep -q "SKIPPED" unit.log; then echo "::error::unit tests skipped — a dependency is missing"; exit 1; fi
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE_URL: http://127.0.0.1:5055
+      ADMIN_EMAIL: local-admin@thefp.tv
+      ADMIN_PASSWORD: localpass-123
+      TEST_EMAIL: local-editor@thefp.tv
+      TEST_PASSWORD: localpass-123
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-ci.txt
+            tests/requirements-test.txt
+      - name: Install app + browser-test dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 >/dev/null
+          pip install --quiet -r requirements-ci.txt -r tests/requirements-test.txt
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('tests/requirements-test.txt') }}
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Seed and start the app
+        run: |
+          mkdir -p instance
+          nohup python scripts/seed_local.py --port 5055 > seed_local.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:5055/readyz | grep -q '"db":"up"'; then echo "up after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::app did not come up"; cat seed_local.log; exit 1
+      - name: Browser tests
+        run: python -m pytest tests -q --ignore=tests/unit -o addopts="" -p no:allure_pytest -rs --durations=10
+      - name: App log
+        if: always()
+        run: tail -n 200 seed_local.log
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: tests/artifacts/
+          if-no-files-found: ignore
