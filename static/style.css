@@ -2149,7 +2149,10 @@ body.gantt-select-mode .gantt-cell {
 /* ── Tab link (anchor styled as tab button) ─────────────────────────────── */
 a.tab-link {
   text-decoration: none;
-  display: inline-block;
+  /* inline-flex, not inline-block: a.tab-link outranks .tab-btn, and
+     inline-block put the link tabs 3px above the button tabs (Nov 3). */
+  display: inline-flex;
+  align-items: center;
 }
 a.tab-link:hover { background: var(--bg-3); }
 
@@ -5658,19 +5661,9 @@ tr.sync-omitted .col-days::after {
 .view-actual    .section-block { border-top: 3px solid var(--red);    }
 .view-estimated .section-block { border-top: 3px solid var(--accent); }
 
-/* Thin strip across the top of the budget area as a constant reminder. */
-.view-working   #working-budget-wrap::before,
-.view-actual    #working-budget-wrap::before,
-.view-estimated #working-budget-wrap::before {
-  content: '';
-  display: block;
-  height: 4px;
-  margin: -8px 0 12px;
-  border-radius: 2px;
-}
-.view-working   #working-budget-wrap::before { background: var(--orange); }
-.view-actual    #working-budget-wrap::before { background: var(--red); }
-.view-estimated #working-budget-wrap::before { background: var(--accent); }
+/* The mode reminder strip above the grid is gone (Nov 3): the version
+   strip now says which version is live, and the strip doubled the first
+   section's own coloured top border. */
 
 /* ── Sticky tabs + variance toolbar ──────────────────────────────────────────
    2026-05-10 user request: keep the budget mode switcher and the variance
