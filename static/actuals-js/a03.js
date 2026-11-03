@@ -537,7 +537,7 @@
       host.innerHTML = d.accounts.map(a => `<label class="aw-acct"><input type="checkbox" class="aw-acct-cb" value="${esc(a.id)}" ${a.enabled ? 'checked' : ''}>
         <span class="n">${esc(a.name)}</span><span class="t">${a.type === 'Credit Card' ? 'Credit card' : 'Bank'}${a.mask ? ' · ' + esc(a.mask) : ''}</span></label>`).join('');
     } catch (e) {
-      host.innerHTML = `<span style="font-size:13px;color:var(--red)">${esc(e.message || e)}${(e.data || {}).needs_oauth ? ` — <a href="${esc(AJ.urls.oauth)}">connect QuickBooks</a>` : ''}</span>`;
+      host.innerHTML = `<span style="font-size:13px;color:var(--red)">${esc(e.message || e)}${(e.data || {}).needs_oauth ? ` — <a href="${esc(AJ.urls.oauth)}">connect QuickBooks in Admin</a>` : ''}</span>`;
     }
   };
   A['accts-save'] = async () => {

@@ -9718,6 +9718,7 @@ def budget_view(pid, bid):
     return render_template("budget.html",
         project=project,
         budget=budget,
+        proj_role=proj_role,
         estimate_approval=estimate_approval,
         estimate_latest=estimate_latest,
         estimate_share_history=estimate_share_history,

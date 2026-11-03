@@ -884,10 +884,14 @@
         <a class="tab-btn tab-menu-item tab-link" role="menuitem" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets{% if callsheet_count %}<span class="tab-menu-count">{{ callsheet_count }}</span>{% endif %}</a>
         <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="assumptions">Assumptions</button>
         <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="activity">Activity</button>
-        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="import-tools">Tools</button>
+        {% if proj_role != 'viewer' %}
+        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="import-tools">Import &amp; Templates</button>
+        {% endif %}
       </div>
     </div>
-    {% if not dept_filter %}
+    {# Viewers see neither Import & Templates nor Settings (Cleanup E); the
+       server already refuses their writes (Cleanup A). #}
+    {% if not dept_filter and proj_role != 'viewer' %}
     <button class="tab-btn tab-settings" data-tab="settings">
       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"></path></svg>
       Settings
@@ -4009,32 +4013,11 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
   </table>
 </div>
 
-<!-- ═══ IMPORT / TOOLS ═══════════════════════════════════════════════════════ -->
+<!-- ═══ IMPORT & TEMPLATES (data-tab key "import-tools" kept for old links) ═══ -->
 <div class="tab-panel" id="tab-import-tools">
   <div class="tools-grid">
-    <div class="card">
-      <h3>Export Budget</h3>
-      <p class="muted" style="font-size:.82rem">PDF exports match industry standards (Showbiz / Movie Magic). Fee is {% if budget.company_fee_dispersed %}dispersed — no fee line shown.{% else %}shown as a line item.{% endif %}</p>
-      <div style="display:flex;flex-direction:column;gap:.5rem;margin-top:.75rem">
-        <a href="#" onclick="openExportOptions(event, 'pdf', 'topsheet')"
-           class="btn btn-primary btn-sm">
-          ↓ Top Sheet PDF
-        </a>
-        <a href="#" onclick="openExportOptions(event, 'pdf', 'detail')"
-           class="btn btn-outline btn-sm">
-          ↓ Full Detail PDF
-        </a>
-        <a href="#" onclick="openExportOptions(event, 'csv', 'topsheet')"
-           class="btn btn-ghost btn-sm">
-          ↓ Top Sheet CSV
-        </a>
-        <a href="#" onclick="openExportOptions(event, 'csv', 'working')"
-           class="btn btn-ghost btn-sm">
-          ↓ Line Detail CSV
-        </a>
-      </div>
-    </div>
-
+    {# Export lives in the page header's Export ▾ menu; the duplicate card
+       and the "Budget Mode" note are gone (Cleanup E, 2026-11-02). #}
     <div class="card">
       <h3>Import CSV</h3>
       <p class="muted">Upload a budget CSV from Movie Magic, Showbiz, Excel, or another FPBudget export. Columns are auto-mapped &mdash; confirm in the next step.</p>
@@ -4102,10 +4085,6 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
       </form>
     </div>
 
-    <div class="card">
-      <h3>Budget Mode</h3>
-      <p class="muted" style="font-size:.82rem">Use the <strong>Estimated / Working</strong> switcher at the top of the page to switch between budget versions. Current: <strong>{{ cur_mode.label }}</strong>.</p>
-    </div>
   </div>
 </div>
 
@@ -4342,6 +4321,14 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
 
       <div class="settings-section">
         <h3>Display</h3>
+        {% if current_user.role == 'super_admin' %}
+        <div class="field" style="margin-bottom:.6rem">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="set-show-gut-check" style="width:auto;margin:0">
+            Show Gut Check <span class="muted" style="font-weight:400;font-size:.78rem">— the floating math-audit button, this browser only</span>
+          </label>
+        </div>
+        {% endif %}
         <div class="field">
           <label>Timezone</label>
           <select id="set-timezone">
@@ -5105,7 +5092,23 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
   .gc-badge.warn { background: rgba(245,158,11,0.15); color: #f59e0b; }
   .gc-sub { color: #64748b; font-size: 10.5px; }
 </style>
-<button id="gc-trigger" title="Run a read-only line-by-line math audit">&#128269; Gut Check</button>
+{# Default OFF: shown only when Settings → Display → "Show Gut Check" is
+   ticked (per browser, localStorage; Cleanup E 2026-11-02). #}
+<button id="gc-trigger" title="Run a read-only line-by-line math audit" hidden>&#128269; Gut Check</button>
+<script>
+(function () {
+  var KEY = 'fpbudget-show-gut-check';
+  var trig = document.getElementById('gc-trigger');
+  var box = document.getElementById('set-show-gut-check');
+  function on() { try { return localStorage.getItem(KEY) === '1'; } catch (_) { return false; } }
+  function apply() { if (trig) trig.hidden = !on(); if (box) box.checked = on(); }
+  if (box) box.addEventListener('change', function () {
+    try { localStorage.setItem(KEY, box.checked ? '1' : '0'); } catch (_) {}
+    apply();
+  });
+  apply();
+})();
+</script>
 <div id="gc-overlay">
   <div id="gc-panel">
     <div class="gc-header">
