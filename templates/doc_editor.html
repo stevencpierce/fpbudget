@@ -18,9 +18,10 @@
 
 {% block content %}
 {% if project %}
-{# Shared project tab strip so this standalone editor keeps the SAME nav chrome
-   as the budget page — user can jump anywhere without a different interface. #}
-{% include "_project_tabs.html" with context %}
+{# THE project nav strip (templates/_project_nav.html) — Docs active. #}
+{% with nav_project=project, nav_active='docs' %}
+{% include "_project_nav.html" %}
+{% endwith %}
 {% endif %}
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
   <a id="edBackLink" href="{% if project %}{{ url_for('docs_inbox_page', pid=project.id) }}{% elif owner %}{{ url_for('payee_page', payee_id=owner.id) }}{% else %}{{ url_for('payees_directory') }}{% endif %}"

@@ -119,28 +119,12 @@
   </div>
 </div>
 
-<!-- Shared tab bar + mode switcher row — Schedule is active -->
-<div class="tabs-row">
-  <div class="tabs">
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=topsheet">Dashboard</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=topsheet-detail">Top Sheet</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=working">Budget</a>
-    <span class="tab-btn active">Schedule</span>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=travel">Travel</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=catering">Catering</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=contacts">People</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=locations">Locations</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=assumptions">Assumptions</a>
-    <a class="tab-btn tab-link" href="{{ url_for('po_list_page', pid=project.id) }}?return_bid={{ budget.id }}">POs</a>
-    <a class="tab-btn tab-link" href="{{ url_for('sub_budgets_page', pid=project.id) }}?return_bid={{ budget.id }}">Sub-Budgets</a>
-    <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
-    <a class="tab-btn tab-link" href="{{ url_for('docs_inbox_page', pid=project.id) }}">Docs</a>
-    <a class="tab-btn tab-link" href="{{ url_for('actuals_workspace_page', pid=project.id) }}">Actuals</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=activity">Activity</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=import-tools">Tools</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=settings">⚙ Settings</a>
-  </div>
-  <div class="mode-switcher-seg">
+{# THE project nav strip (templates/_project_nav.html) — Schedule active.
+   The Estimated / Working switcher below floats (position: fixed). #}
+{% with nav_project=project, nav_budget=budget, nav_active='schedule' %}
+{% include "_project_nav.html" %}
+{% endwith %}
+<div class="mode-switcher-seg">
     {% if current_estimated_bid %}
     <a href="{{ url_for('gantt_view', pid=project.id, bid=current_estimated_bid) }}"
        class="mode-seg-btn {% if budget.budget_mode != 'working' %}active mode-estimated{% endif %}">Estimated</a>
@@ -153,7 +137,6 @@
     {% else %}
     <span class="mode-seg-btn mode-seg-inactive" title="No Working budget — create one in the Budget tab">Working</span>
     {% endif %}
-  </div>
 </div>
 
 <div class="gantt-toolbar">

@@ -858,47 +858,18 @@
   </div>
 </div>
 
-<nav class="tabs-row budget-tabstrip" aria-label="Budget sections">
-  <div class="tabs">
-    {% if not dept_filter %}<button class="tab-btn {% if sections %}active{% endif %}" data-tab="topsheet">Overview</button>{% endif %}
-    {% if not dept_filter %}<button class="tab-btn" data-tab="topsheet-detail">Top Sheet</button>{% endif %}
-    <button class="tab-btn {% if dept_filter or not sections %}active{% endif %}" data-tab="working">Budget</button>
-    <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=budget.id) }}">Schedule</a>
-    <button class="tab-btn" data-tab="contacts">People</button>
-    {# Docs and Actuals are their own screens (Cleanup B). #}
-    <a class="tab-btn tab-link" href="{{ url_for('actuals_workspace_page', pid=project.id) }}">Actuals</a>
-    <a class="tab-btn tab-link" href="{{ url_for('docs_inbox_page', pid=project.id) }}">Docs</a>
-    <div class="tab-more-wrap">
-      <button type="button" class="tab-btn tab-more-btn" id="tab-more-btn" aria-haspopup="menu" aria-expanded="false">
-        <span class="tab-more-label">More</span>
-        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>
-      </button>
-      {# Every item keeps its data-tab key so ?tab= deep links still work;
-         the links go to their own pages. #}
-      <div class="tab-more-menu" id="tab-more-menu" role="menu" aria-label="More sections" hidden>
-        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="travel">Travel</button>
-        <a class="tab-btn tab-menu-item tab-link" role="menuitem" href="{{ url_for('po_list_page', pid=project.id) }}?return_bid={{ budget.id }}">POs{% if project_pos %}<span class="tab-menu-count">{{ project_pos | length }}</span>{% endif %}</a>
-        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="catering">Catering</button>
-        <a class="tab-btn tab-menu-item tab-link" role="menuitem" href="{{ url_for('sub_budgets_page', pid=project.id) }}?return_bid={{ budget.id }}">Sub-Budgets{% if sub_budgets_for_project %}<span class="tab-menu-count">{{ sub_budgets_for_project | rejectattr('archived') | list | length }}</span>{% endif %}</a>
-        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="locations">Locations</button>
-        <a class="tab-btn tab-menu-item tab-link" role="menuitem" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets{% if callsheet_count %}<span class="tab-menu-count">{{ callsheet_count }}</span>{% endif %}</a>
-        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="assumptions">Assumptions</button>
-        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="activity">Activity</button>
-        {% if proj_role != 'viewer' %}
-        <button type="button" class="tab-btn tab-menu-item" role="menuitem" data-tab="import-tools">Import &amp; Templates</button>
-        {% endif %}
-      </div>
-    </div>
-    {# Viewers see neither Import & Templates nor Settings (Cleanup E); the
-       server already refuses their writes (Cleanup A). #}
-    {% if not dept_filter and proj_role != 'viewer' %}
-    <button class="tab-btn tab-settings" data-tab="settings">
-      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"></path></svg>
-      Settings
-    </button>
-    {% endif %}
-  </div>
-</nav>
+{# THE project nav strip — shared with every project page
+   (templates/_project_nav.html). In-page panes render as <button data-tab>
+   here so the tab-switching JS below keeps working; the More menu is
+   driven by static/fp-utils.js. #}
+{% with nav_project=project, nav_budget=budget, nav_inpage=true,
+        nav_active=('budget' if (dept_filter or not sections) else 'overview'),
+        nav_dept_filter=dept_filter, nav_role=proj_role,
+        nav_po_count=(project_pos | length if project_pos else 0),
+        nav_sub_count=(sub_budgets_for_project | rejectattr('archived') | list | length if sub_budgets_for_project else 0),
+        nav_cs_count=(callsheet_count or 0) %}
+{% include "_project_nav.html" %}
+{% endwith %}
 
 <!-- ═══ OVERVIEW (replaces the Dashboard; data-tab key "topsheet" kept for old links) ═══ -->
 <div class="tab-panel {% if sections %}active{% endif %}" id="tab-topsheet">
@@ -6658,38 +6629,8 @@ document.addEventListener('focusin', e => {
   card.style.left = Math.max(8, Math.min(r.left - 6, window.innerWidth - 336)) + 'px';
 });
 
-// ── "More ▾" tab menu (Cleanup C, 2026-11-02) ───────────────────────────────
-// The menu's items are ordinary .tab-btn[data-tab] buttons (so the handlers
-// above, the Travel / Catering / Activity loaders and ?tab= deep links keep
-// working); this only opens / closes the menu and lights the More button
-// when one of its tabs is the active one.
-(function () {
-  const btn  = document.getElementById('tab-more-btn');
-  const menu = document.getElementById('tab-more-menu');
-  if (!btn || !menu) return;
-  const label = btn.querySelector('.tab-more-label');
-  function sync() {
-    const active = menu.querySelector('.tab-btn.active[data-tab]');
-    btn.classList.toggle('active', !!active);
-    if (label) label.textContent = active ? ('More · ' + active.textContent.replace(/\d+$/, '').trim()) : 'More';
-  }
-  function close() { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
-  function open()  { menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); menu.querySelector('[role="menuitem"]')?.focus(); }
-  btn.addEventListener('click', e => { e.stopPropagation(); menu.hidden ? open() : close(); });
-  document.addEventListener('click', e => { if (!e.target.closest('.tab-more-wrap')) close(); });
-  document.addEventListener('keydown', e => {
-    if (menu.hidden) return;
-    if (e.key === 'Escape') { close(); btn.focus(); return; }
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
-      const i = items.indexOf(document.activeElement);
-      e.preventDefault();
-      (e.key === 'ArrowDown' ? items[(i + 1) % items.length] : items[(i - 1 + items.length) % items.length]).focus();
-    }
-  });
-  document.querySelectorAll('.tab-btn[data-tab]').forEach(b => b.addEventListener('click', () => { close(); sync(); }));
-  setTimeout(sync, 0);
-})();
+// The "More ▾" tab menu is driven by static/fp-utils.js (FP.initTabMore)
+// so every project page shares the one controller.
 
 // ── Mode switcher: preserve active tab when switching Estimated ↔ Working ──
 document.querySelectorAll('.mode-seg-btn[href]').forEach(a => {
@@ -11586,6 +11527,7 @@ __BJ["b16_PIDr"] = {{ project.id }};
     </div>
   </div>
   <input type="file" id="ppUploadInput" multiple accept="image/*,.pdf,.heic,.heif" style="display:none">
+  <input type="file" id="ppUploadFolderInput" webkitdirectory multiple style="display:none">
 </div>
 <script>
 window.__BJ = window.__BJ || {};

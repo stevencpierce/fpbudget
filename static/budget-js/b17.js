@@ -51,7 +51,7 @@
       h += '<span class="pp-badge '+(comp[k]?'ok':'no')+'">'+(comp[k]?'✓ ':'○ ')+lbl+'</span>';
     });
     h += '</div>';
-    h += '<button class="pp-btn" onclick="_ppUpload()">⤒ Upload document</button> <span style="font-size:.72rem;color:var(--text-muted)">or drag files anywhere onto this panel</span>';
+    h += '<button class="pp-btn" onclick="_ppUpload()">⤒ Upload document</button> <button class="pp-btn" onclick="_ppUploadFolder()">📁 Choose folder…</button> <span style="font-size:.72rem;color:var(--text-muted)">or drag files or folders anywhere onto this panel</span>';
     docs.forEach(dc=>{
       h += '<div class="pp-doc" onclick="closePersonPanel();window.openDocDetail('+dc.id+',null)">'
         + '<span class="cat">'+esc(dc.category||'doc')+'</span>'
@@ -300,24 +300,37 @@
     if(!_pp || !files || !files.length || _ppBusy) return;
     _ppBusy=true;
     const st=document.getElementById('ppSaveStatus');
-    let done=0;
+    let done=0; const failed=[];
     try{
       for(const f of files){
-        if(st){ st.textContent='Uploading '+(done+1)+'/'+files.length+'… '+(f.name||''); st.style.color='var(--text-muted)'; }
-        const fd = new FormData(); fd.append('file', f);
-        const r = await fetch('/projects/'+PIDp+'/docs/upload',{method:'POST',credentials:'same-origin',body:fd});
-        const j = await r.json().catch(()=>({}));
-        const uid = j.id || j.uid || j.upload_id || (j.upload&&j.upload.id);
-        if(uid) await fetch('/docs/upload/'+uid+'/update',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({crew_member_id:_pp._cmid})});
+        if(st){ st.textContent='Uploading '+(done+1)+' of '+files.length+'… '+(f.name||''); st.style.color='var(--text-muted)'; }
+        // One failure never stops the batch; it is listed at the end.
+        try{
+          const fd = new FormData(); fd.append('file', f);
+          const r = await fetch('/projects/'+PIDp+'/docs/upload',{method:'POST',credentials:'same-origin',body:fd});
+          const j = await r.json().catch(()=>({}));
+          if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+          const uid = j.id || j.uid || j.upload_id || (j.upload&&j.upload.id);
+          if(uid) await fetch('/docs/upload/'+uid+'/update',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({crew_member_id:_pp._cmid})});
+        }catch(e){ failed.push((f.fpRelativePath||f.name||'file')+' — '+(e.message||'failed')); }
         done++;
       }
     } finally { _ppBusy=false; }
+    const summary=(done-failed.length)+' of '+done+' uploaded'+(failed.length?('. Failed: '+failed.join(' · ')):'.');
     window.openPersonProfile(_pp._cmid);   // refresh
+    setTimeout(()=>{ const s2=document.getElementById('ppSaveStatus'); if(s2){ s2.textContent=summary; s2.style.color=failed.length?'var(--red)':'var(--text-muted)'; } }, 400);
   }
   window._ppUpload = function(){
     if(!_pp) return;
     const inp = document.getElementById('ppUploadInput');
-    inp.onchange = () => { const files=[...inp.files]; inp.value=''; _ppUploadFiles(files); };
+    inp.onchange = () => { const files=FP.filterDocFiles(inp.files); inp.value=''; _ppUploadFiles(files); };
+    inp.click();
+  };
+  window._ppUploadFolder = function(){
+    if(!_pp) return;
+    const inp = document.getElementById('ppUploadFolderInput');
+    if(!inp) return;
+    inp.onchange = () => { const files=FP.filterDocFiles(inp.files); inp.value=''; _ppUploadFiles(files); };
     inp.click();
   };
   // Drag-and-drop upload onto the whole drawer → files attach to this person.
@@ -331,9 +344,10 @@
     drawer.addEventListener('dragover', e=>{ if(e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
     drawer.addEventListener('dragleave', e=>{ _dragDepth--; if(_dragDepth<=0){ _dragDepth=0; showDrop(false);} });
     drawer.addEventListener('drop', e=>{
-      if(!(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length)) return;
+      if(!(e.dataTransfer && [...e.dataTransfer.types].includes('Files'))) return;
       e.preventDefault(); _dragDepth=0; showDrop(false);
-      _ppUploadFiles([...e.dataTransfer.files]);
+      // Files AND folders (nested too) — the ONE walker in static/fp-utils.js.
+      FP.collectDroppedFiles(e.dataTransfer).then(files => { if(files.length) _ppUploadFiles(files); });
     });
   })();
 
