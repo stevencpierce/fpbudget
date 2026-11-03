@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Maintenance — FPBudget{% endblock %}
+
+{% block content %}
+{# Admin → Maintenance (Cleanup E, 2026-11-02). Every company-wide
+   maintenance and diagnostic tool as a card: description, last run when the
+   tool logs one, and a Run button (confirmed when destructive). The registry
+   lives in routes/admin_maintenance.py; the tools are their existing routes.
+   Nobody types a /admin/... URL any more. #}
+<div class="adm-page">
+  <div class="pay-head">
+    <div class="pay-crumbs">
+      <a href="{{ url_for('dashboard') }}">FPBudget</a><span class="sep">/</span>
+      <a href="{{ url_for('admin_panel') }}">Admin</a><span class="sep">/</span>
+      <span class="cur">Maintenance</span>
+      <span class="pay-chip">Super admin</span>
+    </div>
+    <div class="pay-actions">
+      <span class="pay-sync" title="Unattended trigger for the receipt reprocess job (X-Cron-Token header)">
+        <span class="pay-dot {{ 'ok' if status.cron.configured else 'warn' }}"></span>
+        Cron token {{ 'set' if status.cron.configured else 'not set' }}
+      </span>
+      <a class="pay-btn" href="{{ url_for('admin_panel') }}">Back to Admin</a>
+    </div>
+  </div>
+
+  <p class="d" style="font-size:.85rem;color:var(--text-muted);margin:0 0 18px;max-width:820px">
+    Company-wide tools. Read-only checks run in place and show their result under the card;
+    pages open in a new tab. Anything that changes data asks first and says what it will do.
+    Last-run times appear where a tool logs them.
+  </p>
+
+  {% for gname, gtools in groups %}
+  <section class="adm-section">
+    <div class="adm-section-h"><h2>{{ gname }}</h2></div>
+    <div class="adm-grid">
+      {% for t in gtools %}
+      <div class="adm-card {% if t.destructive %}danger{% endif %}" id="tool-{{ t.id }}" data-tool="{{ t.id }}">
+        <div class="adm-card-h">
+          <span class="t">{{ t.title }}</span>
+          {% if t.destructive %}<span class="pay-chip sq bad">changes data</span>
+          {% elif t.open == 'tab' %}<span class="pay-chip sq">page</span>
+          {% else %}<span class="pay-chip sq ok">read-only</span>{% endif %}
+        </div>
+        <div class="d">{{ t.desc }}</div>
+        {% if t.params %}
+        <div class="adm-params">
+          {% for p in t.params %}
+          <label>{{ p.label }}
+            {% if p.kind in ('project', 'project_opt') %}
+            <select name="{{ p.name }}" {% if p.kind == 'project' %}required{% endif %}>
+              <option value="">{{ 'Choose a project…' if p.kind == 'project' else 'All projects' }}</option>
+              {% for pr in projects %}<option value="{{ pr.id }}">{{ pr.name }}</option>{% endfor %}
+            </select>
+            {% elif p.kind == 'int' %}
+            <input type="number" name="{{ p.name }}" min="1" step="1" required>
+            {% else %}
+            <input type="text" name="{{ p.name }}" {% if p.kind == 'text' %}required{% endif %}>
+            {% endif %}
+          </label>
+          {% endfor %}
+        </div>
+        {% endif %}
+        <div class="meta">
+          {% if t.task %}
+            <span>Last run: <strong>{{ t.last_run or 'never logged' }}</strong></span>
+            {% if t.last_result %}<span title="{{ t.last_result }}">· {{ t.last_result[:60] }}{% if t.last_result|length > 60 %}…{% endif %}</span>{% endif %}
+          {% endif %}
+          <span class="mono" style="opacity:.7">{{ t.method if t.method != 'FORM' else 'POST' }} {{ t.url }}</span>
+        </div>
+        <div class="act">
+          {% if t.method == 'FORM' %}
+            <form method="POST" action="{{ t.url }}" class="confirm-form" data-msg="{{ t.confirm }}" style="display:contents">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="pay-btn adm-btn-danger">Scan now</button>
+            </form>
+          {% else %}
+            {% if t.preview %}
+              <button type="button" class="pay-btn" data-act="preview">{{ t.preview.label }}</button>
+            {% endif %}
+            {% if t.destructive %}
+              <button type="button" class="pay-btn adm-btn-danger" data-act="run">Run</button>
+            {% elif t.open == 'tab' %}
+              <button type="button" class="pay-btn" data-act="run">Open</button>
+            {% else %}
+              <button type="button" class="pay-btn" data-act="run">Run</button>
+            {% endif %}
+          {% endif %}
+          <span class="s" data-role="status" style="font-size:.75rem;color:var(--text-muted)"></span>
+        </div>
+        <pre class="adm-out" data-role="out"></pre>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+
+<script>
+  window.__MAINT_TOOLS = {{ tools | tojson }};
+</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='admin-maintenance.js') }}?v={{ APP_COMMIT }}"></script>
+{% endblock %}

@@ -6144,3 +6144,51 @@ tr.line-row.discussion-row { background: color-mix(in srgb, var(--accent) 6%, tr
 .maint-text { display: flex; flex-direction: column; gap: 2px; }
 .maint-title { font-weight: 500; }
 .maint-sub { font-size: 12px; color: var(--text-muted); }
+
+/* ── Admin hub + Maintenance (Cleanup E, 2026-11-02) ─────────────────────────
+   Same language as the Payees / Actuals screens (pay-* tokens: 36 px rows,
+   chips, quiet buttons). Prefix adm- ; every colour is a theme token. */
+.adm-page { max-width: 1392px; margin: 0 auto; }
+.adm-section { margin-bottom: 22px; }
+.adm-section-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 10px; }
+.adm-section-h h2 { font-size: .78rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); margin: 0; }
+.adm-section-h .sub { font-size: .78rem; color: var(--text-muted); }
+.adm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: 12px; }
+.adm-card { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.adm-card.wide { grid-column: 1 / -1; }
+.adm-card.danger { border-color: color-mix(in srgb, var(--red) 35%, var(--border)); }
+.adm-card-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.adm-card-h .t { font-size: .92rem; font-weight: 600; }
+.adm-card .d { font-size: .82rem; color: var(--text-muted); line-height: 1.4; }
+.adm-card .meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .75rem; color: var(--text-muted); }
+.adm-card .act { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+.adm-params { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.adm-params label { display: flex; flex-direction: column; gap: 3px; font-size: .72rem; color: var(--text-muted); min-width: 0; }
+.adm-params input, .adm-params select { height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-input); color: var(--text); font: inherit; font-size: .83rem; width: 100%; }
+.adm-params input:focus, .adm-params select:focus { outline: none; border-color: var(--accent); }
+.adm-out { display: none; margin: 4px 0 0; padding: 10px 12px; background: var(--bg-3); border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: .74rem; line-height: 1.45; color: var(--text); max-height: 360px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word; }
+.adm-out.show { display: block; }
+.adm-out.err { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+.adm-btn-danger { border-color: color-mix(in srgb, var(--red) 40%, var(--border)); color: var(--red); }
+.adm-btn-danger:hover { background: color-mix(in srgb, var(--red) 10%, var(--bg-2)); }
+.adm-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.adm-link { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--bg-2); color: var(--text); font-size: .85rem; font-weight: 500; text-decoration: none; }
+.adm-link:hover { background: var(--bg-3); text-decoration: none; }
+.adm-link .sub { font-size: .72rem; color: var(--text-muted); font-weight: 400; }
+.adm-kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: .8rem; }
+.adm-kv dt { color: var(--text-muted); }
+.adm-kv dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.adm-status-row { display: flex; align-items: center; gap: 10px; height: 36px; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); font-size: .85rem; }
+.adm-status-row:last-child { border-bottom: 0; }
+.adm-status-row .n { flex: 1; font-weight: 500; }
+.adm-status-row .s { font-size: .75rem; color: var(--text-muted); }
+.adm-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px 12px; }
+.adm-fields label { display: flex; flex-direction: column; gap: 3px; font-size: .74rem; color: var(--text-muted); }
+.adm-fields input { height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-input); color: var(--text); font: inherit; font-size: .85rem; }
+.adm-fields input:focus { outline: none; border-color: var(--accent); }

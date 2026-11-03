@@ -5978,7 +5978,7 @@ def admin_import_dropbox():
         db.session.rollback()
         logging.error(f"admin_import_dropbox failed: {e}")
         flash(f"Import failed: {e}", "error")
-    return redirect(url_for("admin_panel"))
+    return redirect(url_for("admin_maintenance"))
 
 
 # ── Budget ────────────────────────────────────────────────────────────────────
@@ -37873,6 +37873,7 @@ import routes.actuals  # noqa: E402,F401
 import routes.actuals_admin  # noqa: E402,F401
 import routes.payees  # noqa: E402,F401
 import routes.qbo_admin  # noqa: E402,F401
+import routes.admin_maintenance  # noqa: E402,F401
 
 
 if __name__ == "__main__":
