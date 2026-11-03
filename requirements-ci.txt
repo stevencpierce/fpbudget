@@ -1,0 +1,12 @@
+# What CI installs (Cleanup F, 2026-11-02). The unit job and the e2e job both
+# boot the real app.py against sqlite, so they need everything app.py imports
+# at module level — which is most of requirements.txt (weasyprint, Flask-Mail,
+# dropbox, veryfi, anthropic, boto3 ...). Nothing is left out on purpose:
+# psycopg2-binary, gunicorn, gevent and sentry-sdk all ship wheels and install
+# in seconds, and keeping the list identical to Render's means an import that
+# breaks CI would also break the deploy. weasyprint needs the Pango shared
+# library at import time — the workflow apt-installs it.
+-r requirements.txt
+
+# Test runner (pytest 9 changed a few defaults; the unit suite runs on 8 or 9).
+pytest<10
