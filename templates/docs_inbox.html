@@ -55,8 +55,8 @@
   .inbx-main { flex:1; min-width:0; }
   .inbx-fn { font-size:13.5px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .inbx-meta { font-size:11.5px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
-  .inbx-zone { flex:0 0 auto; display:flex; align-items:center; gap:8px; max-width:280px; }
-  .inbx-sugg { font-size:11.5px; color:var(--text-muted); max-width:170px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .inbx-zone { flex:0 0 auto; display:flex; align-items:center; gap:8px; max-width:420px; }
+  .inbx-sugg { font-size:11.5px; color:var(--text-muted); max-width:240px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .inbx-btn-match { font-size:12px; padding:5px 11px; border-radius:6px; background:#10231a;
                     border:1px solid #1f6f4a; color:#5fd0a0; cursor:pointer; white-space:nowrap; }
   .inbx-btn-match:hover { background:#143024; }
@@ -613,7 +613,7 @@
         lab.className = 'inbx-sugg';
         // Actuals Phase 5: the suggestion reads on the receipt side too —
         // "Matches charge · <date · vendor · amount> · 88%".
-        lab.textContent = 'Matches charge · ' + sc.label + (sc.confidence != null ? ' · ' + Math.round(sc.confidence * 100) + '%' : '');
+        lab.textContent = 'Matches charge · ' + sc.label.replace(/^\d{4}-(\d{2})-(\d{2}) · /, '$1/$2 · ') + (sc.confidence != null ? ' · ' + Math.round(sc.confidence * 100) + '%' : '');
         lab.title = (sc.reasons && sc.reasons.length) ? sc.reasons.join(' · ') : 'Suggested by the matching engine — confirm or reject';
         zone.appendChild(lab);
       }

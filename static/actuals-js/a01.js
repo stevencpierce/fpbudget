@@ -241,16 +241,18 @@
     if (t.itemized && t.itemized.length) return `<span class="aw-chip solid"><span>Itemized · ${t.itemized.length} lines</span></span>`;
     if (t.assigned_line) return `<span class="aw-chip solid" title="${esc(t.assigned_line.label)}"><span>${esc(t.assigned_line.label)}</span></span>`;
     if (t.section_only) return `<span class="aw-chip solid" title="Coded to the section, no line yet"><span>${esc(t.section_only.label)} · section</span></span>`;
-    if (t.receipt_suggestion && !t.suggested_line) {
-      const rs = t.receipt_suggestion;
-      return `<span class="aw-match"><span class="aw-chip info${rs.strong ? ' strong' : ''}" title="${esc((rs.reasons || []).join(' · ') || 'A receipt looks like this charge')}"><span>Receipt suggested · ${Math.round((rs.confidence || 0) * 100)}%</span></span>
-        <button type="button" class="aw-btn sm" data-act="confirm-match" data-tid="${t.id}" title="Approve the match (M)">Approve</button>
+    const rs = t.receipt_suggestion;
+    const rsTitle = rs ? esc(`${rs.vendor || rs.name} · ${rs.amount != null ? money(rs.amount) : ''} · ${(rs.reasons || []).join(' · ')}`) : '';
+    if (rs && !t.suggested_line) {
+      return `<span class="aw-match"><span class="aw-chip info${rs.strong ? ' strong' : ''}" title="${rsTitle}"><span>Receipt ${Math.round((rs.confidence || 0) * 100)}%</span></span>
+        <button type="button" class="aw-btn sm${rs.strong ? ' primary' : ''}" data-act="confirm-match" data-tid="${t.id}" title="Approve the receipt match (M)">Approve</button>
         <button type="button" class="aw-btn sm" data-act="dismiss-match" data-tid="${t.id}" title="Not a match">No</button></span>`;
     }
     if (t.suggested_line) {
       const conf = Math.round((t.suggested_line.confidence || 0) * 100);
       const target = t.suggested_line.id ? `data-suggest-line="${t.suggested_line.id}"` : `data-suggest-section="${esc(t.suggested_line.section)}"`;
-      return `<button type="button" class="aw-chip ghost" ${target} data-tid="${t.id}" title="${esc(t.suggested_line.reason || 'Accept this suggestion')}"><span>${esc(t.suggested_line.label)}</span>${conf ? `<span class="conf">${conf}%</span>` : ''}</button>`;
+      return `<button type="button" class="aw-chip ghost" ${target} data-tid="${t.id}" title="${esc(t.suggested_line.reason || 'Accept this suggestion')}"><span>${esc(t.suggested_line.label)}</span>${conf ? `<span class="conf">${conf}%</span>` : ''}</button>`
+        + (rs ? ` <span class="aw-chip info${rs.strong ? ' strong' : ''}" title="${rsTitle} — approve with M or in Review matches"><span>Receipt ${Math.round((rs.confidence || 0) * 100)}%</span></span>` : '');
     }
     return '<span class="muted" style="font-size:12px">No suggestion</span>';
   }
@@ -386,9 +388,9 @@
       const sc = r.suggested_charge;
       if (sc) {
         const pct = Math.round((sc.confidence || 0) * 100);
-        status.push(`<span class="aw-match"><span class="aw-chip info${sc.strong ? ' strong' : ''}" title="${esc((sc.reasons || []).join(' · '))}"><span>Matches charge · ${esc(sc.vendor)} · ${esc(shortDate(sc.date))} · ${money(sc.amount)} · ${pct}%</span></span>
-          <button type="button" class="aw-btn sm" data-act="confirm-match" data-tid="${sc.id}" title="Approve the match (M)">Confirm</button>
-          <button type="button" class="aw-btn sm" data-act="dismiss-match" data-tid="${sc.id}" title="Separate them; not suggested again">Not a match</button></span>`);
+        status.push(`<span class="aw-match"><span class="aw-chip info${sc.strong ? ' strong' : ''}" title="${esc((sc.reasons || []).join(' · '))}"><span>Matches charge · ${esc(sc.vendor)} · ${esc(shortDate(sc.date))} · ${money(sc.amount)} · ${pct}%${sc.strong ? ' · strong' : ''}</span></span>
+          <span class="acts"><button type="button" class="aw-btn sm${sc.strong ? ' primary' : ''}" data-act="confirm-match" data-tid="${sc.id}" title="Approve the match (M)">Confirm</button>
+          <button type="button" class="aw-btn sm" data-act="dismiss-match" data-tid="${sc.id}" title="Separate them; not suggested again">Not a match</button></span></span>`);
       }
       if (r.dup_pending) status.push('<span class="aw-flag yellow">Possible duplicate</span>');
       if (!status.length) status.push('<span class="aw-flag none">Waiting</span>');
@@ -403,7 +405,7 @@
           <a class="ell muted" style="font-size:11px;max-width:100%" href="/docs/upload/${r.doc_id}/raw" target="_blank" rel="noopener">${esc(r.name)}</a>
         </div>
         <div class="aw-cell num right amt">${r.amount != null ? money(r.amount) : '—'}</div>
-        <div class="aw-cell" style="overflow:visible">${status.join(' ')}</div>
+        <div class="aw-cell">${status.join(' ')}</div>
         <div class="aw-cell" style="gap:6px">
           <button type="button" class="aw-btn sm${canLink ? ' primary' : ''}" data-act="link-selected" data-doc="${r.doc_id}" ${canLink ? '' : 'disabled'} title="${esc(linkTitle)}">Link to selected</button>
           <button type="button" class="aw-btn sm" data-act="create-expense" data-doc="${r.doc_id}">Create expense</button>

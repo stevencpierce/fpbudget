@@ -245,3 +245,149 @@ def test_admin_pool_shows_claimed_row(ws):
     # query string to the view it landed in).
     page.wait_for_selector("#aw-table .aw-row[aria-selected='true']", timeout=DEFAULT_TIMEOUT)
     expect(page.locator("#aw-table .aw-row[aria-selected='true']")).to_have_count(1)
+
+
+# ═══ Phase 5 — matching, receipt linking, duplicates (2026-11-03) ═════════
+# The duplicates tests run on the module's throwaway project (two
+# hand-typed twins). The receipt tests need receipts, which only the OCR
+# pipeline or scripts/seed_local.py can make, so they run on the SEEDED
+# project ("GrubHub Fee Breakdown": a Lyft receipt with its charge, a
+# Parking charge with its receipt, Sweetgreen suggested) and skip when it
+# is not there.
+
+SEEDED_PROJECT = "GrubHub Fee Breakdown"
+
+
+def _seeded_pid(page: Page):
+    go_to_projects(page)
+    card = page.locator(f".project-card[data-name='{SEEDED_PROJECT.lower()}']")
+    if card.count() == 0:
+        return None
+    return int(card.first.get_attribute("data-id"))
+
+
+@pytest.fixture(scope="module")
+def seeded(ws):
+    page, _pid = ws
+    pid = _seeded_pid(page)
+    if pid is None:
+        pytest.skip(f"The seeded project '{SEEDED_PROJECT}' (scripts/seed_local.py) is not on this app.")
+    _reload_ws(page, pid)
+    return page, pid
+
+
+def test_duplicates_view_keep_both_and_delete_the_extra(ws):
+    page, pid = ws
+    # Two pairs of hand-typed twins (same vendor, amount and day).
+    for v in ("WS Twin A", "WS Twin B"):
+        for _ in range(2):
+            _post_json(page, f"/projects/{pid}/actuals/manual-expense", {
+                "vendor": v, "amount": 77.70, "txn_date": "2026-10-25",
+                "payment_method": "company_card", "note": "e2e twin"})
+    _reload_ws(page, pid, "duplicates")
+    groups = page.locator("#aw-table .aw-dgrp[data-key]")
+    assert groups.count() >= 2
+    ga = page.locator("#aw-table .aw-dgrp[data-key]", has_text="WS Twin A")
+    expect(ga).to_have_count(1)
+    expect(ga).to_contain_text("keep the one first imported")
+    key_a = ga.get_attribute("data-key")
+    expect(page.locator(f"#aw-table .aw-drow.keeper", has_text="WS Twin A")).to_have_count(1)
+    take_step_screenshot(page, "actuals-ws-duplicates")
+    # Keep both: the group leaves and stays gone after a reload (remembered).
+    ga.locator('[data-act="dup-keep-both"]').click()
+    page.wait_for_timeout(1000)
+    expect(page.locator("#aw-table .aw-dgrp[data-key]", has_text="WS Twin A")).to_have_count(0)
+    _reload_ws(page, pid, "duplicates")
+    expect(page.locator(f'#aw-table .aw-dgrp[data-key="{key_a}"]')).to_have_count(0)
+    # Delete the extra on the other pair: the confirm dialog shows both rows.
+    gb = page.locator("#aw-table .aw-dgrp[data-key]", has_text="WS Twin B")
+    expect(gb).to_have_count(1)
+    extra_row = page.locator("#aw-table .aw-drow:not(.keeper)", has_text="WS Twin B")
+    extra_tid = int(extra_row.get_attribute("data-tid"))
+    extra_row.locator('[data-act="dup-delete"]').click()
+    page.wait_for_selector("#aw-dupdel[open]")
+    expect(page.locator("#aw-dupdel-rows .r")).to_have_count(2)
+    expect(page.locator("#aw-dupdel-rows .r.keep")).to_contain_text("WS Twin B")
+    take_step_screenshot(page, "actuals-ws-delete-extra")
+    page.click("#aw-dupdel-go")
+    page.wait_for_timeout(1200)
+    expect(page.locator("#aw-table .aw-dgrp[data-key]", has_text="WS Twin B")).to_have_count(0)
+    _open_view(page, "unclaimed")
+    expect(page.locator("#aw-table .aw-row[data-tid]", has_text="WS Twin B")).to_have_count(1)
+    expect(page.locator(f'#aw-table .aw-row[data-tid="{extra_tid}"]')).to_have_count(0)
+    # The twin rule is enforced server-side: a non-twin cannot be folded.
+    other = int(page.locator("#aw-table .aw-row[data-tid]", has_text="WS Twin A").first.get_attribute("data-tid"))
+    keeper_b = int(page.locator("#aw-table .aw-row[data-tid]", has_text="WS Twin B").first.get_attribute("data-tid"))
+    r = _fetch(page, f"/projects/{pid}/actuals/transaction/{other}/merge-duplicate", "POST", {"keeper_id": keeper_b})
+    assert r["status"] == 409, r
+
+
+def test_receipt_candidate_panel_then_link(seeded):
+    page, pid = seeded
+    _reload_ws(page, pid, "receipts")
+    row = page.locator("#aw-table .aw-row[data-doc]", has_text="Lyft")
+    if row.count() == 0:
+        pytest.skip("The seeded Lyft receipt is already linked on this app.")
+    expect(row.locator('[data-act="link-selected"]')).to_be_disabled()
+    expect(row.locator('[data-act="link-selected"]')).to_have_attribute("title", "Select a receipt and a charge")
+    row.locator(".vendor").click()
+    page.wait_for_selector("#aw-panel:not([hidden]) .aw-cand")
+    expect(page.locator(".aw-right")).to_have_class(re.compile(r"panel-open"))
+    cand = page.locator('#aw-panel .aw-cand[data-kind="charge"]').first
+    expect(cand).to_contain_text("LYFT")
+    expect(cand).to_contain_text("strong")
+    take_step_screenshot(page, "actuals-ws-receipt-panel")
+    cand.click()                                   # tick the charge
+    link = row.locator('[data-act="link-selected"]')
+    expect(link).to_be_enabled()
+    expect(link).to_have_attribute("title", re.compile(r"^Link to LYFT"))
+    link.click()
+    page.wait_for_timeout(1200)
+    expect(page.locator("#aw-table .aw-row[data-doc]", has_text="Lyft")).to_have_count(0)
+    expect(page.locator("#aw-panel")).to_be_hidden()
+    _open_view(page, "unclaimed")
+    charge = page.locator("#aw-table .aw-row[data-tid]", has_text="LYFT *RIDE")
+    expect(charge).to_have_count(1)
+    expect(charge).to_have_attribute("data-has-doc", "1")
+
+
+def test_strong_suggestion_approve_from_the_charge_row(seeded):
+    page, pid = seeded
+    _reload_ws(page, pid, "unclaimed")
+    row = page.locator("#aw-table .aw-row[data-tid]", has_text="Seaport garage")
+    if row.count() == 0 or row.locator('[data-act="confirm-match"]').count() == 0:
+        pytest.skip("The seeded Parking charge has no receipt suggestion on this app (already approved?).")
+    expect(row.locator(".aw-chip.info")).to_contain_text(re.compile(r"Receipt \d+%"))
+    row.locator('[data-act="confirm-match"]').click()
+    page.wait_for_timeout(1200)
+    row = page.locator("#aw-table .aw-row[data-tid]", has_text="Seaport garage")
+    expect(row).to_have_attribute("data-has-doc", "1")
+    expect(row.locator('[data-act="confirm-match"]')).to_have_count(0)
+    _open_view(page, "receipts")
+    expect(page.locator("#aw-table .aw-row[data-doc]", has_text="Seaport Garage")).to_have_count(0)
+
+
+def test_review_matches_approve_all_strong(seeded):
+    page, pid = seeded
+    _reload_ws(page, pid, "unclaimed")
+    chip = page.locator("#aw-reviewchip")
+    if chip.is_hidden():
+        pytest.skip("No suggested matches left to review on the seeded project.")
+    chip.click()
+    page.wait_for_selector("#aw-review[open]")
+    pairs = page.locator("#aw-review .aw-rpair")
+    assert pairs.count() >= 1
+    expect(pairs.first.locator(".why")).to_contain_text("%")
+    take_step_screenshot(page, "actuals-ws-review-matches")
+    strong = page.locator("#aw-review .aw-rpair.strong").count()
+    btn = page.locator("#aw-review-allstrong")
+    if strong == 0:
+        expect(btn).to_be_disabled()
+        pytest.skip("No strong pair to approve in bulk.")
+    expect(btn).to_contain_text(f"({strong})")
+    btn.click()
+    page.wait_for_timeout(1500)
+    expect(page.locator("#aw-review .aw-rpair.strong")).to_have_count(0)
+    page.keyboard.press("Escape")
+    r = _fetch(page, f"/projects/{pid}/actuals/workspace.json")
+    assert r["json"]["counts"]["strong_matches"] == 0

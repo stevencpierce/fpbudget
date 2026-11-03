@@ -186,6 +186,56 @@ from it (cash/reimbursement/accrual) — and every expense gets coded + backed.
   are superseded by this entry. Confirm in a deploy log that
   `migrate_fringes_to_admin_2026_11` ran once in production.
 
+## 🧾 Actuals Phase 5 — matching, receipt linking, duplicates, QuickBooks deletions (2026-11-03, branch `feat/actuals-matching`)
+- [x] A5-1 — THE matching engine: `actuals.score_match` / `rank_candidates` /
+  `suggest_pairs` (pure) + `match_candidates` / `refresh_match_suggestions`
+  (DB). `run_auto_match` is a name over it. Weights 0.5 amount / 0.3 date /
+  0.2 vendor + 0.1 same card; suggestion ≥ 0.55, strong ≥ 0.85 with a 0.20
+  runner-up gap. Unit-tested in `tests/unit/test_matching.py` (exact, tip,
+  posted later, wrong vendor, two equal → none strong, coincidence months
+  apart → nothing).
+- [x] A5-2 — Runs after every upload (`_ingest_document_bytes`), every sync
+  (`actuals_sync_now`, `_qbo_auto_sync_loop`) and every workspace load;
+  writes `match_status='suggested'` + `match_confidence` + `match_source=
+  'heuristic'`, clears stale heuristic suggestions, never touches AI-made or
+  confirmed links, never writes 'confirmed'. Bounded to 400 days.
+- [x] A5-3 — Both sides: workspace rows carry `receipt_suggestion.reasons /
+  strong`, receipts carry `suggested_charge`; the Docs inbox row has Confirm +
+  Not a match (same `dismiss-suggestion` route). Review-matches dialog
+  (`#aw-review`, a04.js) with Approve all strong → `matches/confirm-bulk`.
+  Counts: `matches_to_review`, `strong_matches`.
+- [x] A5-4 — Receipts view candidate panel (`#aw-panel`): `GET
+  …/doc/<did>/charge-candidates` (ranked + `?q=` search); Find backup uses
+  `…/transaction/<tid>/receipt-candidates` rewritten onto the engine. Link to
+  selected = selected receipt + ticked charge (`S.pickCharge`) or the single
+  selected charge; disabled with the "Select a receipt and a charge" title
+  otherwise. Receipt drag onto a panel charge links too.
+- [x] A5-5 — Duplicates: `is_duplicate_twin(day_window)` (3 days for two
+  QuickBooks rows via `duplicate_day_window`, same qbo id never a twin),
+  `find_duplicate_groups`, `pick_keeper`, `dup_group_key` ('dup:<ids>'
+  remembered in `transaction_dup_dismissal` by the existing dismiss route),
+  `duplicate_delete_mode`, `merge_duplicate_into` (pure field moves; splits /
+  evidence re-pointed), `POST …/transaction/<tid>/merge-duplicate` (twin check
+  → merge or delete, two activity entries, undoable). `activity_undo`
+  recreates a deleted transaction from `actuals.txn_snapshot`. View
+  `view=duplicates`, yellow flag → group, keys M / D.
+- [x] A5-6 — QuickBooks deletions: `qbo_sync.parse_cdc_payload` (status
+  "Deleted" stubs → `deleted`), `apply_qbo_deletions` (keyed on qbo id;
+  `actuals.qbo_deletion_action`: bare → delete with snapshot, else void:
+  `not_project_expense`, `no_charge_reason='voided in QuickBooks'`, red
+  `voided_in_qbo`), `reconcile_qbo_deletions` + `fetch_existing_ids`,
+  Maintenance tool `qbo-reconcile` (`POST /admin/qbo-reconcile-deletions`,
+  dry run / apply=1). Recover clears the voided flag. Sync result carries
+  `qbo_deleted` / `qbo_voided`.
+- [x] A5-7 — Tests: `tests/unit/test_matching.py` (25 cases), browser
+  `tests/test_actuals_workspace.py` (duplicates keep-both / delete-extra on
+  the throwaway project; receipt panel → Link, strong Approve, Review → Approve
+  all strong on the seeded project). Seed adds the Lyft pair and the Ryan
+  Mauskopf $4,500 BillPayment twins.
+- [ ] A5-8 — Not done: per-project sibling rows are untouched (the ledger
+  collapse PR removes them); `find_match_candidates` stays as the AI pass's
+  candidate pool (`_ai_match_batch`), not the rule; no schema change was needed.
+
 ## 🧾 Documents Phase 3 — payment attribution, QuickBooks vendor mirror, 1099 sheet (2026-11-02, Steven's Nov 1 decision)
 - [x] D3-1 — Schema: `transaction.payee_id` (FK crew_member, indexed), `payee_source`
   (`qbo | line | doc | alias | manual`), `qbo_entity_ref`; `vendor_alias.payee_id`;

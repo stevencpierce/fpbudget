@@ -29,7 +29,7 @@
     --aw-bar-bg: var(--bg-3); --aw-bar-fg: var(--text);
     --aw-bar-border: var(--border);
     --aw-cols: 40px 84px minmax(180px, 1fr) 110px 74px 80px minmax(200px, 1fr) 160px;
-    --aw-rcols: 48px 80px minmax(170px, 1.2fr) 100px minmax(170px, 1fr) 340px;
+    --aw-rcols: 48px 80px minmax(160px, 1fr) 96px minmax(230px, 1.4fr) 300px;
     --aw-ncols: 40px 84px minmax(180px, 1fr) 110px 74px 80px minmax(220px, 1.2fr) 110px;
     --aw-nums: 76px 76px 70px;
     color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.4;
@@ -137,7 +137,7 @@
   /* ── Table ── */
   .aw-tablewrap { margin-top: 12px; overflow: auto; flex: 1 1 auto; min-height: 0; padding-bottom: 84px; }
   .aw-table { min-width: 900px; }
-  .aw-table.receipts { min-width: 860px; }
+  .aw-table.receipts { min-width: 900px; }
   .aw-hrow, .aw-row { display: grid; grid-template-columns: var(--aw-cols); align-items: center; }
   .aw-table.receipts .aw-hrow, .aw-table.receipts .aw-row { grid-template-columns: var(--aw-rcols); }
   .aw-table.notproject .aw-hrow, .aw-table.notproject .aw-row { grid-template-columns: var(--aw-ncols); }
@@ -175,8 +175,9 @@
   .aw-hint { margin: 10px 24px 0; font-size: 12px; color: var(--text-muted); }
   .aw-thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border);
               background: var(--bg-3); display: block; }
-  .aw-table.receipts .aw-row { height: 44px; }
-  .aw-table.receipts .aw-cell { height: 44px; }
+  .aw-table.receipts .aw-row { height: 56px; }
+  .aw-table.receipts .aw-cell { height: 56px; }
+  .aw-table.receipts .aw-thumb { width: 44px; height: 44px; }
   .aw-row.excluded .vendor { text-decoration: line-through; color: var(--text-muted); }
   .aw-row.excluded { color: var(--text-muted); }
 
@@ -365,8 +366,10 @@
   .aw-reviewchip:hover { background: var(--aw-accent-soft-2); }
   .aw-table.receipts .aw-row[aria-selected="true"] { background: var(--aw-accent-soft-2); box-shadow: inset 3px 0 0 var(--accent); }
   .aw-table.receipts .aw-row { cursor: pointer; }
-  .aw-match { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; }
-  .aw-match .aw-chip { cursor: default; }
+  .aw-match { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; max-width: 100%; min-width: 0; }
+  .aw-match .aw-chip { cursor: default; max-width: 100%; }
+  .aw-match .acts { display: flex; gap: 4px; }
+  .aw-table.unclaimed .aw-match, .aw-table.assigned .aw-match, .aw-table.needs_backup .aw-match { flex-direction: row; align-items: center; gap: 6px; }
   .aw-match .aw-chip.strong { border-color: var(--green); color: var(--green); background: var(--aw-green-soft); }
   .aw-flag.yellow.linky { cursor: pointer; border: 0; background: transparent; padding: 0; font: inherit; }
   .aw-flag.yellow.linky:hover { text-decoration: underline; }
@@ -413,12 +416,14 @@
   .aw-rpair .acts { display: flex; gap: 6px; justify-content: flex-end; }
   .aw-rhead { padding: 8px 24px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); background: var(--bg); position: sticky; top: 0; }
   /* Duplicates view */
-  .aw-table.duplicates { min-width: 860px; }
+  .aw-table.duplicates { min-width: 920px; }
+  .aw-drow .vendor { flex: 0 1 auto; }
+  .aw-drow .sub { flex: 1 1 60px; }
   .aw-dgrp { display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 12px; background: var(--bg); border-top: 1px solid var(--border); border-bottom: 1px solid var(--aw-row-border); font-size: 13px; }
   .aw-dgrp .v { font-weight: 600; }
   .aw-dgrp .k { font-size: 12px; color: var(--text-muted); }
   .aw-dgrp .acts { margin-left: auto; display: flex; gap: 6px; }
-  .aw-drow { display: grid; grid-template-columns: 40px 84px minmax(180px, 1fr) 110px 74px 80px minmax(160px, 1fr) 260px; align-items: center; height: 40px;
+  .aw-drow { display: grid; grid-template-columns: 40px 76px minmax(170px, 1.1fr) 100px 64px 56px minmax(170px, 1fr) 250px; align-items: center; height: 40px;
              border-bottom: 1px solid var(--aw-row-border); background: var(--bg-2); }
   .aw-drow.keeper { background: var(--aw-green-soft); }
   .aw-drow .aw-cell { height: 40px; }

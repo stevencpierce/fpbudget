@@ -65,6 +65,16 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   `DOCUMENT_TYPES` / `DOC_TYPE_LABELS`, `PAYMENT_METHODS`, `MODE_META` —
   never a private copy. The lists reach templates through
   `app.inject_globals` and JS through `window.__FP_*` in base.html.
+- Matching and duplicates (Actuals Phase 5, 2026-11-03): matching is
+  `actuals.match_candidates` (score_match / rank_candidates / suggest_pairs),
+  ONE rule for the chip, the candidate panel, Find backup, Review matches and
+  the auto-matcher (`run_auto_match` = `refresh_match_suggestions`); it writes
+  `suggested`, never auto-confirms. Duplicates = `is_duplicate_twin` (3-day
+  window for two QuickBooks rows, same qbo id is never a twin) + the keeper
+  rule (`pick_keeper`: receipt → coded → earlier → lower id) via
+  `find_duplicate_groups`; deleting an extra goes through `merge_duplicate_into`
+  and `txn_snapshot` so `activity_undo` can recreate it. QuickBooks deletions
+  are keyed on (qbo_txn_id, qbo_txn_type): `qbo_sync.apply_qbo_deletions`.
 - Company-wide = Admin (Cleanup E, 2026-11-02): the company profile,
   QuickBooks connection, integrations status and every maintenance /
   diagnostic tool live on `/admin` and `/admin/maintenance`

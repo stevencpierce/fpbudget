@@ -110,7 +110,24 @@ bottom under "Recent Pushes".
 | ✅ | Schedule clone copies is_production_day + TravelDetail rows | Verbatim, not just the day_type / cell_flags. |
 | ✅ | Inherit every Budget setting on clone | Not just half. Includes payroll_profile, payroll_week_start, fee settings, etc. |
 
-### Top Sheet
+### Actuals — matching, receipt linking, duplicates, QuickBooks deletions (Phase 5, 2026-11-03)
+
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | One matching rule | `actuals.score_match` / `rank_candidates` / `suggest_pairs` decide whether a receipt belongs to a charge: amount (exact · tip range · within $5), date (same day · ±3 · ±7), vendor (same · overlapping words · different) and a bonus for the same card. 55% and up is a suggestion; 85% and up with no close runner-up is strong. Every path — the chip on a charge, the candidate panel, Find backup, Review matches, the auto-matcher — reads this one rule |
+| ✅ | Runs everywhere, never links by itself | After every upload (web, mobile, Dropbox sweep, zip), every QuickBooks sync (Sync now and the twice-daily run) and every workspace load the engine re-pairs every waiting receipt with every charge without backup (last 400 days). It only ever writes *suggested*; a person approves |
+| ✅ | Suggestion on both sides | The charge row shows "Receipt 92% · Approve · No"; the receipt row (Actuals → Receipts and the Docs inbox Match tab) shows "Matches charge · Lyft · Sep 28 · $88.44 · 100% · strong" with Confirm / Not a match. Not a match is remembered |
+| ✅ | Review matches | The "N matches to review" chip opens one dialog: receipt | charge | confidence and reasons per row, Approve / Not a match, and Approve all strong. Approve = the existing confirm (the receipt's placeholder row folds into the charge) |
+| ✅ | Receipts view: a real way to link | Click a receipt → the budget pane becomes a candidate panel: the ranked charges (top 8) with Link buttons and a search box over every unmatched charge. Tick a charge there (or have one selected in Unclaimed / Assigned) and the receipt row's Link to selected turns on — until then it is disabled with "Select a receipt and a charge". A receipt row can also be dragged onto a charge in the panel |
+| ✅ | Find backup on a charge | Row menu and the Needs backup row action open the same panel from the charge side: ranked receipts, inbox ones included, plus search |
+| ✅ | Duplicates view | Groups of charges that look like one event: same amount, same vendor (or card), within 3 days for two QuickBooks records (same day for CSV / manual), different QuickBooks ids. The suggested keeper is marked (receipt → coded → earlier date → lower id). Keep both (remembered), Delete the extra (confirm dialog shows both rows; coding, splits, receipt, reason and note move to the keeper first when the extra carries any), Not a project expense. Unclaimed / Assigned rows carry a yellow Possible duplicate flag that opens the group. Keys: M approves the selected suggestion, D opens the group |
+| ✅ | QuickBooks deletions honoured | Change capture now reads records QuickBooks deleted or voided after import: an uncoded row with no receipt is removed (logged, undoable); one carrying coding or a receipt is kept, excluded, flagged red "Voided in QuickBooks" and listed under Duplicates → Voided with Keep it / Leave excluded. Sync now reports both counts |
+| ✅ | Reconcile with QuickBooks | Admin → Maintenance tool: re-fetches by id every QuickBooks record from the last 120 days (one project or all) and lists the ones QuickBooks no longer returns; Preview first, Apply uses the same rule as the sync. Fails open on API errors |
+| ✅ | Undo for deletes | A transaction deleted from the Duplicates view or by a QuickBooks deletion comes back from its activity-log snapshot (same id, every column, its splits) |
+
+---
+
+## Top Sheet
 | ✅ | Label totals with active mode | "Subtotal (Working, Before Prod. Fee)" — clarifies which budget the column reflects. |
 | ✅ | Auto-line amounts shown in Working column | Workers' Comp / Production Insurance / Payroll Fee mirror into both Estimated and Working columns. |
 | ✅ | Apply fee dispersal + Production Insurance to Working column | Top Sheet's Working column matches Budget tab when nothing's changed. |
