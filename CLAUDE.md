@@ -138,6 +138,19 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   rows, the window) builds options with `FP.linePickerOptions` /
   `FP.LinePicker` — never a private `<select>`.
 
+- Dropbox paths follow the folder (2026-11-04): a project rename moves the
+  folder AND rewrites every stored path inside it
+  (`_remap_project_dropbox_paths` — DocUpload filed / archive paths,
+  trash_meta move sources, call-sheet archives; counts land on the rename's
+  activity row). Per-project roots come from `_project_dbx_root(slug)`.
+  A file that is still not where its row says → Admin → Maintenance →
+  "Re-link documents to Dropbox" (`routes/docs_relink.py`, Preview then
+  Run; updates rows only, never moves files; undoable per document).
+  preview-link / raw answer a path error with `DOC_MISSING_MESSAGE` +
+  `missing: true` (`_dbx_is_path_error`). `_INBOX` is created ONLY by
+  `_create_drop_folder` (fresh slug from the DB, project root must exist)
+  — a sweep holding a pre-rename row used to re-create the old folder.
+
 ## Splitting app.py (M1, ongoing)
 Route slices move to `routes/<name>.py` — plain modules using `@app.route` on
 the SAME app object (endpoint names/URLs unchanged; NO blueprints — url_for

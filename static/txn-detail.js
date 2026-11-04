@@ -35,7 +35,7 @@
   async function jget(url) {
     const r = await fetch(url, { credentials: 'same-origin' });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    if (!r.ok) { const e = new Error(d.error || ('HTTP ' + r.status)); e.data = d; throw e; }
     return d;
   }
   async function jpost(url, body, method) {
@@ -454,7 +454,14 @@
     D.el.querySelectorAll('.fpd-prev[data-prev]').forEach(async box => {
       const isPdf = !!box.dataset.pdf, isImg = !!box.dataset.img;
       let src = null;
-      try { const r = await jget(box.dataset.link); if (r && r.url) src = r.url; } catch (e) {}
+      try { const r = await jget(box.dataset.link); if (r && r.url) src = r.url; }
+      catch (e) {
+        if (e && e.data && e.data.missing) {
+          // Not at its recorded Dropbox path: say so (2026-11-04).
+          box.innerHTML = `<div class="fpd-noprev"><span>${esc(e.data.error || 'This file is not at its recorded Dropbox location.')}</span></div>`;
+          return;
+        }
+      }
       if (!src) {
         try { const h = await fetch(box.dataset.raw, { method: 'HEAD', credentials: 'same-origin' }); if (h.ok) src = box.dataset.raw; } catch (e) {}
       }

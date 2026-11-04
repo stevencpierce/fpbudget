@@ -1275,6 +1275,33 @@ def _dbx_paths(dropbox_folder):
         dest = f"{_DBX_OPS_ROOT}/{dropbox_folder}"
     return src, dest
 
+def _project_dbx_root(dropbox_folder):
+    """The project's Dropbox root for a slug — `/<slug>` in namespace mode,
+    `<ops root>/<slug>` otherwise. ONE rule for every per-project path
+    (2026-11-04)."""
+    slug = (dropbox_folder or '').strip('/')
+    return f"/{slug}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{slug}"
+
+
+def _dbx_is_path_error(exc):
+    """True when a Dropbox error says the PATH is wrong (not found, not a
+    file…) rather than auth / rate-limit / network: the file is not at its
+    recorded location. Works on dropbox.exceptions.ApiError (every
+    *Error.is_path()) and on the stringified form."""
+    try:
+        err = getattr(exc, 'error', None)
+        if err is not None and hasattr(err, 'is_path') and err.is_path():
+            return True
+    except Exception:
+        pass
+    s = str(exc).lower()
+    return ("not_found" in s) or ("lookuperror" in s and "path" in s)
+
+
+DOC_MISSING_MESSAGE = ("This file isn't at its recorded Dropbox location. "
+                       "Admin → Maintenance → Re-link documents can find it.")
+
+
 def _provision_dropbox_folder(dropbox_folder):
     """Copy the project template tree to a new project folder. Returns path or None."""
     has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
@@ -5054,6 +5081,81 @@ def project_delete(pid):
     return redirect(url_for("dashboard"))
 
 
+# Every column that stores a path INSIDE a project's Dropbox folder — the
+# ones a folder move leaves stale. crew_dbx_path is NOT here: it lives under
+# Crew Database/<Person>/<Year>/<Project NAME>, which a rename never moves.
+_PROJECT_DBX_PATH_COLUMNS = ('filed_dropbox_path', 'source_archive_path')
+
+
+def _remap_slug_path(path, old_slug, new_slug):
+    """`…/<old_slug>/…` → `…/<new_slug>/…` (the same rule _clone_project_data
+    uses); anything else is returned untouched. The slashes make it a whole
+    path segment, so a slug that is a prefix of another is never touched."""
+    if path and old_slug and new_slug and f"/{old_slug}/" in path:
+        return path.replace(f"/{old_slug}/", f"/{new_slug}/")
+    return path
+
+
+def _remap_project_dropbox_paths(pid, old_slug, new_slug):
+    """After a project's Dropbox folder moved from old_slug to new_slug,
+    rewrite every stored path of THAT project that still points inside the
+    old folder (fix 2026-11-04: renaming project 307 moved the folder but
+    left every DocUpload.filed_dropbox_path behind, so every preview 404'd).
+
+    Touches: DocUpload.filed_dropbox_path / source_archive_path, the `src`
+    of each move recorded in DocUpload.trash_meta (so Restore puts a trashed
+    file back into the NEW folder), and CallSheetSend.dropbox_path on the
+    project's budgets. Other projects are never touched. Does NOT commit —
+    the caller owns the transaction. Returns counts per column."""
+    counts = {'docs': 0, 'filed_dropbox_path': 0, 'source_archive_path': 0,
+              'trash_meta': 0, 'callsheet_sends': 0}
+    if not (old_slug and new_slug) or old_slug == new_slug:
+        return counts
+    import json as _json_rm
+    from models import CallSheetSend as _CSS
+    needle = f"/{old_slug}/"
+    docs = (DocUpload.query.filter(DocUpload.project_id == pid)
+            .filter(db.or_(DocUpload.filed_dropbox_path.contains(needle),
+                        DocUpload.source_archive_path.contains(needle),
+                        DocUpload.trash_meta.contains(needle)))
+            .all())
+    for d in docs:
+        touched = False
+        for col in _PROJECT_DBX_PATH_COLUMNS:
+            cur = getattr(d, col, None)
+            new = _remap_slug_path(cur, old_slug, new_slug)
+            if new != cur:
+                setattr(d, col, new[:500])
+                counts[col] += 1
+                touched = True
+        if d.trash_meta and needle in d.trash_meta:
+            try:
+                meta = _json_rm.loads(d.trash_meta)
+                changed = False
+                for mv in (meta.get('moves') or []):
+                    if isinstance(mv, dict) and mv.get('src'):
+                        ns = _remap_slug_path(mv['src'], old_slug, new_slug)
+                        if ns != mv['src']:
+                            mv['src'] = ns
+                            changed = True
+                if changed:
+                    d.trash_meta = _json_rm.dumps(meta)
+                    counts['trash_meta'] += 1
+                    touched = True
+            except Exception:
+                pass
+        if touched:
+            counts['docs'] += 1
+    sends = (_CSS.query.join(Budget, Budget.id == _CSS.budget_id)
+             .filter(Budget.project_id == pid, _CSS.dropbox_path.contains(needle)).all())
+    for s in sends:
+        new = _remap_slug_path(s.dropbox_path, old_slug, new_slug)
+        if new != s.dropbox_path:
+            s.dropbox_path = new[:500]
+            counts['callsheet_sends'] += 1
+    return counts
+
+
 @app.route("/projects/<int:pid>/rename", methods=["POST"])
 @login_required
 def project_rename(pid):
@@ -5135,17 +5237,14 @@ def project_rename(pid):
 
     # Move the Dropbox folder to match the new slug.
     dropbox_renamed = False
+    remapped = None
     if new_slug and old_slug and new_slug != old_slug:
         try:
             has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
             if has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN'):
                 dbx = _dbx_client()
-                if _DBX_NAMESPACE_ID:
-                    src  = f"/{old_slug}"
-                    dest = f"/{new_slug}"
-                else:
-                    src  = f"{_DBX_OPS_ROOT}/{old_slug}"
-                    dest = f"{_DBX_OPS_ROOT}/{new_slug}"
+                src  = _project_dbx_root(old_slug)
+                dest = _project_dbx_root(new_slug)
                 dbx.files_move_v2(src, dest, autorename=False)
                 p.dropbox_folder = new_slug
                 dropbox_renamed = True
@@ -5153,6 +5252,19 @@ def project_rename(pid):
         except Exception as e:
             logging.error(f"[DBX RENAME] failed for pid={pid}: "
                           f"{type(e).__name__}: {e} — DB renamed but folder NOT moved")
+    # The folder moved → every stored path inside it moves with it (fix
+    # 2026-11-04). When the move failed the paths stay as they are: they
+    # still point at the files.
+    if dropbox_renamed:
+        try:
+            # SAVEPOINT: a remap failure rolls back only the remap — the
+            # rename, the new slug and the budget names still commit.
+            with db.session.begin_nested():
+                remapped = _remap_project_dropbox_paths(pid, old_slug, new_slug)
+        except Exception:
+            logging.exception(f"[DBX RENAME] path remap failed for pid={pid}")
+            remapped = {'error': 'path remap failed — run Admin → Maintenance → '
+                                 'Re-link documents to Dropbox'}
 
     db.session.commit()
     try:
@@ -5160,9 +5272,12 @@ def project_rename(pid):
                       entity_id=pid, entity_label=new_name,
                       project_id=pid,
                       before={'name': old_name, 'dropbox_folder': old_slug},
-                      after={'name': new_name, 'dropbox_folder': p.dropbox_folder},
+                      after={'name': new_name, 'dropbox_folder': p.dropbox_folder,
+                             'dropbox_paths_remapped': remapped},
                       note=f'Renamed project: "{old_name}" → "{new_name}"'
-                           + (' (folder moved)' if dropbox_renamed else ''))
+                           + (' (folder moved)' if dropbox_renamed else '')
+                           + (f" — {remapped.get('docs', 0)} document path(s) updated"
+                              if isinstance(remapped, dict) and 'docs' in remapped else ''))
     except Exception: pass
     msg = f"Renamed '{old_name}' → '{new_name}'."
     if budgets_renamed:
@@ -5170,6 +5285,11 @@ def project_rename(pid):
                 f"{'s' if budgets_renamed != 1 else ''} renamed to match.")
     if old_slug and new_slug and not dropbox_renamed and new_slug != old_slug:
         msg += " Note: Dropbox folder could not be moved — rename it manually."
+    elif isinstance(remapped, dict) and remapped.get('error'):
+        msg += f" Folder moved, but {remapped['error']}."
+    elif isinstance(remapped, dict) and remapped.get('docs'):
+        msg += (f" Folder moved; {remapped['docs']} document"
+                f"{'s' if remapped['docs'] != 1 else ''} re-pointed at it.")
     flash(msg, "success")
     return redirect(url_for("dashboard"))
 
@@ -20056,7 +20176,13 @@ def activity_undo(pid, bid, aid):
     if row.undone_at is not None:
         return jsonify({"ok": False, "error": "Already undone"}), 409
     if row.entity_type not in ('budget_line', 'transaction', 'transaction_match',
-                               'schedule_day'):
+                               'schedule_day', 'doc_upload'):
+        return jsonify({"ok": False, "error": "Undo isn't supported for this action yet"}), 400
+    if row.entity_type == 'doc_upload' and not (
+            row.action == 'update' and row.before_json
+            and any(k in (row.before_json or '') for k in _PROJECT_DBX_PATH_COLUMNS)):
+        # Only the Dropbox re-link (Maintenance → Re-link documents, 2026-11-04)
+        # is undoable on a document so far: it logs the old path in `before`.
         return jsonify({"ok": False, "error": "Undo isn't supported for this action yet"}), 400
 
     # Visibility check — user must be allowed to see this row to undo it.
@@ -20384,6 +20510,18 @@ def activity_undo(pid, bid, aid):
         except Exception as _ue:
             db.session.rollback()
             return jsonify({"ok": False, "error": f"Could not reverse the match: {_ue}"}), 400
+
+    elif row.entity_type == 'doc_upload':
+        # A re-linked Dropbox path (Maintenance → Re-link documents): put the
+        # recorded path back. Nothing moves in Dropbox.
+        _du = DocUpload.query.get(row.entity_id)
+        if not _du:
+            return jsonify({"ok": False, "error": "That document no longer exists."}), 400
+        if not before:
+            return jsonify({"ok": False, "error": "No saved state to restore for this action."}), 400
+        for k in _PROJECT_DBX_PATH_COLUMNS:
+            if k in before:
+                setattr(_du, k, before[k])
 
     row.undone_at    = datetime.utcnow()
     row.undone_by_id = current_user.id
@@ -32107,9 +32245,62 @@ _DROP_SWEEP_MAX_BYTES = 25 * 1024 * 1024
 
 
 def _drop_folder_path(project):
-    if _DBX_NAMESPACE_ID:
-        return f"/{project.dropbox_folder}/{_DROP_FOLDER_NAME}"
-    return f"{_DBX_OPS_ROOT}/{project.dropbox_folder}/{_DROP_FOLDER_NAME}"
+    return f"{_project_dbx_root(project.dropbox_folder)}/{_DROP_FOLDER_NAME}"
+
+
+def _current_project_slug(project):
+    """The project's dropbox_folder as the database holds it RIGHT NOW — a
+    fresh query, not the in-memory row. The sweep loop and the Docs tab
+    hold rows loaded before a rename commits; a rename that moved the
+    folder in between is what re-created an empty old-slug `_INBOX` on
+    2026-11-04 (project 307). READ COMMITTED sees the new slug per
+    statement, so no rollback is needed."""
+    try:
+        return (db.session.query(ProjectSheet.dropbox_folder)
+                .filter(ProjectSheet.id == project.id).scalar())
+    except Exception:
+        db.session.rollback()
+        return project.dropbox_folder
+
+
+def _create_drop_folder(dbx, project):
+    """The ONE place that creates a project's `_INBOX` (+ `_imported`):
+    the sweep's first-use branch and the Drop-sweep status page's
+    ?provision=1 both come here. Never creates a folder for a slug no
+    project has any more, and never for a project whose root folder is
+    not in Dropbox (creating `_INBOX` would silently create the root).
+    Returns {"ok", "created", "path", "error"?}."""
+    slug_now = _current_project_slug(project)
+    if not slug_now:
+        return {"ok": False, "created": False, "path": None, "refused": True,
+                "error": f"project #{project.id} has no Dropbox folder any more — not creating one"}
+    if slug_now != project.dropbox_folder:
+        logging.info(f"[drop-sweep] project {project.id}: slug changed "
+                     f"{project.dropbox_folder!r} → {slug_now!r}; using the current one")
+        project.dropbox_folder = slug_now
+    root = _project_dbx_root(slug_now)
+    path = f"{root}/{_DROP_FOLDER_NAME}"
+    try:
+        dbx.files_get_metadata(root)
+    except Exception as _re:
+        return {"ok": False, "created": False, "path": path, "refused": True,
+                "error": (f"project folder {root} is not in Dropbox "
+                          f"({type(_re).__name__}: {_re}) — not creating {_DROP_FOLDER_NAME} "
+                          f"(the folder may have been renamed, archived or never provisioned)")}
+    try:
+        dbx.files_create_folder_v2(path)
+    except Exception as _ce:
+        # Already there (a concurrent create, or the list failed for another
+        # reason) is fine — anything else is reported.
+        if 'conflict' not in str(_ce).lower():
+            return {"ok": False, "created": False, "path": path,
+                    "error": f"could not create {path}: {type(_ce).__name__}: {_ce}"}
+    try:
+        dbx.files_create_folder_v2(f"{path}/_imported")
+    except Exception:
+        pass
+    logging.info(f"[drop-sweep] created {path}")
+    return {"ok": True, "created": True, "path": path}
 
 
 def _sweep_project_drop_folder(project, uploader=None):
@@ -32120,42 +32311,60 @@ def _sweep_project_drop_folder(project, uploader=None):
     import mimetypes
     dbx = _dbx_client()
     path = _drop_folder_path(project)
-    try:
+
+    def _list_all(p):
         # Recursive (owner 2026-10-31: "if a subfolder gets added in
         # there… it can also process those") — but never our own
         # _imported/_skipped buckets. Cursor-paged for big drops.
-        _res = dbx.files_list_folder(path, recursive=True)
-        entries = list(_res.entries)
+        _res = dbx.files_list_folder(p, recursive=True)
+        out = list(_res.entries)
         while getattr(_res, 'has_more', False):
             _res = dbx.files_list_folder_continue(_res.cursor)
-            entries.extend(_res.entries)
+            out.extend(_res.entries)
+        return out
+
+    try:
+        entries = _list_all(path)
     except Exception as _le:
-        # First use — create the folder (and its _imported child) so the
-        # user has somewhere to drop files. A create FAILURE must be LOUD
-        # (2026-09-08: the folder silently never appeared for GINTS — the
-        # old `except: pass` here hid whatever Dropbox said).
-        try:
-            dbx.files_create_folder_v2(path)
-        except Exception as _ce:
-            _err = (f"could not create {path}: {type(_ce).__name__}: {_ce} "
-                    f"(list said: {type(_le).__name__}: {_le})")
-            logging.error(f"[drop-sweep] {project.id}/{project.dropbox_folder}: {_err}")
+        # The folder is not where this row says. Before treating that as
+        # first use, re-read the slug: a rename may have just moved the
+        # folder (2026-11-04) — then sweep the NEW path and never touch
+        # the old one.
+        slug_now = _current_project_slug(project)
+        if slug_now and slug_now != project.dropbox_folder:
+            project.dropbox_folder = slug_now
+            path = _drop_folder_path(project)
             try:
-                _record_bg_error(f"drop-folder create for project "
-                                 f"#{project.id} ({project.dropbox_folder})",
-                                 tag=f"dropfolder-{project.id}")
-            except Exception:
-                pass
-            return {"ok": False, "created": False, "imported": 0, "skipped": 0,
-                    "path": path, "error": _err}
-        try:
-            dbx.files_create_folder_v2(f"{path}/_imported")
-        except Exception:
-            pass
-        logging.info(f"[drop-sweep] created {path}")
-        return {"ok": True, "created": True, "imported": 0, "skipped": 0,
-                "path": path,
-                "message": "Drop folder created — put files in it and sweep again."}
+                entries = _list_all(path)
+            except Exception as _le2:
+                _le = _le2
+                entries = None
+        else:
+            entries = None
+        if entries is None:
+            # First use — create the folder (and its _imported child) so the
+            # user has somewhere to drop files. A create FAILURE must be LOUD
+            # (2026-09-08: the folder silently never appeared for GINTS — the
+            # old `except: pass` here hid whatever Dropbox said).
+            _cr = _create_drop_folder(dbx, project)
+            if not _cr.get('ok'):
+                _err = f"{_cr.get('error')} (list said: {type(_le).__name__}: {_le})"
+                logging.error(f"[drop-sweep] {project.id}/{project.dropbox_folder}: {_err}")
+                if not _cr.get('refused'):
+                    # A Dropbox create that FAILED goes to the error ring +
+                    # Sentry; a refusal (no root / no slug) is a known state
+                    # the status page shows — logged, not alerted every cycle.
+                    try:
+                        _record_bg_error(f"drop-folder create for project "
+                                         f"#{project.id} ({project.dropbox_folder})",
+                                         tag=f"dropfolder-{project.id}")
+                    except Exception:
+                        pass
+                return {"ok": False, "created": False, "imported": 0, "skipped": 0,
+                        "path": _cr.get('path') or path, "error": _err}
+            return {"ok": True, "created": True, "imported": 0, "skipped": 0,
+                    "path": _cr['path'],
+                    "message": "Drop folder created — put files in it and sweep again."}
     import dropbox as _dbx_mod
     files = [e for e in entries
              if isinstance(e, _dbx_mod.files.FileMetadata)
@@ -32762,15 +32971,11 @@ def admin_drop_sweep_status(pid=None):
                 rows.append((prj.name, status, f'✓ {path} — but listing failed: {_lfe}'))
         except Exception:
             if provision:
-                try:
-                    dbx.files_create_folder_v2(path)
-                    try:
-                        dbx.files_create_folder_v2(f"{path}/_imported")
-                    except Exception:
-                        pass
-                    rows.append((prj.name, status, f'✓ CREATED {path}'))
-                except Exception as _pe2:
-                    rows.append((prj.name, status, f'✗ create failed: {_pe2}'))
+                _cr = _create_drop_folder(dbx, prj)
+                if _cr.get('ok'):
+                    rows.append((prj.name, status, f'✓ CREATED {_cr["path"]}'))
+                else:
+                    rows.append((prj.name, status, f'✗ create failed: {_cr.get("error")}'))
             else:
                 rows.append((prj.name, status, f'✗ missing — expected at {path}'))
 
@@ -34679,6 +34884,9 @@ def docs_upload_raw(uid):
                 if not err:
                     content = bytes_
             if content is None:
+                if _dbx_is_path_error(last_err):
+                    return jsonify({"error": DOC_MISSING_MESSAGE, "missing": True,
+                                    "path": raw_path}), 404
                 return jsonify({
                     "error": f"Could not fetch file: {type(last_err).__name__}: {last_err}",
                 }), 500
@@ -37036,6 +37244,15 @@ def docs_upload_preview_link(uid):
         except Exception as e:
             last_err = e
             continue
+    if _dbx_is_path_error(last_err):
+        # The file is not at its recorded path (a renamed project folder,
+        # a file moved by hand): say so, in words, instead of the raw
+        # ApiError (2026-11-04).
+        logging.warning(f"[preview-link] doc #{uid} missing at {raw_path}: {last_err}")
+        return jsonify({"error": DOC_MISSING_MESSAGE, "missing": True,
+                        "path": raw_path,
+                        "content_type": upload.content_type or "application/octet-stream",
+                        "filename": upload.filed_filename or upload.original_filename}), 404
     return jsonify({
         "error": f"Dropbox temp link failed: {type(last_err).__name__}: {last_err}",
     }), 500
@@ -38413,6 +38630,7 @@ import routes.qbo_admin  # noqa: E402,F401
 import routes.admin_maintenance  # noqa: E402,F401
 import routes.ledger_admin  # noqa: E402,F401
 import routes.actuals_detail  # noqa: E402,F401
+import routes.docs_relink  # noqa: E402,F401
 
 
 if __name__ == "__main__":
