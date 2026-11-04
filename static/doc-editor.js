@@ -294,6 +294,20 @@
   function renderPreview(uid, linkData) {
     const previewEl = $('docDetailPreview'); if (!previewEl) return;
     const rawUrl = '/docs/upload/' + uid + '/raw';
+    if (linkData && linkData.missing) {
+      // The file is not at its recorded Dropbox path (a renamed project
+      // folder, a file moved by hand): say so instead of framing the raw
+      // route's JSON error (2026-11-04).
+      const zb = $('docDetailZoomBar'); if (zb) zb.style.display = 'none';
+      previewEl.style.alignItems = 'center';
+      previewEl.style.justifyContent = 'center';
+      previewEl.innerHTML = '<div style="padding:1.5rem;max-width:380px;text-align:center;font-size:13px;line-height:1.5;color:var(--text-muted)">'
+        + '<div style="font-weight:600;color:#ef4444;margin-bottom:6px">\u26a0 File not found in Dropbox</div>'
+        + esc(linkData.error || 'This file isn\'t at its recorded Dropbox location.')
+        + (linkData.path ? '<div style="margin-top:8px;font-size:11px;word-break:break-all;opacity:.75">' + esc(linkData.path) + '</div>' : '')
+        + '</div>';
+      return;
+    }
     const fn = (linkData && linkData.filename ? linkData.filename : '').toLowerCase();
     const ct = (linkData && linkData.content_type ? linkData.content_type : '').toLowerCase();
     const isImage = ct.indexOf('image/') === 0 || /\.(jpe?g|png|gif|heic|heif|webp|bmp|tiff?)$/i.test(fn);
