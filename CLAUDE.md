@@ -137,6 +137,38 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   rows and the budget page's drill-down. Every picker (Assign dialog, split
   rows, the window) builds options with `FP.linePickerOptions` /
   `FP.LinePicker` — never a private `<select>`.
+- Payee identity = `actuals.same_payee` (2026-11-04) — ONE rule for "these
+  two names / QuickBooks vendor ids pay the same payee": equal
+  `vendor_match_key` (or `payee_key`, the name without LLC / Inc), the same
+  QuickBooks vendor id, or a person and their LOAN-OUT company
+  (`payee_loanout`, Alembic 0028 + essential pass; read only through
+  `actuals.loanout_index()`, cached per request on flask.g —
+  `invalidate_loanout_index` after a write). It feeds the ledger's
+  payee-differs flag (`ledger.payees_differ`), the matching engine's vendor
+  score (`vendor_score` → "same payee (loan-out)"), the duplicate twin rule,
+  document attribution (`payee_for_vendor_string`, `_crew_suggest_for`) and
+  QuickBooks EntityRef attribution (`qbo_sync._payee_by_qbo_vendor` maps a
+  loan-out's vendor to its PERSON). LLC / Inc / Productions are never a
+  "shared word" (`payee_tokens`): You Choose, LLC ≠ Sarah Caye Productions.
+  Write loan-outs only with `actuals.add_loanout` / `remove_loanout`
+  (they re-attribute charges); a company belongs to one person; QuickBooks
+  is never written (the vendor is picked from the `qbo_vendor` mirror).
+  Display is `payee_display` / `loanout_via`: "Danielle Miller · via Two
+  Foot Shuffle LLC". Payee-differs → "Same person" / "Different" is
+  `ledger.resolve_same_person` / `resolve_different` (POST
+  /admin/ledger/conflicts/same-person | different); after any loan-out
+  write call `ledger.recheck_payee_flags`.
+- Compare duplicates (2026-11-04): ONE panel (`static/dup-compare.js`,
+  `FPCompare`, the `.fpd` shell) over ONE payload
+  (`…/actuals/duplicates/compare.json`, built by `actuals.compare_columns`
+  from `_project_dup_groups` = `find_duplicate_groups` over `_ws_pool_rows`,
+  the same pool selection as the workspace). Keep this one =
+  `…/duplicates/settle` → `_merge_extra_into_keeper` per extra (the ONE
+  removal path, shared with merge-duplicate; logged, undo-batch). Keep both
+  = the dismissal; `dup:<ids>` keys count in EVERY project
+  (`_dup_dismissed_keys`) since a pool row is one row company-wide. The row
+  flag chip is hidden under the hover actions, so a duplicate row's hover
+  action is Compare; D opens it too.
 
 ## Splitting app.py (M1, ongoing)
 Route slices move to `routes/<name>.py` — plain modules using `@app.route` on

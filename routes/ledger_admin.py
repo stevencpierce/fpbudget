@@ -17,6 +17,10 @@ Routes:
                                          keep_project_id, loser_mode}
   POST /admin/ledger/conflicts/unmatch  {txn_id}  payee differs → unmatch
   POST /admin/ledger/conflicts/clear    {txn_id}  it's fine
+  POST /admin/ledger/conflicts/same-person {txn_id[, person_id, company_name,
+                                         qbo_vendor_id]}  payee differs →
+                                         link the loan-out, clear the flag
+  POST /admin/ledger/conflicts/different {txn_id}  payee differs → keep it
   POST /admin/ledger/release            {txn_id}  release to unclaimed +
                                         unmatch receipt (any claimed row)
   GET  /admin/qbo-accounts              the company account set page
@@ -232,6 +236,50 @@ def admin_ledger_release():
         logging.exception("[ledger] release failed")
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
+
+
+# ── Payee differs → Same person (loan-out) / Different (2026-11-04) ───────
+# Used by the conflict card and by the detail window's payee-differs box.
+
+@app.route("/admin/ledger/conflicts/same-person", methods=["POST"])
+@login_required
+@admin_hub_required_403
+def admin_ledger_conflict_same_person():
+    """{txn_id[, person_id, company_name, qbo_vendor_id]} — "Same person —
+    <company> is <person>'s loan-out": links the loan-out
+    (actuals.add_loanout), clears the flag and every other one it explains
+    (ledger.resolve_same_person). Never writes to QuickBooks."""
+    b = _body()
+    tid = _int(b.get("txn_id"))
+    if not tid:
+        return jsonify({"error": "txn_id is required"}), 400
+    try:
+        return jsonify(ledger.resolve_same_person(
+            tid, user_id=getattr(current_user, 'id', None),
+            person_id=_int(b.get("person_id")), company_name=(b.get("company_name") or None),
+            qbo_vendor_id=(b.get("qbo_vendor_id") if "qbo_vendor_id" in b else None)))
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logging.exception("[ledger] same-person failed")
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/ledger/conflicts/different", methods=["POST"])
+@login_required
+@admin_hub_required_403
+def admin_ledger_conflict_different():
+    """{txn_id} — "Different": the flag stays; the Same-person offer stops."""
+    tid = _int(_body().get("txn_id"))
+    if not tid:
+        return jsonify({"error": "txn_id is required"}), 400
+    try:
+        return jsonify(ledger.resolve_different(tid, user_id=getattr(current_user, 'id', None)))
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
 
 
 # ── Company QuickBooks account set ─────────────────────────────────────────

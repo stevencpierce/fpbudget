@@ -306,7 +306,8 @@
       const n = g.members.length;
       html += `<div class="aw-dgrp" role="row" id="dup-${esc(g.key)}" data-key="${esc(g.key)}">
         <span class="v">${esc(g.vendor)}</span><span class="num">${money(g.amount)}</span><span class="k">${n} charges · keep the one ${esc(g.keeper_reason)}</span>
-        <span class="acts"><button type="button" class="aw-btn sm" data-act="dup-keep-both" data-key="${esc(g.key)}" title="These are two real charges — do not flag them again">Keep both</button></span></div>`;
+        <span class="acts"><button type="button" class="aw-btn sm primary" data-act="dup-compare" data-key="${esc(g.key)}" title="Compare these charges side by side and settle them here">Compare</button>
+          <button type="button" class="aw-btn sm" data-act="dup-keep-both" data-key="${esc(g.key)}" title="These are two real charges — do not flag them again">Keep both</button></span></div>`;
       g.members.forEach(m => {
         const t = S.byId.get(m.id) || m;
         const isK = m.id === g.keeper_id;
@@ -350,7 +351,22 @@
     const el = document.getElementById('dup-' + key);
     if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('focus-flash'); }
   };
-  A['open-dup'] = btn => { const key = btn.dataset.key || ((S.byId.get(+btn.dataset.tid) || {}).dup_group); if (key) AW.openDupGroup(key); };
+  // Compare in place (2026-11-04): the chip, D and the group's Compare
+  // button open the Compare panel (static/dup-compare.js) on THIS view; the
+  // Duplicates tab stays the list of every group.
+  AW.openCompare = function (opts) {
+    if (!window.FPCompare) { if (opts.key) AW.openDupGroup(opts.key); return; }
+    FPCompare.open({ pid: PID, key: opts.key || null, tid: opts.tid || null,
+      onSettled: () => AW.load({ keepFocus: true }),
+      toast: (msg, kind, o) => AW.toast(msg, kind, o),
+      notProject: tid => { if (A['not-project']) A['not-project']({ dataset: { tid: String(tid) } }); } });
+  };
+  A['open-dup'] = btn => {
+    const t = S.byId.get(+btn.dataset.tid);
+    const key = btn.dataset.key || (t || {}).dup_group;
+    if (key || t) AW.openCompare({ key, tid: btn.dataset.tid ? +btn.dataset.tid : null });
+  };
+  A['dup-compare'] = btn => AW.openCompare({ key: btn.dataset.key });
   A['dup-keep-both'] = async btn => {
     const key = btn.dataset.key;
     try {

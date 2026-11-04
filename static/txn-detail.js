@@ -316,7 +316,7 @@
         ${kv('Date', esc(t.date || '—'))}
         ${kv('Card / account', t.card_last4 ? '••' + esc(t.card_last4) + (t.account ? ` · account ${esc(t.account)}` : '') : (t.payment_method_label ? esc(t.payment_method_label) + (t.paid_by ? ' · ' + esc(t.paid_by) : '') : (t.account ? 'account ' + esc(t.account) : '')))}
         ${t.qbo ? kv('QuickBooks', `${esc(t.qbo.payee || '—')} · ${esc(t.qbo.type || '')} <span class="fpd-muted">#${esc(t.qbo.id)}</span>${t.qbo.category ? ` · <span class="fpd-muted">${esc(t.qbo.category)}</span>` : ''}`) : ''}
-        ${kv('Payee', t.payee ? `<a href="${esc(t.payee.url)}">${esc(t.payee.name)}</a>` : '<span class="fpd-muted">Not linked</span>')}
+        ${kv('Payee', t.payee ? `<a href="${esc(t.payee.url)}">${esc(t.payee.name)}</a>${t.payee.via ? ` <span class="fpd-muted">· via ${esc(t.payee.via)}</span>` : ''}` : '<span class="fpd-muted">Not linked</span>')}
         ${t.memo ? kv('Memo', esc(t.memo)) : ''}
         ${t.excluded ? kv('Excluded', esc(t.excluded.reason || 'Not a project expense')) : ''}
       </dl>
@@ -333,6 +333,20 @@
       h += `<section class="fpd-sec fpd-warn"><strong>Counted twice.</strong> This charge is split and its invoice is itemized as well.
         <div class="fpd-acts"><button type="button" class="fpd-btn sm primary" data-fpd="fold" data-keep="charge">Keep the split, drop the itemization</button>
         <button type="button" class="fpd-btn sm" data-fpd="fold" data-keep="invoice">Use the invoice's lines</button></div></section>`;
+    }
+    // Receipt payee differs from QuickBooks (company ledger) — a person and
+    // their loan-out company are one payee (actuals.same_payee, 2026-11-04).
+    const pd = d.payee_differs;
+    if (pd) {
+      h += `<section class="fpd-sec fpd-warn" id="fpd-payee-differs"><strong>Payee differs.</strong> The receipt names ${esc(pd.receipt_payee || '—')}; QuickBooks paid ${esc(pd.qbo_payee || '—')}.`;
+      if (pd.different_confirmed) h += ` <span class="fpd-muted">Confirmed as different payees.</span>`;
+      else if (pd.proposal && pd.can_resolve) {
+        const p = pd.proposal;
+        h += `<div class="fpd-acts"><button type="button" class="fpd-btn sm" data-fpd="same-person" data-person="${p.person_id}" data-company="${esc(p.company_name)}" data-qbo="${esc(p.qbo_vendor_id || '')}">Same person — ${esc(p.company_name)} is ${esc(p.person_name)}'s loan-out</button>
+          <button type="button" class="fpd-btn sm" data-fpd="payee-different">Different</button></div>`;
+      } else if (pd.proposal) h += ` <span class="fpd-muted">If ${esc(pd.proposal.company_name)} is ${esc(pd.proposal.person_name)}'s loan-out, an admin can link it here.</span>`;
+      else h += ` <span class="fpd-muted">If one is the other's loan-out company, add it on the person's Payee page and this clears.</span>`;
+      h += `</section>`;
     }
     if (d.coding && d.coding.parent_still_coded) {
       h += `<section class="fpd-sec fpd-warn">This charge is split but still carries a line of its own, so the line counts it twice. Saving the split below clears it.</section>`;
@@ -605,6 +619,16 @@
     if (act === 'reject') return run(() => jpost(tUrl('dismiss-suggestion'), { remember: true }), 'Not a match. It will not be suggested again.');
     if (act === 'attach-twice') {
       return run(() => jpost(`/projects/${D.opts.pid}/actuals/transaction/${b.dataset.charge}/link-doc`, { doc_upload_id: +b.dataset.doc }), 'Invoice attached to the charge — counted once now');
+    }
+    if (act === 'same-person') {
+      const company = b.dataset.company, who = (d.payee_differs.proposal || {}).person_name || 'this person';
+      if (!confirm(`Link ${company} as ${who}'s loan-out company and clear this flag?\n\nCharges and invoices from ${company} will count as ${who}'s. Nothing changes in QuickBooks; the link can be removed on the Payee page.`)) return;
+      return run(() => jpost('/admin/ledger/conflicts/same-person', { txn_id: d.txn.id, person_id: +b.dataset.person, company_name: company, qbo_vendor_id: b.dataset.qbo || null }),
+        `Linked — ${company} is ${who}'s loan-out`);
+    }
+    if (act === 'payee-different') {
+      if (!confirm('Keep these as different payees? The flag stays until the receipt is unmatched or cleared on the ledger review page.')) return;
+      return run(() => jpost('/admin/ledger/conflicts/different', { txn_id: d.txn.id }), 'Kept as different payees');
     }
     if (act === 'fold') {
       return run(() => jpost(tUrl('fold-itemization'), { keep: b.dataset.keep }), 'The itemization is the split now');

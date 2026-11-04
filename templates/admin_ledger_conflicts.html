@@ -30,6 +30,9 @@
   .lc-msg { font-size: .8rem; margin-top: 8px; min-height: 1em; }
   .lc-msg.err { color: var(--red); }
   .lc-empty { padding: 28px; text-align: center; color: var(--text-muted); background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+  .lc-same { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 10px;
+             padding: 10px 12px; border-radius: var(--radius); border: 1px dashed color-mix(in srgb, var(--accent) 60%, var(--border));
+             background: color-mix(in srgb, var(--accent) 6%, var(--bg-2)); font-size: .84rem; }
   .lc-reason { display: inline-block; font-size: .72rem; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: color-mix(in srgb, var(--orange) 16%, var(--bg-2)); color: var(--orange); }
 </style>
 <div class="pay-page lc-page">
@@ -73,6 +76,25 @@
       {% if c.card_last4 %}<span>Card <b>••{{ c.card_last4 }}</b></span>{% endif %}
       {% if c.account %}<span>Account <b>{{ c.account }}</b></span>{% endif %}
     </div>
+    {% set pd = c.payee_differs %}
+    {% if pd %}
+    <div class="lc-same" data-role="same">
+      {% if pd.different_confirmed %}
+      <span><b>{{ pd.receipt_payee or '—' }}</b> and <b>{{ pd.qbo_payee or '—' }}</b> were confirmed as different payees. Settle the receipt below.</span>
+      {% elif pd.proposal %}
+      <span>Is <b>{{ pd.proposal.company_name }}</b> {{ pd.proposal.person_name }}'s loan-out company?</span>
+      <span class="lc-acts">
+        <button type="button" class="pay-btn" data-act="same-person" data-tid="{{ pd.txn_id }}"
+                data-person="{{ pd.proposal.person_id }}" data-company="{{ pd.proposal.company_name }}" data-qbo="{{ pd.proposal.qbo_vendor_id or '' }}"
+                data-confirm="Link {{ pd.proposal.company_name }} as {{ pd.proposal.person_name }}'s loan-out and clear this flag? Charges and invoices from {{ pd.proposal.company_name }} will count as {{ pd.proposal.person_name }}'s. Nothing changes in QuickBooks; the link can be removed on the Payee page.">Same person — {{ pd.proposal.company_name }} is {{ pd.proposal.person_name }}'s loan-out</button>
+        <button type="button" class="pay-btn" data-act="different" data-tid="{{ pd.txn_id }}"
+                data-confirm="Mark {{ pd.receipt_payee }} and {{ pd.qbo_payee }} as different payees? The flag stays until you unmatch the receipt or clear it.">Different</button>
+      </span>
+      {% else %}
+      <span>If <b>{{ pd.receipt_payee or '—' }}</b> and <b>{{ pd.qbo_payee or '—' }}</b> are one person and their loan-out, add the company on that person's Payee page; this flag clears on its own.</span>
+      {% endif %}
+    </div>
+    {% endif %}
     <div class="lc-claims">
       {% for cl in c.claims %}
       <div class="lc-claim" data-tid="{{ cl.id }}">
@@ -135,7 +157,11 @@
           if (act === 'keep') r = await post('/admin/ledger/conflicts/keep', { qbo_txn_id: btn.dataset.qid, qbo_txn_type: btn.dataset.qtype, keep_project_id: +btn.dataset.pid, loser_mode: btn.dataset.mode });
           else if (act === 'unmatch') r = await post('/admin/ledger/conflicts/unmatch', { txn_id: +btn.dataset.tid });
           else if (act === 'release') r = await post('/admin/ledger/release', { txn_id: +btn.dataset.tid });
+          else if (act === 'same-person') r = await post('/admin/ledger/conflicts/same-person', { txn_id: +btn.dataset.tid, person_id: +btn.dataset.person, company_name: btn.dataset.company, qbo_vendor_id: btn.dataset.qbo || null });
+          else if (act === 'different') r = await post('/admin/ledger/conflicts/different', { txn_id: +btn.dataset.tid });
           else r = await post('/admin/ledger/conflicts/clear', { txn_id: +btn.dataset.tid });
+          if (act === 'same-person') { msg.textContent = 'Linked: ' + r.company_name + ' is ' + r.person_name + "'s loan-out. Flag cleared" + (r.cleared_other_ids && r.cleared_other_ids.length ? ' (and ' + r.cleared_other_ids.length + ' more)' : '') + '.'; setTimeout(() => window.location.reload(), 1100); return; }
+          if (act === 'different') { msg.textContent = 'Kept as different payees.'; setTimeout(() => window.location.reload(), 800); return; }
           msg.textContent = 'Done. ' + (r.removed ? r.removed.length + ' row(s) settled (merge log ' + r.removed.map(x => '#' + x.merge_log_id).join(', ') + ').' : r.merge_log_id ? 'Merge log #' + r.merge_log_id + '.' : '');
           setTimeout(() => window.location.reload(), 900);
         } catch (e) {

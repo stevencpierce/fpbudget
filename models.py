@@ -769,6 +769,30 @@ class CrewMember(db.Model):
     notes               = db.Column(db.Text, nullable=True)
 
 
+class PayeeLoanout(db.Model):
+    """A loan-out company a person is paid through (2026-11-04, alembic
+    0028). Owner: "Danielle Miller is Two Foot Shuffle LLC … we want the
+    individuals, but then we still need the company attached somehow."
+
+    One row per (person Payee, company). The company is a NAME, optionally
+    linked to a QuickBooks vendor from the mirror (qbo_vendor.qbo_vendor_id)
+    — FPBudget never creates or edits anything in QuickBooks from here.
+    vendor_match_key is actuals.vendor_match_key(company_name), stored so
+    the ONE identity rule (actuals.same_payee) reads an index, not a scan.
+    A company belongs to one person (add_loanout refuses a second owner).
+    Everything that decides "same payee" reads this table through
+    actuals.loanout_index(); nothing else interprets it."""
+    __tablename__ = "payee_loanout"
+    id               = db.Column(db.Integer, primary_key=True)
+    payee_id         = db.Column(db.Integer, db.ForeignKey("crew_member.id"), nullable=False, index=True)
+    company_name     = db.Column(db.String(200), nullable=False)
+    vendor_match_key = db.Column(db.String(200), nullable=False, index=True)
+    qbo_vendor_id    = db.Column(db.String(40), nullable=True, index=True)
+    created_at       = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by       = db.Column(db.Integer, nullable=True)
+    __table_args__ = (db.UniqueConstraint('payee_id', 'vendor_match_key', name='uq_payee_loanout'),)
+
+
 class ReportingThreshold(db.Model):
     """The 1099-NEC reporting floor per calendar year (DOCUMENTS_HANDOFF
     Phase 1). $600 through 2025; $2,000 from 2026 (One Big Beautiful Bill

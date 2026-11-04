@@ -36,7 +36,7 @@ from models import (ActivityLog, Budget, BudgetLine, CrewMember, DocUpload, Expe
 from actuals import (build_line_picker_options, claim_for, ClaimError,
                      fold_invoice_children_onto_charge, invoice_children_of, is_bank_sourced,
                      pool_txn, split_snapshot, txn_snapshot, counted_twice_for_project,
-                     unmatch_receipt, PAYMENT_METHOD_LABELS)
+                     unmatch_receipt, PAYMENT_METHOD_LABELS, loanout_via, payee_display)
 
 
 SOURCE_LABELS = {'qbo_sync': 'QuickBooks', 'reconciled': 'QuickBooks', 'csv_import': 'CSV',
@@ -167,6 +167,21 @@ def _target_json(pid, line_id=None, code=None):
     return None
 
 
+def _qbo_payee_name(t):
+    """The payee QuickBooks recorded: the mirrored vendor behind the
+    EntityRef, else the row's vendor text (a receipt may have renamed a
+    reconciled row — 2026-11-04)."""
+    if getattr(t, 'qbo_entity_ref', None):
+        try:
+            from models import QBOVendor
+            v = QBOVendor.query.get(str(t.qbo_entity_ref))
+            if v is not None and v.display_name:
+                return v.display_name
+        except Exception:
+            pass
+    return t.vendor
+
+
 def _detail_for_txn(pid, t):
     docs_seen = set()
     primary = DocUpload.query.get(t.doc_upload_id) if t.doc_upload_id else None
@@ -236,8 +251,22 @@ def _detail_for_txn(pid, t):
     if getattr(t, 'payee_id', None):
         cm = CrewMember.query.get(t.payee_id)
         if cm is not None:
+            # Loan-out (2026-11-04): "Danielle Miller · via Two Foot Shuffle LLC".
+            via = loanout_via(cm.id, (t.vendor, t.qbo_entity_ref),
+                              primary.vendor if primary is not None else None)
             payee = {"id": cm.id, "name": cm.name, "source": t.payee_source,
+                     "via": via, "label": payee_display(cm.name, via),
                      "url": f"/payees/{cm.id}"}
+    # "Receipt payee differs from QuickBooks" (company ledger) — with the
+    # "Same person — X is Y's loan-out" offer (ledger.payee_differs_info).
+    payee_differs = None
+    try:
+        import ledger as _ledger
+        payee_differs = _ledger.payee_differs_info(t)
+        if payee_differs is not None:
+            payee_differs["can_resolve"] = bool(getattr(current_user, 'has_all_project_access', False))
+    except Exception as _pde:
+        logging.warning(f"[detail] payee-differs info failed: {_pde}")
     paid_by = None
     if getattr(t, 'paid_by_crew_member_id', None):
         cm = CrewMember.query.get(t.paid_by_crew_member_id)
@@ -283,7 +312,7 @@ def _detail_for_txn(pid, t):
                 "account": t.qbo_account_id, "payment_method": t.payment_method,
                 "payment_method_label": PAYMENT_METHOD_LABELS.get(t.payment_method or '', None),
                 "paid_by": paid_by,
-                "qbo": ({"id": t.qbo_txn_id, "type": t.qbo_txn_type, "payee": t.vendor,
+                "qbo": ({"id": t.qbo_txn_id, "type": t.qbo_txn_type, "payee": _qbo_payee_name(t),
                          "category": t.qbo_category, "entity_ref": t.qbo_entity_ref}
                         if t.qbo_txn_id else None),
                 "payee": payee, "match_status": t.match_status,
@@ -302,6 +331,7 @@ def _detail_for_txn(pid, t):
                                "amount": float(sp.amount or 0), "note": sp.note} for sp in sps]},
         "split_offer": split_offer,
         "counted_twice": twice,
+        "payee_differs": payee_differs,
         "history": history, "undo_activity_id": undo_id, "undo_bid": _undo_budget_id(pid),
         "picker": picker, "picker_bid": picker_bid,
         "sections": [{"code": c, "name": n} for c, n in FP_COA_SECTIONS],

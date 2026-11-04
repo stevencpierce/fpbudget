@@ -66,6 +66,9 @@ log = logging.getLogger(__name__)
 MARKER = 'company_ledger_v1'
 LOCK_KEY = 776700001
 PAYEE_DIFFERS = 'receipt payee differs from QuickBooks'
+# Appended to a payee-differs reason when a person answered "Different"
+# (2026-11-04): the flag stays, the "Same person?" offer stops.
+DIFFERENT_CONFIRMED = '[different payees confirmed]'
 TWO_PROJECTS = 'claimed by two projects'
 
 # The company-wide unique index (also in alembic 0025 and the essential pass).
@@ -127,15 +130,22 @@ def vendor_is_real(v):
 
 
 def _vendor_tokens(v):
-    from actuals import vendor_match_key
-    k = vendor_match_key(v or '')
-    return set(k.replace('-', ' ').split()) if k else set()
+    from actuals import payee_tokens
+    return payee_tokens(v or '')
 
 
-def payees_differ(receipt_vendor, qbo_vendor):
-    """True when both names are real and share no word — "Ryan Mauskopf"
-    vs "Joel Knutson". "Lyft" vs "LYFT *RIDE" share a token → same."""
+def payees_differ(receipt_vendor, qbo_vendor, qbo_ref=None):
+    """True when both names are real, are NOT the same payee by the ONE
+    identity rule (actuals.same_payee — equal names, or a person and their
+    loan-out company: "Two Foot Shuffle LLC" vs "Danielle Miller" once the
+    loan-out is linked) and share no distinctive word — "Ryan Mauskopf" vs
+    "Joel Knutson", "You Choose, LLC" vs "Sarah Caye Productions" (LLC /
+    Productions never count as a shared word). "Lyft" vs "LYFT *RIDE"
+    share a token → same."""
+    from actuals import same_payee
     if not (vendor_is_real(receipt_vendor) and vendor_is_real(qbo_vendor)):
+        return False
+    if same_payee(receipt_vendor, (qbo_vendor, qbo_ref)):
         return False
     a, b = _vendor_tokens(receipt_vendor), _vendor_tokens(qbo_vendor)
     if not a or not b:
@@ -204,14 +214,23 @@ def _is_processor_noise(v):
     return bool(s) and strip_processor_prefix(s) != s
 
 
-def payee_flag_applies(receipt_vendor, qbo_payee, from_ref):
+def payee_flag_applies(receipt_vendor, qbo_payee, from_ref, qbo_ref=None):
     """Flag "receipt payee differs from QuickBooks" only when QuickBooks
     names a real vendor / person (EntityRef / VendorRef) — never against
     raw card-processor text (TST*, SQ *, AMAZON MKTPL* …) — and the two
-    names share no word."""
+    are different payees (payees_differ: not the same person through a
+    loan-out, no distinctive word shared)."""
     if not from_ref or not qbo_payee or _is_processor_noise(qbo_payee):
         return False
-    return payees_differ(receipt_vendor, qbo_payee)
+    return payees_differ(receipt_vendor, qbo_payee, qbo_ref)
+
+
+def qbo_payee_from_reason(reason):
+    """'receipt payee differs from QuickBooks (Danielle Miller)' → 'Danielle
+    Miller' (None when the reason names nobody)."""
+    import re as _re
+    m = _re.search(r'\(([^()]*)\)', reason or '')
+    return (m.group(1).strip() or None) if m else None
 
 
 def _vendor_user_set(t):
@@ -335,7 +354,8 @@ def analyze(db_, keys=None):
             actions[keep.id] = ('keep', 'the one project that claims it ('
                                 + ', '.join(k for k, v in _signals(keep, split_parents).items() if v) + ')')
             what = f'claimed by {_pn(keep.project_id)} only: keep that row'
-            if keep.doc_upload_id and payee_flag_applies(keep.vendor, qbo_payee, from_ref):
+            if keep.doc_upload_id and payee_flag_applies(keep.vendor, qbo_payee, from_ref,
+                                                         getattr(keep, 'qbo_entity_ref', None)):
                 payee_flags.append((keep.id, qbo_payee))
                 _bp(keep.project_id, "payee_flags")
         else:
@@ -818,9 +838,10 @@ def conflicts(project_id=None):
         if qbo_payee is None:
             # The migration wrote the QuickBooks name into the reason …
             for r in reasons:
-                if (r or '').startswith(PAYEE_DIFFERS) and '(' in r:
-                    qbo_payee = r[r.index('(') + 1:].rstrip(')').strip() or None
-                    break
+                if (r or '').startswith(PAYEE_DIFFERS):
+                    qbo_payee = qbo_payee_from_reason(r)
+                    if qbo_payee:
+                        break
         if qbo_payee is None:
             # … or the twin that carried it is in the merge log.
             for e in (TransactionMergeLog.query.filter_by(qbo_txn_id=key[0], qbo_txn_type=key[1])
@@ -835,6 +856,18 @@ def conflicts(project_id=None):
         kind = 'two_projects' if len({m.project_id for m in ms if m.claim_conflict}) > 1 or len(ms) > 1 \
             else ('payee' if any((r or '').startswith(PAYEE_DIFFERS) for r in reasons) else 'other')
         first = ms[0]
+        # Loan-outs (2026-11-04): a payee card offers "Same person — X is
+        # Y's loan-out" (actuals.loanout_proposal) unless someone said
+        # Different already.
+        payee_info = None
+        if kind == 'payee':
+            try:
+                _pf = next((m for m in ms if _payee_flagged(m)), None)
+                payee_info = payee_differs_info(_pf) if _pf is not None else None
+                if payee_info is not None:
+                    payee_info["txn_id"] = _pf.id
+            except Exception:
+                log.info("[ledger] payee info skipped", exc_info=True)
         cards.append({
             "qbo_txn_id": key[0], "qbo_txn_type": key[1],
             "kind": kind, "reasons": sorted(reasons),
@@ -842,6 +875,7 @@ def conflicts(project_id=None):
             "date": first.txn_date, "account": first.account_code_name if not first.account_code else None,
             "card_last4": first.card_last4,
             "qbo_payee": qbo_payee,
+            "payee_differs": payee_info,
             "claims": [{
                 "id": m.id, "project_id": m.project_id,
                 "project": pnames.get(m.project_id, 'Unclaimed' if m.project_id is None else f'#{m.project_id}'),
@@ -961,9 +995,7 @@ def resolve_unmatch_receipt(txn_id, user_id=None):
         raise ValueError(f"transaction {txn_id} not found")
     pid = t.project_id
     reason = t.claim_conflict_reason or ''
-    qbo_payee = None
-    if reason.startswith(PAYEE_DIFFERS) and '(' in reason:
-        qbo_payee = reason[reason.index('(') + 1:].rstrip(')').strip() or None
+    qbo_payee = qbo_payee_from_reason(reason) if reason.startswith(PAYEE_DIFFERS) else None
     receipt_vendor = t.vendor
     info = unmatch_receipt(t.id)          # clears the link, restores the receipt row, releases
     t = Transaction.query.get(txn_id)
@@ -1066,3 +1098,166 @@ def resolve_clear(txn_id, user_id=None):
     _log('update', t.id, t.project_id, t.vendor,
          f"Company ledger: flag cleared on {t.qbo_txn_type}/{t.qbo_txn_id} (it's fine)")
     return {"ok": True, "transaction_id": t.id}
+
+
+# ── Payee differs → "Same person" / "Different" (loan-outs, 2026-11-04) ───
+# Owner, Nov 4: "Danielle Miller is Two Foot Shuffle LLC." A payee-differs
+# flag whose two names are a person and their loan-out company is not a
+# conflict: "Same person" links the loan-out (actuals.add_loanout — a
+# PayeeLoanout row, never a QuickBooks write) and clears the flag;
+# "Different" keeps the flag and stops asking. Both are click-to-confirm
+# and logged. The ONE identity rule is actuals.same_payee.
+
+def _payee_flagged(t):
+    return bool(t is not None and t.claim_conflict
+                and (t.claim_conflict_reason or '').startswith(PAYEE_DIFFERS))
+
+
+def _qbo_vendor_name(ref):
+    if not ref:
+        return None
+    try:
+        v = QBOVendor.query.get(str(ref))
+        return v.display_name if v is not None else None
+    except Exception:
+        return None
+
+
+def payee_differs_info(t):
+    """What the detail window / the conflict card shows for a payee-differs
+    row: the two names, whether a person already said Different, and the
+    "Same person" proposal (actuals.loanout_proposal) — or None when the
+    row is not flagged for its payee."""
+    from actuals import loanout_proposal
+    from models import CrewMember
+    if not _payee_flagged(t):
+        return None
+    reason = t.claim_conflict_reason or ''
+    qbo_payee = qbo_payee_from_reason(reason) or _qbo_vendor_name(t.qbo_entity_ref)
+    doc = DocUpload.query.get(t.doc_upload_id) if t.doc_upload_id else None
+    receipt_payee = (doc.vendor if doc is not None and vendor_is_real(doc.vendor) else None) or t.vendor
+    proposal = None
+    try:
+        proposal = loanout_proposal(qbo_payee, t.qbo_entity_ref, receipt_payee,
+                                    people=CrewMember.query.filter(CrewMember.active.isnot(False)).all(),
+                                    qbo_vendors=QBOVendor.query.all())
+    except Exception as e:
+        log.info("[ledger] loan-out proposal skipped for #%s: %s", t.id, e)
+    return {"qbo_payee": qbo_payee, "receipt_payee": receipt_payee,
+            "different_confirmed": DIFFERENT_CONFIRMED in reason,
+            "proposal": proposal}
+
+
+def recheck_payee_flags(txn_ids=None, user_id=None):
+    """Clear every "receipt payee differs" flag whose names are now the same
+    payee by actuals.same_payee (a loan-out was just linked). A row a
+    person marked Different, or one that still has a twin in another
+    project, is left alone. Each clear is logged. Does NOT commit.
+    Returns the cleared row ids."""
+    from actuals import same_payee
+    q = Transaction.query.filter(Transaction.claim_conflict == True,      # noqa: E712
+                                 Transaction.claim_conflict_reason.like(PAYEE_DIFFERS + '%'))
+    if txn_ids:
+        q = q.filter(Transaction.id.in_(list(txn_ids)))
+    cleared = []
+    for t in q.all():
+        reason = t.claim_conflict_reason or ''
+        if DIFFERENT_CONFIRMED in reason:
+            continue
+        qbo_payee = qbo_payee_from_reason(reason) or _qbo_vendor_name(t.qbo_entity_ref)
+        doc = DocUpload.query.get(t.doc_upload_id) if t.doc_upload_id else None
+        names = [n for n in (t.vendor, doc.vendor if doc is not None else None) if vendor_is_real(n)]
+        if not qbo_payee or not any(same_payee(n, (qbo_payee, t.qbo_entity_ref)) for n in names):
+            continue
+        if t.qbo_txn_id and Transaction.query.filter(Transaction.qbo_txn_id == t.qbo_txn_id,
+                                                     Transaction.qbo_txn_type == t.qbo_txn_type,
+                                                     Transaction.id != t.id).count():
+            continue
+        t.claim_conflict = False
+        t.claim_conflict_reason = None
+        t.updated_at = datetime.utcnow()
+        cleared.append(t.id)
+        _log('update', t.id, t.project_id, t.vendor,
+             f"Company ledger: payee-differs flag cleared on {t.qbo_txn_type}/{t.qbo_txn_id} — "
+             f"'{names[0] if names else t.vendor}' and '{qbo_payee}' are the same payee (loan-out)",
+             before={"claim_conflict": True, "claim_conflict_reason": reason},
+             after={"claim_conflict": False})
+    if cleared:
+        db.session.flush()
+        _create_index_if_clean()
+    return cleared
+
+
+def resolve_same_person(txn_id, user_id=None, person_id=None, company_name=None, qbo_vendor_id=None):
+    """"Same person — Two Foot Shuffle LLC is Danielle Miller's loan-out".
+    Links the loan-out (the proposal unless the caller names it), clears
+    this row's flag and every other payee-differs flag the link now
+    explains, and attributes the charge to the person. Commits. Raises
+    ValueError when the row is not flagged for its payee or nothing names
+    a person."""
+    from actuals import add_loanout, LoanoutError, set_txn_payee
+    from models import CrewMember
+    t = Transaction.query.get(txn_id)
+    if not _payee_flagged(t):
+        raise ValueError("This charge is not flagged for a different payee.")
+    info = payee_differs_info(t) or {}
+    prop = dict(info.get("proposal") or {})
+    if person_id:
+        prop["person_id"] = int(person_id)
+    if company_name:
+        prop["company_name"] = company_name
+    if qbo_vendor_id is not None:
+        prop["qbo_vendor_id"] = qbo_vendor_id or None
+    person = CrewMember.query.get(prop.get("person_id")) if prop.get("person_id") else None
+    if person is None or not (prop.get("company_name") or '').strip():
+        raise ValueError("Neither name is a person Payee yet. Add the loan-out on the person's Payee page.")
+    try:
+        lo, created, n_attr = add_loanout(person, prop["company_name"], prop.get("qbo_vendor_id"), user_id=user_id)
+    except LoanoutError as e:
+        raise ValueError(str(e))
+    reason = t.claim_conflict_reason
+    t.claim_conflict = False
+    t.claim_conflict_reason = None
+    t.updated_at = datetime.utcnow()
+    set_txn_payee(t, person.id, 'alias', replace=('alias', 'qbo'))
+    db.session.flush()
+    others = recheck_payee_flags(user_id=user_id)
+    _create_index_if_clean()
+    _log('update', t.id, t.project_id, t.vendor,
+         f"Same person: {lo.company_name} is {person.name}'s loan-out (linked from the payee-differs flag on "
+         f"{t.qbo_txn_type}/{t.qbo_txn_id}); flag cleared"
+         + (f"; {len(others)} other flag(s) cleared" if others else '')
+         + (f"; {n_attr} charge(s) now attribute to {person.name}" if n_attr else ''),
+         before={"claim_conflict": True, "claim_conflict_reason": reason},
+         after={"claim_conflict": False, "loanout_id": lo.id})
+    try:
+        from app import _log_activity
+        _log_activity(action='create' if created else 'update', entity_type='payee_loanout',
+                      entity_id=lo.id, entity_label=f"{person.name} · via {lo.company_name}"[:80],
+                      project_id=t.project_id,
+                      note=f"Loan-out linked: {lo.company_name} → {person.name}"
+                           + (f" (QuickBooks vendor {lo.qbo_vendor_id})" if lo.qbo_vendor_id else ''))
+    except Exception:
+        log.info("[ledger] loan-out activity log skipped", exc_info=True)
+    db.session.commit()
+    return {"ok": True, "transaction_id": t.id, "loanout_id": lo.id, "created": created,
+            "person_id": person.id, "person_name": person.name, "company_name": lo.company_name,
+            "cleared_other_ids": others, "attributed": n_attr}
+
+
+def resolve_different(txn_id, user_id=None):
+    """"Different" — the two names are different payees: the flag stays
+    (settle it with Unmatch receipt / It's fine) and the "Same person?"
+    offer is not shown again. Logged. Commits."""
+    t = Transaction.query.get(txn_id)
+    if not _payee_flagged(t):
+        raise ValueError("This charge is not flagged for a different payee.")
+    reason = t.claim_conflict_reason or ''
+    if DIFFERENT_CONFIRMED not in reason:
+        t.claim_conflict_reason = (reason[:200 - len(DIFFERENT_CONFIRMED) - 1] + ' ' + DIFFERENT_CONFIRMED)
+        t.updated_at = datetime.utcnow()
+        db.session.commit()
+        _log('update', t.id, t.project_id, t.vendor,
+             f"Payee differs on {t.qbo_txn_type}/{t.qbo_txn_id}: confirmed different payees — flag kept",
+             before={"claim_conflict_reason": reason}, after={"claim_conflict_reason": t.claim_conflict_reason})
+    return {"ok": True, "transaction_id": t.id, "flagged": True}

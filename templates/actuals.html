@@ -64,6 +64,10 @@
   .aw-btn.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--border)); }
   .aw-btn.danger:hover { background: var(--aw-red-soft); }
   .aw-btn.sm { height: 26px; padding: 0 10px; font-size: 12px; }
+  /* Compare on a possible-duplicate row (2026-11-04): the yellow of its flag. */
+  .aw-btn.warn { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 45%, var(--border));
+                 background: color-mix(in srgb, var(--yellow) 12%, var(--bg-2)); font-weight: 600; }
+  .aw-btn.warn:hover { background: color-mix(in srgb, var(--yellow) 22%, var(--bg-2)); }
   .aw-btn.icon { width: 26px; padding: 0; justify-content: center; }
   .aw-btn:disabled { opacity: .5; cursor: not-allowed; background: var(--bg-3); }
   .aw-btn.lg { height: 40px; padding: 0 18px; }
@@ -840,6 +844,7 @@ __AJ.urls = {
 </script>
 {# The ONE detail window + line picker (shared with the budget page). #}
 <script src="{{ url_for('static', filename='txn-detail.js') }}?v={{ APP_COMMIT }}"></script>
+<script src="{{ url_for('static', filename='dup-compare.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="{{ url_for('static', filename='actuals-js/a01.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="{{ url_for('static', filename='actuals-js/a02.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="{{ url_for('static', filename='actuals-js/a03.js') }}?v={{ APP_COMMIT }}"></script>

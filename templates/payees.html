@@ -66,8 +66,8 @@
         <div class="pay-row{% if r.needs_attention %} flag{% endif %}{% if not r.active %} inactive{% endif %}" role="row"
              style="grid-template-columns:{{ cols }}"
              data-kind="{{ r.kind }}" data-attn="{{ 1 if r.needs_attention else 0 }}"
-             data-q="{{ (r.name ~ ' ' ~ (r.legal_name or '') ~ ' ' ~ (r.company or '') ~ ' ' ~ (r.email or '') ~ ' ' ~ r.department ~ ' ' ~ (r.pays_as or '')) | lower }}">
-          <div class="pay-row-cell"><a class="name" href="{{ r.url }}">{{ r.name }}</a>{% if r.pays_as %}<span class="sub">pays as {{ r.pays_as }}</span>{% elif r.legal_name and r.legal_name != r.name %}<span class="sub">{{ r.legal_name }}</span>{% endif %}</div>
+             data-q="{{ (r.name ~ ' ' ~ (r.legal_name or '') ~ ' ' ~ (r.company or '') ~ ' ' ~ (r.email or '') ~ ' ' ~ r.department ~ ' ' ~ (r.pays_as or '') ~ ' ' ~ (r.loanouts | join(' '))) | lower }}">
+          <div class="pay-row-cell"><a class="name" href="{{ r.url }}">{{ r.name }}</a>{% if r.loanouts %}<span class="sub" title="Loan-out companies">via {{ r.loanouts | join(', ') }}</span>{% elif r.loanout_of %}<span class="sub">loan-out of {{ r.loanout_of.name }}</span>{% elif r.pays_as %}<span class="sub">pays as {{ r.pays_as }}</span>{% elif r.legal_name and r.legal_name != r.name %}<span class="sub">{{ r.legal_name }}</span>{% endif %}</div>
           <div class="pay-row-cell">{% if r.is_w2_employee %}<span class="pay-chip sq w2">W-2</span>{% else %}<span class="pay-chip sq {{ r.kind }}">{{ r.kind_label }}</span>{% endif %}</div>
           <div class="pay-row-cell">{{ r.department or '—' }}</div>
           <div class="pay-row-cell r pay-num">{{ r.projects }}</div>

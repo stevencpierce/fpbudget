@@ -2293,6 +2293,16 @@ def actuals_dismiss_dup_transactions(pid):
             project_id=pid, dup_key=key,
             created_by=(current_user.id if current_user.is_authenticated else None)))
         db.session.commit()
+        # Logged (2026-11-04): Keep both from the Compare panel or the
+        # Duplicates view. A 'dup:<ids>' key settles the pair for every
+        # project's pool (routes/actuals._dup_dismissed_keys).
+        try:
+            _first = int(key.split(':', 1)[1].split('-')[0]) if key.startswith('dup:') else None
+        except (ValueError, IndexError):
+            _first = None
+        _log_activity(action='update', entity_type='transaction_dup', entity_id=_first,
+                      entity_label=key[:80], project_id=pid,
+                      note=f"Kept both — {key} are different charges (not flagged again)")
     return jsonify({"ok": True})
 
 
@@ -3164,13 +3174,10 @@ def actuals_charge_candidates(pid, did):
                     "candidates": cands, "pool": pool[:60]})
 
 
-@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/merge-duplicate", methods=["POST"])
-@login_required
-def actuals_merge_duplicate(pid, tid):
-    """Duplicates view → "Delete the extra" (Phase 5, 2026-11-03). <tid> is
-    the EXTRA; body {keeper_id}. The keeper must be a twin of the extra
-    (actuals.is_duplicate_twin — one rule). Then, by
-    actuals.duplicate_delete_mode:
+def _merge_extra_into_keeper(pid, extra, keeper):
+    """The ONE safe path that removes a duplicate's extra row (Phase 5,
+    2026-11-03; shared with the Compare panel's "Keep this one",
+    2026-11-04). By actuals.duplicate_delete_mode:
       delete — a qbo_sync / csv_import row with no coding and no receipt is
                simply deleted;
       merge  — everything else first moves its line / section, splits,
@@ -3178,45 +3185,26 @@ def actuals_merge_duplicate(pid, tid):
                (actuals.merge_duplicate_into), then is deleted.
     Both steps are logged (update on the keeper, delete on the extra with a
     full snapshot) and undoable through the activity log: Undo recreates
-    the extra from the snapshot and puts the keeper's coding back."""
-    if getattr(current_user, 'role', None) == 'viewer':
-        return jsonify({"error": "Forbidden"}), 403
-    _require_project_role(pid, 'editor')
-    from actuals import (is_duplicate_twin, duplicate_delete_mode, merge_duplicate_into,
-                         txn_snapshot)
+    the extra from the snapshot and puts the keeper's coding back. The
+    caller has checked the pair (twin / same group). Does NOT commit.
+    Returns {"mode", "moved", "activity_ids", "deleted"}."""
+    from actuals import duplicate_delete_mode, merge_duplicate_into, txn_snapshot
     from models import ExpenseEvidence
-    extra = _pool_txn_or_404(pid, tid)
-    body = request.get_json(silent=True) or {}
-    try:
-        keeper_id = int(body.get('keeper_id'))
-    except (TypeError, ValueError):
-        return jsonify({"error": "keeper_id required"}), 400
-    if keeper_id == tid:
-        return jsonify({"error": "The keeper and the extra must be different rows."}), 400
-    keeper = pool_txn(pid, keeper_id)
-    if keeper is None:
-        return jsonify({"error": "Keeper not found on this project."}), 404
-    if extra.source in ('doc_upload', 'invoice_split'):
-        return jsonify({"error": "A receipt's own row or an itemized subline is not a charge — "
-                                 "match or itemize it instead."}), 400
+    tid = extra.id
     extra.has_splits = TransactionSplit.query.filter_by(transaction_id=extra.id).first() is not None
     keeper.has_splits = TransactionSplit.query.filter_by(transaction_id=keeper.id).first() is not None
     extra.has_evidence = ExpenseEvidence.query.filter_by(transaction_id=extra.id).first() is not None
-    if not is_duplicate_twin(extra, keeper):
-        return jsonify({"error": "These two rows are not twins (same amount, same vendor or card, "
-                                 "dates within the window, different QuickBooks ids), so the extra "
-                                 "cannot be folded into the keeper."}), 409
     mode = duplicate_delete_mode(extra)
     k_before = txn_snapshot(keeper)
     x_before = txn_snapshot(extra)
-    x_before["splits"] = [{"budget_line_id": sp.budget_line_id, "amount": float(sp.amount or 0),
-                           "note": sp.note}
+    x_before["splits"] = [{"budget_line_id": sp.budget_line_id, "account_code": sp.account_code,
+                           "amount": float(sp.amount or 0), "note": sp.note}
                           for sp in TransactionSplit.query.filter_by(transaction_id=tid).all()]
     moved = {"moved": [], "splits": 0, "evidence": 0}
     acts = []
     if mode == 'merge':
-        _k_splits_before = [{"budget_line_id": sp.budget_line_id, "amount": float(sp.amount or 0),
-                             "note": sp.note}
+        _k_splits_before = [{"budget_line_id": sp.budget_line_id, "account_code": sp.account_code,
+                             "amount": float(sp.amount or 0), "note": sp.note}
                             for sp in TransactionSplit.query.filter_by(transaction_id=keeper.id).all()]
         _splits = TransactionSplit.query.filter_by(transaction_id=tid).all()
         _evid = ExpenseEvidence.query.filter_by(transaction_id=tid).all()
@@ -3270,9 +3258,218 @@ def actuals_merge_duplicate(pid, tid):
             acts.append(_xa.id)
     except Exception:
         pass
+    return {"mode": mode, "moved": moved, "activity_ids": acts, "deleted": tid}
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/merge-duplicate", methods=["POST"])
+@login_required
+def actuals_merge_duplicate(pid, tid):
+    """Duplicates view → "Delete the extra" (Phase 5, 2026-11-03). <tid> is
+    the EXTRA; body {keeper_id}. The keeper must be a twin of the extra
+    (actuals.is_duplicate_twin — one rule); the removal is
+    _merge_extra_into_keeper (delete or merge-then-delete, logged,
+    undoable)."""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden"}), 403
+    _require_project_role(pid, 'editor')
+    from actuals import is_duplicate_twin
+    from models import ExpenseEvidence
+    extra = _pool_txn_or_404(pid, tid)
+    body = request.get_json(silent=True) or {}
+    try:
+        keeper_id = int(body.get('keeper_id'))
+    except (TypeError, ValueError):
+        return jsonify({"error": "keeper_id required"}), 400
+    if keeper_id == tid:
+        return jsonify({"error": "The keeper and the extra must be different rows."}), 400
+    keeper = pool_txn(pid, keeper_id)
+    if keeper is None:
+        return jsonify({"error": "Keeper not found on this project."}), 404
+    if extra.source in ('doc_upload', 'invoice_split'):
+        return jsonify({"error": "A receipt's own row or an itemized subline is not a charge — "
+                                 "match or itemize it instead."}), 400
+    extra.has_splits = TransactionSplit.query.filter_by(transaction_id=extra.id).first() is not None
+    keeper.has_splits = TransactionSplit.query.filter_by(transaction_id=keeper.id).first() is not None
+    extra.has_evidence = ExpenseEvidence.query.filter_by(transaction_id=extra.id).first() is not None
+    if not is_duplicate_twin(extra, keeper):
+        return jsonify({"error": "These two rows are not twins (same amount, same vendor or card, "
+                                 "dates within the window, different QuickBooks ids), so the extra "
+                                 "cannot be folded into the keeper."}), 409
+    r = _merge_extra_into_keeper(pid, extra, keeper)
     db.session.commit()
-    return jsonify({"ok": True, "deleted": tid, "keeper_id": keeper.id, "mode": mode,
-                    "moved": moved, "activity_ids": acts})
+    return jsonify({"ok": True, "deleted": tid, "keeper_id": keeper.id, "mode": r["mode"],
+                    "moved": r["moved"], "activity_ids": r["activity_ids"]})
+
+
+# ── Compare duplicates in place (2026-11-04) ──────────────────────────────
+# The Compare panel (static/dup-compare.js): the members of one duplicate
+# group side by side, the suggested keeper marked with its reason, and the
+# three settling moves — Keep both (the remembered dismissal), Keep this one
+# (_merge_extra_into_keeper for every other member: logged, undoable), Not
+# project for one (mark-not-project). Groups come from the ONE rule
+# (_project_dup_groups → actuals.find_duplicate_groups / pick_keeper), so the
+# chip, the Duplicates view, Review matches and every project's pool read
+# the same answer after a settle.
+
+def _dup_compare_row(pid, t, line_label, docs, users, qbo_names, payee_names):
+    from actuals import (duplicate_delete_mode, loanout_via, payee_display, signed_amount_value,
+                         split_snapshot)
+    from budget_calc import FP_COA_NAMES as _N
+    doc = docs.get(t.doc_upload_id) if t.doc_upload_id else None
+    src = t.source or 'manual_entry'
+    source = ({'qbo_sync': 'QuickBooks', 'reconciled': 'QuickBooks', 'csv_import': 'CSV',
+               'manual_entry': 'Manual', 'doc_upload': 'Receipt'}).get(src, 'Manual')
+    qbo_payee = qbo_names.get(str(t.qbo_entity_ref)) if t.qbo_entity_ref else None
+    pname = payee_names.get(t.payee_id) if t.payee_id else None
+    via = loanout_via(t.payee_id, (t.vendor, t.qbo_entity_ref), doc.vendor if doc else None) if t.payee_id else None
+    sps = split_snapshot(t.id) if getattr(t, 'has_splits', False) else []
+    if sps:
+        coding = f"Split · {len(sps)} pieces"
+    elif t.budget_line_id:
+        coding = line_label(t.budget_line_id)
+    elif t.account_code:
+        coding = f"{t.account_code} · {_N.get(t.account_code, '')} · section".replace(' ·  ·', ' ·')
+    else:
+        coding = ''
+    if t.card_last4:
+        card = '••' + t.card_last4
+    elif t.payment_method:
+        from actuals import PAYMENT_METHOD_LABELS
+        card = PAYMENT_METHOD_LABELS.get(t.payment_method, t.payment_method)
+    elif (t.qbo_txn_type or '') == 'BillPayment':
+        card = 'ACH'
+    else:
+        card = t.qbo_account_id and f"account {t.qbo_account_id}" or ''
+    if doc is not None and t.match_status == 'confirmed':
+        match = 'Receipt confirmed'
+    elif doc is not None and t.match_status == 'suggested':
+        match = f"Receipt suggested · {round(float(t.match_confidence or 0) * 100)}%"
+    elif t.no_charge_reason:
+        match = f"No receipt · {t.no_charge_reason}"
+    else:
+        match = 'No receipt'
+    u = users.get(t.created_via_user_id) if t.created_via_user_id else None
+    by = (u.actor_name if u is not None else
+          ('QuickBooks sync' if src in ('qbo_sync', 'reconciled') else ('CSV import' if src == 'csv_import' else 'Unknown')))
+    return {
+        "id": t.id, "source": source, "source_raw": src,
+        "date": (t.txn_date or '')[:10] or None,
+        "amount": signed_amount_value(t.amount, t.is_expense),
+        "vendor": t.vendor or '—',
+        "qbo_payee": qbo_payee,
+        "payee": {"vendor": t.vendor or '—', "qbo_payee": qbo_payee, "name": pname, "via": via,
+                  "label": payee_display(pname, via) if pname else None},
+        "payee_ref": [(qbo_payee or t.vendor or ''), (t.qbo_entity_ref or None)],
+        "card": card,
+        "qbo": ({"type": t.qbo_txn_type, "id": t.qbo_txn_id} if t.qbo_txn_id else None),
+        "memo": (t.note or t.qbo_category or '')[:200],
+        "coding": coding,
+        "coded": bool(coding),
+        "backup": ({"doc_id": doc.id, "name": (doc.filed_filename or doc.original_filename or f"Doc #{doc.id}")[:120],
+                    "vendor": doc.vendor, "thumb": f"/docs/upload/{doc.id}/thumb",
+                    "url": f"/docs/upload/{doc.id}/raw"}
+                   if doc is not None and t.match_status == 'confirmed' else None),
+        "match": match,
+        "imported": {"at": t.created_at.isoformat(timespec='minutes') if t.created_at else None, "by": by},
+        "delete_mode": duplicate_delete_mode(t),
+        "pooled": t.project_id is None,
+    }
+
+
+def _dup_compare_payload(pid, key=None, tid=None):
+    from actuals import compare_columns
+    from models import CrewMember, QBOVendor
+    groups, _rows = _project_dup_groups(pid)
+    g = None
+    for x in groups:
+        if (key and x["key"] == key) or (tid and any(m.id == tid for m in x["members"])):
+            g = x
+            break
+    if g is None:
+        return None
+    members = g["members"]
+    docs = {d.id: d for d in DocUpload.query.filter(
+        DocUpload.id.in_([m.doc_upload_id for m in members if m.doc_upload_id] or [0])).all()}
+    users = {u.id: u for u in User.query.filter(
+        User.id.in_([m.created_via_user_id for m in members if m.created_via_user_id] or [0])).all()}
+    refs = [str(m.qbo_entity_ref) for m in members if m.qbo_entity_ref]
+    qbo_names = ({v.qbo_vendor_id: v.display_name for v in QBOVendor.query.filter(
+        QBOVendor.qbo_vendor_id.in_(refs)).all()} if refs else {})
+    payee_names = {c.id: c.name for c in CrewMember.query.filter(
+        CrewMember.id.in_([m.payee_id for m in members if m.payee_id] or [0])).all()}
+    _labels = {}
+
+    def _line_label(lid):
+        if lid not in _labels:
+            ln = BudgetLine.query.get(lid)
+            _labels[lid] = (f"{ln.account_code} · {(ln.description or ln.account_name or 'untitled')[:60]}"
+                            if ln else f"line #{lid}")
+        return _labels[lid]
+    rows = [_dup_compare_row(pid, m, _line_label, docs, users, qbo_names, payee_names) for m in members]
+    out = compare_columns(rows, g["keeper"].id, g["keeper_reason"])
+    out.update({"ok": True, "key": g["key"], "pid": pid,
+                "amount": abs(float(g["keeper"].amount or 0)), "vendor": g["keeper"].vendor or '—'})
+    return out
+
+
+@app.route("/projects/<int:pid>/actuals/duplicates/compare.json", methods=["GET"])
+@login_required
+def actuals_duplicates_compare(pid):
+    """The Compare panel's payload for one duplicate group (?key=dup:… or
+    ?tid=<a member>): every member as a column (source, date, amount,
+    vendor / QuickBooks payee with loan-out resolution, card / account,
+    QuickBooks type + id, memo, coding, backup, match, imported when / by),
+    the fields that differ, the suggested keeper and why, and what keeping
+    each column would do to the others."""
+    _require_project_role(pid, 'viewer')
+    key = (request.args.get('key') or '').strip() or None
+    try:
+        tid = int(request.args.get('tid')) if request.args.get('tid') else None
+    except (TypeError, ValueError):
+        tid = None
+    if not key and not tid:
+        return jsonify({"error": "key or tid required"}), 400
+    out = _dup_compare_payload(pid, key=key, tid=tid)
+    if out is None:
+        return jsonify({"ok": False, "gone": True,
+                        "error": "These charges are no longer flagged as duplicates — reload to see why."}), 404
+    return jsonify(out)
+
+
+@app.route("/projects/<int:pid>/actuals/duplicates/settle", methods=["POST"])
+@login_required
+def actuals_duplicates_settle(pid):
+    """Compare → "Keep this one". Body {key, keeper_id}. The group must
+    still be a duplicate group (same ONE rule) containing the keeper; every
+    other member goes through _merge_extra_into_keeper (hard delete for a
+    bare bank row, else its coding / receipt / notes move to the keeper
+    first) — each step logged with a full snapshot, so the toast's Undo
+    (activity undo-batch) puts every row back."""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden"}), 403
+    _require_project_role(pid, 'editor')
+    body = request.get_json(silent=True) or {}
+    key = (body.get('key') or '').strip()
+    try:
+        keeper_id = int(body.get('keeper_id'))
+    except (TypeError, ValueError):
+        return jsonify({"error": "keeper_id required"}), 400
+    groups, _rows = _project_dup_groups(pid)
+    g = next((x for x in groups if x["key"] == key), None)
+    if g is None or not any(m.id == keeper_id for m in g["members"]):
+        return jsonify({"error": "This duplicate group changed since it was opened — reload and compare again."}), 409
+    keeper = next(m for m in g["members"] if m.id == keeper_id)
+    if keeper.source in ('doc_upload', 'invoice_split'):
+        return jsonify({"error": "Keep a charge, not a receipt row."}), 400
+    deleted, acts, modes = [], [], {}
+    for extra in [m for m in g["members"] if m.id != keeper_id]:
+        r = _merge_extra_into_keeper(pid, extra, keeper)
+        deleted.append(r["deleted"])
+        acts += r["activity_ids"]
+        modes[r["deleted"]] = r["mode"]
+    db.session.commit()
+    return jsonify({"ok": True, "key": key, "keeper_id": keeper_id, "deleted": deleted,
+                    "modes": modes, "activity_ids": acts})
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/upload-receipt", methods=["POST"])
@@ -3966,6 +4163,73 @@ def actuals_workspace_json(pid):
     return jsonify(_build_workspace(pid))
 
 
+def _ws_pool_rows(pid):
+    """(rows, dismissed_ids): every top-level money row the project's
+    Actuals lists (same selection the retired reconcile_workspace_json
+    used): electronic + hand-typed; doc-born rows only once activated;
+    never split children or backup rows. The project's POOL (company
+    ledger, 2026-11-03): its own rows + every unclaimed QuickBooks row,
+    plus the pool rows this project marked Not project (dismissals,
+    2026-11-04 — they stay in the pool for everyone else and show here
+    under Not project with Restore), whose ids come back separately.
+    ONE selection for the workspace and the duplicate Compare panel."""
+    txns = (Transaction.query
+            .filter(pool_filter(pid),
+                    db.or_(Transaction.source.is_(None),
+                           Transaction.source.notin_(('doc_upload', 'invoice_split'))),
+                    Transaction.backup_of_txn_id.is_(None))
+            .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
+            .all())
+    _activated_docs = (Transaction.query
+                       .filter(Transaction.project_id == pid,
+                               Transaction.source == 'doc_upload',
+                               Transaction.activated_at.isnot(None),
+                               Transaction.backup_of_txn_id.is_(None))
+                       .all())
+    txns = txns + _activated_docs
+    dismissed_ids = set()
+    for _t, _d in dismissed_pool_rows(pid):
+        _t._pool_dismissal = _d
+        txns.append(_t)
+        dismissed_ids.add(_t.id)
+    return txns, dismissed_ids
+
+
+def _dup_dismissed_keys(pid):
+    """The duplicate groups "Keep both" settled: this project's keys, plus
+    every 'dup:<ids>' key from any project — since the company ledger a
+    QuickBooks charge is ONE row, so a pair settled in one project is the
+    same pair everywhere (2026-11-04)."""
+    out = set()
+    for d in TransactionDupDismissal.query.filter(
+            db.or_(TransactionDupDismissal.project_id == pid,
+                   TransactionDupDismissal.dup_key.like('dup:%'))).all():
+        out.add(d.dup_key)
+    return out
+
+
+def _project_dup_groups(pid):
+    """The project's duplicate groups by the ONE rule
+    (actuals.find_duplicate_groups over _ws_pool_rows, Keep-both keys from
+    _dup_dismissed_keys), with has_splits / has_evidence stamped on every
+    row as the workspace does. Returns (groups, rows_by_id)."""
+    from actuals import find_duplicate_groups
+    from models import ExpenseEvidence
+    txns, dismissed_ids = _ws_pool_rows(pid)
+    live = [t for t in txns if t.id not in dismissed_ids]
+    ids = [t.id for t in live]
+    split_ids, ev_ids = set(), set()
+    if ids:
+        split_ids = {r[0] for r in db.session.query(TransactionSplit.transaction_id)
+                     .filter(TransactionSplit.transaction_id.in_(ids)).distinct().all()}
+        ev_ids = {r[0] for r in db.session.query(ExpenseEvidence.transaction_id)
+                  .filter(ExpenseEvidence.transaction_id.in_(ids)).distinct().all()}
+    for t in live:
+        t.has_splits = t.id in split_ids
+        t.has_evidence = t.id in ev_ids
+    return find_duplicate_groups(live, _dup_dismissed_keys(pid)), {t.id: t for t in live}
+
+
 def _build_workspace(pid, run_matchers=True, with_budget=True):
     """The workspace payload as a plain dict (see actuals_workspace_json).
     run_matchers=False skips the heuristic / AI matchers; with_budget=False
@@ -4011,32 +4275,7 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
                 "dup_pending": bool(d.is_duplicate and (d.status or '') != 'duplicate'),
                 "thumb": f"/docs/upload/{d.id}/thumb"}
 
-    # Every top-level money row (same selection the retired reconcile_workspace_json used):
-    # electronic + hand-typed; doc-born rows only once activated; never
-    # split children or backup rows. The project's POOL (company ledger,
-    # 2026-11-03): its own rows + every unclaimed QuickBooks row.
-    txns = (Transaction.query
-            .filter(pool_filter(pid),
-                    db.or_(Transaction.source.is_(None),
-                           Transaction.source.notin_(('doc_upload', 'invoice_split'))),
-                    Transaction.backup_of_txn_id.is_(None))
-            .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
-            .all())
-    _activated_docs = (Transaction.query
-                       .filter(Transaction.project_id == pid,
-                               Transaction.source == 'doc_upload',
-                               Transaction.activated_at.isnot(None),
-                               Transaction.backup_of_txn_id.is_(None))
-                       .all())
-    txns = txns + _activated_docs
-    # Pool rows this project marked Not project (company ledger dismissals,
-    # 2026-11-04): they stay in the pool for everyone else and show here
-    # under Not project with Restore.
-    _dismissed_ids = set()
-    for _t, _d in dismissed_pool_rows(pid):
-        _t._pool_dismissal = _d
-        txns.append(_t)
-        _dismissed_ids.add(_t.id)
+    txns, _dismissed_ids = _ws_pool_rows(pid)
     txn_ids = [t.id for t in txns]
     # Splits, evidence, itemized children, crew names — bulk reads.
     splits_by_txn = {}
@@ -4058,6 +4297,15 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
     if _crew_ids:
         from models import CrewMember
         crew_names = {c.id: c.name for c in CrewMember.query.filter(CrewMember.id.in_(list(_crew_ids))).all()}
+    # Attributed payees (Transaction.payee_id) with their loan-out company
+    # (2026-11-04): "Danielle Miller · via Two Foot Shuffle LLC".
+    payee_names = {}
+    _payee_ids = {t.payee_id for t in txns if getattr(t, 'payee_id', None)}
+    if _payee_ids:
+        from models import CrewMember as _CMp
+        payee_names = {c.id: c.name for c in _CMp.query.filter(_CMp.id.in_(list(_payee_ids))).all()}
+    from actuals import loanout_via as _lo_via, loanout_index as _lo_index
+    _lo_idx = _lo_index()
     for t in txns:
         t.has_splits = bool(splits_by_txn.get(t.id))
         t.has_evidence = t.id in evidence_txn_ids
@@ -4066,7 +4314,7 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
     # vendor or card, within 3 days for two QuickBooks records, same day
     # otherwise, DIFFERENT QuickBooks ids) with the keeper rule. "Keep both"
     # is remembered in transaction_dup_dismissal under the group key.
-    dismissed = {d.dup_key for d in TransactionDupDismissal.query.filter_by(project_id=pid).all()}
+    dismissed = _dup_dismissed_keys(pid)
     _dup_groups = find_duplicate_groups([t for t in txns if t.id not in _dismissed_ids], dismissed)
     dup_group_of = {}
     for _g in _dup_groups:
@@ -4226,6 +4474,11 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
             "payee": (crew_names.get(t.paid_by_crew_member_id)
                       if getattr(t, 'paid_by_crew_member_id', None) else None),
             "paid_by_crew_member_id": getattr(t, 'paid_by_crew_member_id', None),
+            "payee_id": getattr(t, 'payee_id', None),
+            "payee_name": payee_names.get(getattr(t, 'payee_id', None)),
+            "payee_via": (_lo_via(t.payee_id, (t.vendor, t.qbo_entity_ref),
+                                  (doc.vendor if doc is not None else None), index=_lo_idx)
+                          if getattr(t, 'payee_id', None) and _lo_idx else None),
             "flags": flags,
             "excluded": excluded,
             "reviewed": bool(getattr(t, 'reviewed_at', None)),
