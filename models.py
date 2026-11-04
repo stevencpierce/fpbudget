@@ -132,6 +132,12 @@ class ProjectSheet(db.Model):
     id             = db.Column(db.Integer, primary_key=True)
     name           = db.Column(db.String(200), nullable=False)
     dropbox_folder = db.Column(db.String(300), nullable=True)   # relative slug under ops root
+    # Where the project folder IS right now when it is not at the ops root
+    # (2026-11-04, alembic 0029): wrap / archive move it to
+    # `_WRAPPED PROJECTS/<date>_<slug>` or `_ARCHIVED/<date>_<slug>` and
+    # record the full path here; NULL = at the ops root under dropbox_folder.
+    # Read it only through app._project_root_for(project).
+    dropbox_root   = db.Column(db.String(500), nullable=True)
     client_name    = db.Column(db.String(200), nullable=True)   # used for slug + display
     status         = db.Column(db.String(20), default='active', nullable=False)  # active | wrapped | archived
     # Fringe-rollup mode (owner 2026-10-05): when True, labor-line totals

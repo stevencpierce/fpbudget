@@ -14,12 +14,19 @@ moves, renames or creates anything in Dropbox.
        the project's activity log can Undo it)
 
 How a file is found (ONE rule, `propose_relink`):
-  1. slug remap — the stored path is under a slug that is not the project's
-     current dropbox_folder (a rename) and the same relative path exists
-     under the current folder;
+  1. slug remap — the file's place inside the folder (`_rel_path`: after
+     the segment named `<slug>` / `<date>_<slug>`) exists under the
+     project's current folder (a rename);
   2. else a filename search inside the project's current folder: exactly
      one file with that basename → proposed; several → "needs a person",
      listed with the candidates; none → "needs a person".
+When the project's current folder itself is gone (a wrap / archive from
+before 2026-11-04 recorded nothing), `_find_moved_project_folder` looks
+under _WRAPPED PROJECTS and _ARCHIVED for `<date>_<slug>` / `<slug>`:
+exactly one → the same rules run against THAT folder (method "wrapped")
+and a project-level change records it as the folder's location
+(`project_changes` → ProjectSheet.dropbox_root, undoable); several →
+needs a person.
 Existence is checked against ONE recursive listing of the project's folder
 (one Dropbox call per project, paged) instead of one files_get_metadata per
 document — exact, and unlike files_search_v2 it is not behind the search
@@ -39,7 +46,9 @@ from flask import jsonify, request
 from flask_login import login_required
 
 from app import (app, maintenance_required, _log_activity, _dbx_client,
-                 _project_dbx_root, _dbx_is_path_error, _PROJECT_DBX_PATH_COLUMNS,
+                 _project_dbx_root, _project_root_for, _find_moved_project_folder,
+                 _moved_project_roots,
+                 _dbx_is_path_error, _PROJECT_DBX_PATH_COLUMNS,
                  _DBX_NAMESPACE_ID, _DBX_OPS_ROOT)
 from models import db, DocUpload, ProjectSheet
 
@@ -133,10 +142,34 @@ class _Exists:
         return self._meta(norm_path)
 
 
-def propose_relink(doc, field, cur_slug, root, files):
-    """ONE rule for where a missing file went. Returns a row dict with
-    new_path (or None), method ('slug' | 'search' | None), reason and
-    candidates."""
+def _rel_path(norm_path, slug=None):
+    """The file's place INSIDE its project folder, whatever that folder was
+    called at the time. The project folder is the first segment (after the
+    ops prefix in user-root mode) — `/<slug>/…` — or the second one when
+    the first is a moved-to root: `/_WRAPPED PROJECTS/<date>_<slug>/…`,
+    `/_ARCHIVED/<date>_<slug>/…`. Everything after it is returned; None
+    when there is nothing after the project folder."""
+    if not norm_path:
+        return None
+    p = norm_path
+    if not _DBX_NAMESPACE_ID:
+        ops = (_DBX_OPS_ROOT or "").rstrip("/")
+        if ops and p.lower().startswith(ops.lower() + "/"):
+            p = p[len(ops):]
+    parts = p.strip("/").split("/")
+    moved = {r.strip("/").lower() for r in _moved_project_roots()}
+    skip = 2 if parts and parts[0].lower() in moved else 1
+    if len(parts) <= skip:
+        return None
+    return "/".join(parts[skip:])
+
+
+def propose_relink(doc, field, cur_slug, root, files, same_place="slug"):
+    """ONE rule for where a missing file went. `root` / `files` are the
+    folder to look in (the project's current folder, or the wrapped /
+    archived folder discovery found — then same_place is "wrapped").
+    Returns a row dict with new_path (or None), method ('slug' | 'wrapped' |
+    'search' | None), reason and candidates."""
     old = getattr(doc, field, None)
     norm = _norm(old)
     row = {"doc_id": doc.id, "project_id": doc.project_id, "field": field,
@@ -146,12 +179,14 @@ def propose_relink(doc, field, cur_slug, root, files):
     if files is None:
         row["reason"] = f"the project folder {root} is not in Dropbox"
         return row
-    slug, rest = _split_slug(norm)
-    if slug and rest and slug.lower() != (cur_slug or "").lower():
-        cand = f"{root}/{rest}"
-        if cand.lower() in files:
-            row.update(new_path=files[cand.lower()], method="slug",
-                       reason=f"folder renamed {slug} → {cur_slug}")
+    rel = _rel_path(norm)
+    if rel:
+        cand = f"{root}/{rel}"
+        if cand.lower() in files and cand.lower() != (norm or "").lower():
+            row.update(new_path=files[cand.lower()], method=same_place,
+                       reason=("same place inside the folder, now at " + root
+                               if same_place == "wrapped"
+                               else f"folder renamed → {cur_slug}"))
             return row
     base = (norm or "").rsplit("/", 1)[-1].lower()
     hits = [disp for low, disp in files.items() if low.rsplit("/", 1)[-1] == base] if base else []
@@ -168,7 +203,14 @@ def propose_relink(doc, field, cur_slug, root, files):
 
 def scan(pid=None, dbx=None):
     """The preview: every live document whose recorded path(s) are not in
-    Dropbox, with the proposal. Scoped to one project or every project."""
+    Dropbox, with the proposal. Scoped to one project or every project.
+
+    When a project's current folder is gone, `_find_moved_project_folder`
+    looks under _WRAPPED PROJECTS / _ARCHIVED for `<date>_<slug>` or
+    `<slug>` (each root listed once per scan): exactly one match → the
+    documents are proposed under it (method "wrapped") AND a project-level
+    change records the folder's location (`project_changes`, applied on
+    Fix, logged, undoable); several → needs a person."""
     dbx = dbx or _dbx_client()
     q = DocUpload.query.filter(DocUpload.status != "deleted")
     q = q.filter(db.or_(DocUpload.filed_dropbox_path.isnot(None),
@@ -187,18 +229,37 @@ def scan(pid=None, dbx=None):
         ProjectSheet.id.in_(list(by_project.keys()) or [0])).all()}
     exists = _Exists(dbx)
     rows, checked, ok_count = [], 0, 0
-    project_notes = []
+    project_notes, project_changes = [], []
+    moved_listings = {}            # one listing of each moved-to root per scan
     for proj_id, pdocs in by_project.items():
         p = projects.get(proj_id)
         if not p or not p.dropbox_folder:
             skipped["no_project"] += len(pdocs)
             continue
         cur_slug = p.dropbox_folder.strip("/")
-        root = _project_dbx_root(cur_slug)
+        root = _project_root_for(p)
         files = list_project_files(dbx, root)
+        same_place = "slug"
         if files is None:
-            project_notes.append({"project_id": p.id, "project": p.name,
-                                  "note": f"project folder {root} is not in Dropbox"})
+            found = _find_moved_project_folder(dbx, cur_slug, listings=moved_listings)
+            if len(found) == 1:
+                new_root = found[0]
+                files = list_project_files(dbx, new_root)
+                if files is not None:
+                    project_changes.append({
+                        "project_id": p.id, "project": p.name, "field": "dropbox_root",
+                        "old": p.dropbox_root, "new": new_root,
+                        "reason": f"the folder is not at {root}; found at {new_root}"})
+                    root, same_place = new_root, "wrapped"
+            elif len(found) > 1:
+                project_notes.append({"project_id": p.id, "project": p.name,
+                                      "note": (f"project folder {root} is not in Dropbox; "
+                                               f"{len(found)} moved folders match — needs a person"),
+                                      "candidates": sorted(found)})
+            if files is None and not any(n["project_id"] == p.id for n in project_notes):
+                project_notes.append({"project_id": p.id, "project": p.name,
+                                      "note": f"project folder {root} is not in Dropbox "
+                                              f"(nothing under _WRAPPED PROJECTS / _ARCHIVED matches)"})
         root_l = root.lower() + "/"
         for d in pdocs:
             for field in _PROJECT_DBX_PATH_COLUMNS:
@@ -214,7 +275,7 @@ def scan(pid=None, dbx=None):
                 if present:
                     ok_count += 1
                     continue
-                row = propose_relink(d, field, cur_slug, root, files)
+                row = propose_relink(d, field, cur_slug, root, files, same_place)
                 row["project"] = p.name
                 rows.append(row)
     fixable = sum(1 for r in rows if r["new_path"])
@@ -223,17 +284,35 @@ def scan(pid=None, dbx=None):
             "checked": checked, "present": ok_count, "missing": len(rows),
             "fixable": fixable, "needs_person": len(rows) - fixable,
             "metadata_calls": exists.calls,
-            "skipped": skipped, "project_notes": project_notes, "rows": rows,
-            "fix": ("Run updates the recorded path of every row with a new_path "
-                    "(logged per document; undoable from the project's activity "
-                    "log). Nothing moves in Dropbox.")}
+            "skipped": skipped, "project_notes": project_notes,
+            "project_changes": project_changes, "rows": rows,
+            "fix": ("Run records each listed project folder's new location and updates "
+                    "the recorded path of every row with a new_path (logged per project "
+                    "and per document; undoable from the project's activity log). "
+                    "Nothing moves in Dropbox.")}
 
 
 def apply_fixes(preview):
-    """Write the proposed paths. One commit + one activity row per document
-    field, `before` = the old path. Rows whose stored path changed since the
-    preview are skipped (stale)."""
-    fixed, stale = [], []
+    """Write the proposed changes: first each project's folder location
+    (`dropbox_root`), then the document paths. One commit + one activity
+    row each, `before` = the old value. Rows whose stored value changed
+    since the preview are skipped (stale)."""
+    fixed, stale, projects_fixed = [], [], []
+    for ch in preview.get("project_changes") or []:
+        p = ProjectSheet.query.get(ch["project_id"])
+        if not p or (p.dropbox_root or None) != (ch.get("old") or None):
+            stale.append(f"project:{ch['project_id']}")
+            continue
+        p.dropbox_root = ch["new"]
+        db.session.commit()
+        act = _log_activity(action="update", entity_type="project", entity_id=p.id,
+                            entity_label=(p.name or f"Project #{p.id}")[:300], project_id=p.id,
+                            before={"dropbox_root": ch.get("old")},
+                            after={"dropbox_root": ch["new"], "relink": True},
+                            note=f"Re-link: the project folder is at {ch['new']} (was recorded at "
+                                 f"{ch.get('old') or 'the ops root'}); nothing moved in Dropbox")
+        projects_fixed.append({"project_id": p.id, "old": ch.get("old"), "new": ch["new"],
+                               "activity_id": (act.id if act else None)})
     for r in preview["rows"]:
         if not r.get("new_path"):
             continue
@@ -253,7 +332,7 @@ def apply_fixes(preview):
         fixed.append({"doc_id": d.id, "field": r["field"], "old_path": r["old_path"],
                       "new_path": r["new_path"], "method": r["method"],
                       "activity_id": (act.id if act else None)})
-    return fixed, stale
+    return fixed, stale, projects_fixed
 
 
 @app.route("/admin/docs/relink", methods=["GET", "POST"])
@@ -272,9 +351,11 @@ def admin_docs_relink():
         return jsonify({"ok": False, "error": f"Dropbox scan failed: {type(e).__name__}: {e}"}), 502
     if request.method == "GET" or str(request.args.get("apply") or "") != "1":
         return jsonify(preview)
-    fixed, stale = apply_fixes(preview)
+    fixed, stale, projects_fixed = apply_fixes(preview)
     needs_person = [r for r in preview["rows"] if not r.get("new_path")]
     return jsonify({"ok": True, "dry_run": False, "scope": preview["scope"],
                     "fixed": len(fixed), "rows": fixed, "stale": stale,
+                    "project_changes_applied": projects_fixed,
+                    "project_notes": preview.get("project_notes") or [],
                     "needs_person": len(needs_person), "needs_person_rows": needs_person,
                     "finished_at": datetime.utcnow().isoformat() + "Z"})

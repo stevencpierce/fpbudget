@@ -174,14 +174,23 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   flag chip is hidden under the hover actions, so a duplicate row's hover
   action is Compare; D opens it too.
 
-- Dropbox paths follow the folder (2026-11-04): a project rename moves the
-  folder AND rewrites every stored path inside it
-  (`_remap_project_dropbox_paths` — DocUpload filed / archive paths,
-  trash_meta move sources, call-sheet archives; counts land on the rename's
-  activity row). Per-project roots come from `_project_dbx_root(slug)`.
-  A file that is still not where its row says → Admin → Maintenance →
-  "Re-link documents to Dropbox" (`routes/docs_relink.py`, Preview then
-  Run; updates rows only, never moves files; undoable per document).
+- Dropbox paths follow the folder (2026-11-04): every project-folder move
+  — rename, wrap, archive, bulk archive, reactivate — goes through
+  `_move_project_folder(p, dest)`: it moves, records where the folder IS
+  (`ProjectSheet.dropbox_root`, Alembic 0029 + essential pass; NULL = at
+  the ops root) and rewrites every stored path inside it
+  (`_remap_project_dropbox_paths(pid, old_root, new_root)` — DocUpload
+  filed / archive paths, trash_meta move sources, call-sheet archives;
+  counts land on the activity row). Read a project's folder ONLY through
+  `_project_root_for(project)` (never `/<slug>` by hand);
+  `_project_dbx_root(slug)` is the ops-root form. A file that is still not
+  where its row says → Admin → Maintenance → "Re-link documents to
+  Dropbox" (`routes/docs_relink.py`, Preview then Run; updates rows only,
+  never moves files; undoable per document and per project). When a
+  project's folder is gone it looks under `_WRAPPED PROJECTS` /
+  `_ARCHIVED` for `<date>_<slug>` (`_find_moved_project_folder`, shared
+  with reactivate): one match → `method: "wrapped"` rows + a
+  `project_changes` entry that records `dropbox_root`; several → a person.
   preview-link / raw answer a path error with `DOC_MISSING_MESSAGE` +
   `missing: true` (`_dbx_is_path_error`). `_INBOX` is created ONLY by
   `_create_drop_folder` (fresh slug from the DB, project root must exist)

@@ -216,20 +216,24 @@ def dbx(ctx, monkeypatch):
 def test_02a_remap_helper_touches_only_the_named_project(ctx):
     with ctx["app"].app_context():
         # project 1's remap: its own 3 docs + the call sheet, never project 2's misfiled row
-        counts = fpapp._remap_project_dropbox_paths(S["pid"], OLD, "NEW_SLUG")
+        counts = fpapp._remap_project_dropbox_paths(S["pid"], _root(OLD), _root("NEW_SLUG"))
         assert counts["docs"] == 3 and counts["callsheet_sends"] == 1
         assert DocUpload.query.get(S["other_doc"]).filed_dropbox_path.startswith(_root(OLD) + "/")
         db.session.rollback()
         # project 2's remap touches only project 2's row
-        counts = fpapp._remap_project_dropbox_paths(S["other_pid"], OLD, "NEW_SLUG")
+        counts = fpapp._remap_project_dropbox_paths(S["other_pid"], _root(OLD), _root("NEW_SLUG"))
         assert counts["docs"] == 1 and counts["callsheet_sends"] == 0
         assert DocUpload.query.get(S["d1"]).filed_dropbox_path == S["inv"]
         db.session.rollback()
         assert DocUpload.query.get(S["other_doc"]).filed_dropbox_path.startswith(_root(OLD) + "/")
         # a slug that is a PREFIX of another is a different segment: untouched
-        counts = fpapp._remap_project_dropbox_paths(S["pid"], OLD[:-6], "NEW_SLUG")
+        counts = fpapp._remap_project_dropbox_paths(S["pid"], _root(OLD[:-6]), _root("NEW_SLUG"))
         assert counts["docs"] == 0
         db.session.rollback()
+        # the rule is a root PREFIX swap, case-insensitive, whole segment
+        assert fpapp._remap_root_path(f"{_root(OLD)}/a/b.pdf", _root(OLD).upper(), "/_WRAPPED PROJECTS/2026-08-07_X") \
+            == "/_WRAPPED PROJECTS/2026-08-07_X/a/b.pdf"
+        assert fpapp._remap_root_path(f"{_root(OLD)}x/a.pdf", _root(OLD), "/n") == f"{_root(OLD)}x/a.pdf"
 
 
 def test_02b_failed_folder_move_leaves_every_path_alone(ctx, monkeypatch):

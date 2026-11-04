@@ -1909,7 +1909,7 @@ def admin_docs_wipe_project(pid):
     # errors." Errors are logged but never fatal — the wipe's primary
     # job (DB rows + filed files) is already done by here.
     if dbx and project.dropbox_folder:
-        proj_root = f"/{project.dropbox_folder.strip('/')}"
+        proj_root = _project_root_for(project)
         # Folders that the Analyzer writes into. We delete the ones that
         # exist; missing ones are a no-op. files_delete_v2 on a folder
         # cascades and deletes everything inside it.
@@ -2113,8 +2113,7 @@ def admin_docs_scan_audit(pid):
     orphans, scanned, dbx_err = [], 0, None
     try:
         dbx = _dbx_client()
-        proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
-                     else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+        proj_root = _project_root_for(project)
         existing_full, existing_names = set(), set()
         for u in ups:
             if u.filed_dropbox_path:
@@ -2189,8 +2188,7 @@ def admin_docs_import_missing(pid):
         dbx = _dbx_client()
     except Exception as e:
         return jsonify({"error": "Dropbox init failed", "detail": type(e).__name__}), 500
-    proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
-                 else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+    proj_root = _project_root_for(project)
     existing_full, existing_names = set(), set()
     for u in DocUpload.query.with_entities(
                 DocUpload.filed_dropbox_path, DocUpload.original_filename,
@@ -2354,8 +2352,7 @@ def _path_in_project(src_path, project):
     receipts. (Code review 2026-06-04.)"""
     if not src_path or not project or not getattr(project, 'dropbox_folder', None):
         return False
-    proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
-                 else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+    proj_root = _project_root_for(project)
     s = src_path.rstrip('/').lower()
     r = proj_root.rstrip('/').lower()
     return s == r or s.startswith(r + '/')
@@ -2431,8 +2428,7 @@ def admin_docs_source_audit(pid):
     except Exception as e:
         return jsonify({"error": "Dropbox init failed", "detail": type(e).__name__}), 500
 
-    proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
-                 else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+    proj_root = _project_root_for(project)
 
     # 1) Index everything the software already has: content hashes (filed copies
     #    + original-bytes archive) and basenames, from the processed tree.
@@ -2580,8 +2576,7 @@ def admin_docs_source_import(pid):
     except Exception as e:
         return jsonify({"error": "Dropbox init failed", "detail": type(e).__name__}), 500
 
-    proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
-                 else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+    proj_root = _project_root_for(project)
 
     # Re-derive the missing set (same content_hash logic as the audit). If the
     # Dropbox walk truncates we must NOT import — a partial proc_hashes set would
@@ -2802,8 +2797,7 @@ def _source_drain_worker(flask_app, pid, src_path, user_id, include_amt):
                          or (user.email or '').split('@')[0] or 'unknown') if user else 'unknown'
             _safe_user = _re.sub(r"[^\w\- ]", "", _raw_user) or "unknown"
             dbx = _dbx_client()
-            proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
-                         else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+            proj_root = _project_root_for(project)
             SKIP = {'.ds_store', 'thumbs.db', 'desktop.ini', 'icon\r'}
 
             # Build exclusion + amount sets ONCE; keep them current incrementally.
@@ -3110,9 +3104,7 @@ def admin_docs_reconcile_project(pid):
 
     # Build the project root. Namespace vs legacy mode matters here —
     # mirrors the pattern used in docs_upload_retry_filing.
-    proj_root = (f"/{project.dropbox_folder}"
-                 if _DBX_NAMESPACE_ID
-                 else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+    proj_root = _project_root_for(project)
 
     # Collect the set of doc-type subfolders we care about. DOCUMENT_TYPES
     # gives us canonical paths; de-dupe because several types share a
@@ -4908,7 +4900,7 @@ def _archive_project_dropbox(p, pdfs=None):
 
         # Move the project folder into _ARCHIVED if it exists
         if p.dropbox_folder:
-            src  = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
+            src  = _project_root_for(p)
             dest = f"{archive_root}/{stamp}_{p.dropbox_folder}"
             try:
                 dbx.files_move_v2(src, dest, autorename=True)
@@ -5066,7 +5058,7 @@ def project_delete(pid):
     # + COMMIT, and only then touch Dropbox — a failed delete used to leave
     # the folder already moved to _ARCHIVED with the project still live.
     from types import SimpleNamespace as _NS
-    _p_snap = _NS(id=p.id, name=p.name, dropbox_folder=p.dropbox_folder)
+    _p_snap = _NS(id=p.id, name=p.name, dropbox_folder=p.dropbox_folder, dropbox_root=p.dropbox_root)
     _pdfs = _render_project_budget_pdfs(p)
     try:
         _delete_project_rows(pid)
@@ -5083,24 +5075,56 @@ def project_delete(pid):
 
 # Every column that stores a path INSIDE a project's Dropbox folder — the
 # ones a folder move leaves stale. crew_dbx_path is NOT here: it lives under
-# Crew Database/<Person>/<Year>/<Project NAME>, which a rename never moves.
+# Crew Database/<Person>/<Year>/<Project NAME>, which a move never touches.
 _PROJECT_DBX_PATH_COLUMNS = ('filed_dropbox_path', 'source_archive_path')
 
 
-def _remap_slug_path(path, old_slug, new_slug):
-    """`…/<old_slug>/…` → `…/<new_slug>/…` (the same rule _clone_project_data
-    uses); anything else is returned untouched. The slashes make it a whole
-    path segment, so a slug that is a prefix of another is never touched."""
-    if path and old_slug and new_slug and f"/{old_slug}/" in path:
-        return path.replace(f"/{old_slug}/", f"/{new_slug}/")
+def _project_root_for(project):
+    """Where the project's Dropbox folder IS right now — the ONE rule
+    (2026-11-04): `dropbox_root` when wrap / archive moved it
+    (`/_WRAPPED PROJECTS/<date>_<slug>`), else the ops-root slug path.
+    `project` only needs .dropbox_folder / .dropbox_root (a snapshot is
+    fine)."""
+    root = (getattr(project, 'dropbox_root', None) or '').strip()
+    if root:
+        return root.rstrip('/')
+    return _project_dbx_root(getattr(project, 'dropbox_folder', None))
+
+
+def _root_variants(root):
+    """The spellings a stored path may use for one folder root: as given,
+    and (namespace mode) with the legacy ops-root prefix the pre-namespace
+    rows carry. Lower-cased — Dropbox paths are case-insensitive."""
+    root = (root or '').rstrip('/')
+    out = [root.lower()]
+    ops = (_DBX_OPS_ROOT or '').rstrip('/')
+    if _DBX_NAMESPACE_ID and ops and not root.lower().startswith(ops.lower() + '/'):
+        out.append((ops + root).lower())
+    return out
+
+
+def _remap_root_path(path, old_root, new_root):
+    """`<old_root>/rest` → `<new_root>/rest` (the folder moved; the file's
+    place inside it did not). Prefix match on a whole segment, case-
+    insensitive; anything else is returned untouched. The rename, wrap,
+    archive and reactivate moves all use this one rule."""
+    if not (path and old_root and new_root):
+        return path
+    new_root = new_root.rstrip('/')
+    pl = path.lower()
+    for ov in _root_variants(old_root):
+        if pl.startswith(ov + '/'):
+            return new_root + path[len(ov):]
     return path
 
 
-def _remap_project_dropbox_paths(pid, old_slug, new_slug):
-    """After a project's Dropbox folder moved from old_slug to new_slug,
+def _remap_project_dropbox_paths(pid, old_root, new_root):
+    """After a project's Dropbox folder moved from old_root to new_root
+    (full folder paths: `/<slug>`, `/_WRAPPED PROJECTS/<date>_<slug>` …),
     rewrite every stored path of THAT project that still points inside the
-    old folder (fix 2026-11-04: renaming project 307 moved the folder but
-    left every DocUpload.filed_dropbox_path behind, so every preview 404'd).
+    old folder (fix 2026-11-04: renaming project 307 — and every wrap /
+    archive before it — moved the folder but left every
+    DocUpload.filed_dropbox_path behind, so every preview 404'd).
 
     Touches: DocUpload.filed_dropbox_path / source_archive_path, the `src`
     of each move recorded in DocUpload.trash_meta (so Restore puts a trashed
@@ -5109,32 +5133,37 @@ def _remap_project_dropbox_paths(pid, old_slug, new_slug):
     the caller owns the transaction. Returns counts per column."""
     counts = {'docs': 0, 'filed_dropbox_path': 0, 'source_archive_path': 0,
               'trash_meta': 0, 'callsheet_sends': 0}
-    if not (old_slug and new_slug) or old_slug == new_slug:
+    old_root = (old_root or '').rstrip('/')
+    new_root = (new_root or '').rstrip('/')
+    if not (old_root and new_root) or old_root.lower() == new_root.lower():
         return counts
     import json as _json_rm
     from models import CallSheetSend as _CSS
-    needle = f"/{old_slug}/"
+    # Coarse SQL pre-filter (LIKE treats `_` as a wildcard — a superset is
+    # fine, the exact prefix test below decides); the last segment of the
+    # root is enough to find candidates in either spelling.
+    needle = f"%{old_root.rsplit('/', 1)[-1]}/%"
     docs = (DocUpload.query.filter(DocUpload.project_id == pid)
-            .filter(db.or_(DocUpload.filed_dropbox_path.contains(needle),
-                        DocUpload.source_archive_path.contains(needle),
-                        DocUpload.trash_meta.contains(needle)))
+            .filter(db.or_(DocUpload.filed_dropbox_path.ilike(needle),
+                        DocUpload.source_archive_path.ilike(needle),
+                        DocUpload.trash_meta.ilike(needle)))
             .all())
     for d in docs:
         touched = False
         for col in _PROJECT_DBX_PATH_COLUMNS:
             cur = getattr(d, col, None)
-            new = _remap_slug_path(cur, old_slug, new_slug)
+            new = _remap_root_path(cur, old_root, new_root)
             if new != cur:
                 setattr(d, col, new[:500])
                 counts[col] += 1
                 touched = True
-        if d.trash_meta and needle in d.trash_meta:
+        if d.trash_meta:
             try:
                 meta = _json_rm.loads(d.trash_meta)
                 changed = False
                 for mv in (meta.get('moves') or []):
                     if isinstance(mv, dict) and mv.get('src'):
-                        ns = _remap_slug_path(mv['src'], old_slug, new_slug)
+                        ns = _remap_root_path(mv['src'], old_root, new_root)
                         if ns != mv['src']:
                             mv['src'] = ns
                             changed = True
@@ -5147,13 +5176,55 @@ def _remap_project_dropbox_paths(pid, old_slug, new_slug):
         if touched:
             counts['docs'] += 1
     sends = (_CSS.query.join(Budget, Budget.id == _CSS.budget_id)
-             .filter(Budget.project_id == pid, _CSS.dropbox_path.contains(needle)).all())
+             .filter(Budget.project_id == pid, _CSS.dropbox_path.ilike(needle)).all())
     for s in sends:
-        new = _remap_slug_path(s.dropbox_path, old_slug, new_slug)
+        new = _remap_root_path(s.dropbox_path, old_root, new_root)
         if new != s.dropbox_path:
             s.dropbox_path = new[:500]
             counts['callsheet_sends'] += 1
     return counts
+
+
+def _move_project_folder(p, dest, *, autorename=True, new_slug=None, why=''):
+    """The ONE way a project's Dropbox folder moves (rename, wrap, archive,
+    reactivate — 2026-11-04): move it, record where it is now
+    (`dropbox_root`, NULL when `dest` is the ops-root slug path), and
+    rewrite every stored path inside it (_remap_project_dropbox_paths) in a
+    SAVEPOINT so a remap failure never loses the move itself. Does NOT
+    commit. Returns {ok, src, dest, remapped | error}; on a move failure
+    nothing in the database changes."""
+    src = _project_root_for(p)
+    out = {'ok': False, 'src': src, 'dest': dest, 'remapped': None}
+    try:
+        res = _dbx_client().files_move_v2(src, dest, autorename=autorename)
+        real = getattr(getattr(res, 'metadata', None), 'path_display', None) or dest
+    except Exception as e:
+        out['error'] = f"{type(e).__name__}: {e}"
+        logging.warning(f"[DBX MOVE] {why or 'move'} failed for pid={getattr(p, 'id', '?')}: "
+                        f"{src} → {dest}: {out['error']}")
+        return out
+    out['dest'] = real
+    if new_slug:
+        p.dropbox_folder = new_slug
+    at_ops_root = real.rstrip('/').lower() == _project_dbx_root(p.dropbox_folder).lower()
+    p.dropbox_root = None if at_ops_root else real.rstrip('/')
+    logging.info(f"[DBX MOVE] {why or 'move'}: {src} → {real}")
+    try:
+        with db.session.begin_nested():
+            out['remapped'] = _remap_project_dropbox_paths(p.id, src, real)
+    except Exception:
+        logging.exception(f"[DBX MOVE] path remap failed for pid={p.id}")
+        out['remapped'] = {'error': 'path remap failed — run Admin → Maintenance → '
+                                    'Re-link documents to Dropbox'}
+    out['ok'] = True
+    return out
+
+
+def _stamped_dest(root, p):
+    """`<root>/<YYYY-MM-DD>_<slug>` — the wrap / archive destination name
+    (date first so Dropbox sorts chronologically)."""
+    from datetime import date as _date
+    return f"{root}/{_date.today().strftime('%Y-%m-%d')}_{p.dropbox_folder}"
 
 
 @app.route("/projects/<int:pid>/rename", methods=["POST"])
@@ -5235,36 +5306,29 @@ def project_rename(pid):
     except Exception as _se:
         logging.warning(f"slug regen failed on rename: {_se}")
 
-    # Move the Dropbox folder to match the new slug.
+    # Move the Dropbox folder to match the new slug — wherever it is now
+    # (ops root, or `_WRAPPED PROJECTS/<date>_<old slug>` → the same
+    # folder with the new slug). _move_project_folder records the new
+    # location and rewrites every stored path inside it (fix 2026-11-04);
+    # when the move fails nothing changes: the paths still point at the files.
     dropbox_renamed = False
     remapped = None
     if new_slug and old_slug and new_slug != old_slug:
-        try:
-            has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
-            if has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN'):
-                dbx = _dbx_client()
-                src  = _project_dbx_root(old_slug)
+        has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
+        if has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN'):
+            cur_root = _project_root_for(p)
+            if p.dropbox_root and cur_root.endswith(f"_{old_slug}"):
+                dest = cur_root[:-len(old_slug)] + new_slug      # keep the date stamp
+            else:
                 dest = _project_dbx_root(new_slug)
-                dbx.files_move_v2(src, dest, autorename=False)
-                p.dropbox_folder = new_slug
+            mv = _move_project_folder(p, dest, autorename=False, new_slug=new_slug,
+                                      why='rename')
+            if mv['ok']:
                 dropbox_renamed = True
-                logging.info(f"[DBX RENAME] {src} → {dest}")
-        except Exception as e:
-            logging.error(f"[DBX RENAME] failed for pid={pid}: "
-                          f"{type(e).__name__}: {e} — DB renamed but folder NOT moved")
-    # The folder moved → every stored path inside it moves with it (fix
-    # 2026-11-04). When the move failed the paths stay as they are: they
-    # still point at the files.
-    if dropbox_renamed:
-        try:
-            # SAVEPOINT: a remap failure rolls back only the remap — the
-            # rename, the new slug and the budget names still commit.
-            with db.session.begin_nested():
-                remapped = _remap_project_dropbox_paths(pid, old_slug, new_slug)
-        except Exception:
-            logging.exception(f"[DBX RENAME] path remap failed for pid={pid}")
-            remapped = {'error': 'path remap failed — run Admin → Maintenance → '
-                                 'Re-link documents to Dropbox'}
+                remapped = mv['remapped']
+            else:
+                logging.error(f"[DBX RENAME] failed for pid={pid}: {mv.get('error')} "
+                              f"— DB renamed but folder NOT moved")
 
     db.session.commit()
     try:
@@ -5901,6 +5965,34 @@ def project_wrap_book_pdf(pid):
                     headers={"Content-Disposition": _content_disposition_attachment(fname)})
 
 
+def _move_note(mv):
+    """Activity-note suffix for a _move_project_folder result."""
+    if not mv:
+        return ''
+    if not mv.get('ok'):
+        return f" (Dropbox folder NOT moved: {mv.get('error')})"
+    r = mv.get('remapped') or {}
+    n = r.get('docs') if isinstance(r, dict) else None
+    return (f" (folder moved to {mv['dest']}"
+            + (f"; {n} document path(s) updated" if n is not None else '')
+            + (f"; {r['error']}" if isinstance(r, dict) and r.get('error') else '')
+            + ")")
+
+
+def _move_flash(mv):
+    """Flash suffix for a _move_project_folder result — what the owner sees."""
+    if not mv:
+        return ''
+    if not mv.get('ok'):
+        return f" Note: Dropbox folder could not be moved ({mv.get('error')})."
+    r = mv.get('remapped') or {}
+    if isinstance(r, dict) and r.get('error'):
+        return f" Folder moved, but {r['error']}."
+    n = r.get('docs') if isinstance(r, dict) else 0
+    return (f" Folder moved; {n} document{'s' if n != 1 else ''} re-pointed at it."
+            if n else " Folder moved.")
+
+
 @app.route("/projects/<int:pid>/wrap", methods=["POST"])
 @login_required
 def project_wrap(pid):
@@ -5915,38 +6007,33 @@ def project_wrap(pid):
         pdf_bytes = WeasyprintHTML(string=html_str, base_url=request.host_url).write_pdf()
         if p.dropbox_folder:
             stamp = date.today().strftime("%Y-%m-%d")
-            base = (f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID
-                    else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}")
+            base = _project_root_for(p)
             _dbx_client().files_upload(
                 pdf_bytes, f"{base}/01_ADMIN/WRAP BOOK/{stamp}_Wrap_Book.pdf",
                 autorename=True)
             logging.info(f"[wrap] Wrap Book filed for project {pid}")
     except Exception as _wbe:
         logging.warning(f"[wrap] Wrap Book generation failed (wrapping anyway): {_wbe}")
+    # Move the folder to _WRAPPED PROJECTS/<date>_<slug>, record where it is
+    # now and rewrite every stored path inside it (fix 2026-11-04: projects
+    # 285 / 288 wrapped with every document path left at the ops root).
+    mv = None
+    prior_status = p.status
     if p.dropbox_folder:
-        try:
-            dbx = _dbx_client()
-            src  = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
-            wrap_root = _DBX_WRAP_ROOT
-            # Prefix destination folder with YYYY-MM-DD to match the _ARCHIVED
-            # flow — easier chronological sort in Dropbox.
-            from datetime import date as _date
-            stamp = _date.today().strftime("%Y-%m-%d")
-            dest = f"{wrap_root}/{stamp}_{p.dropbox_folder}"
-            dbx.files_move_v2(src, dest, autorename=True)
-            logging.info(f"Wrapped project Dropbox folder: {src} → {dest}")
-        except Exception as e:
-            logging.warning(f"Could not move Dropbox folder on wrap: {e}")
+        mv = _move_project_folder(p, _stamped_dest(_DBX_WRAP_ROOT, p), why='wrap')
     p.status = 'wrapped'
     db.session.commit()
     try:
         _log_activity(action='update', entity_type='project',
                       entity_id=pid, entity_label=p.name,
                       project_id=pid,
-                      before={'status': 'active'}, after={'status': 'wrapped'},
-                      note=f'Wrapped project "{p.name}"')
+                      before={'status': prior_status, 'dropbox_root': (mv or {}).get('src')},
+                      after={'status': 'wrapped', 'dropbox_root': p.dropbox_root,
+                             'dropbox_paths_remapped': (mv or {}).get('remapped'),
+                             'dropbox_move_error': (mv or {}).get('error')},
+                      note=f'Wrapped project "{p.name}"' + _move_note(mv))
     except Exception: pass
-    flash(f"Project '{p.name}' wrapped.", "success")
+    flash(f"Project '{p.name}' wrapped." + _move_flash(mv), "success")
     return redirect(url_for("dashboard"))
 
 
@@ -5957,28 +6044,26 @@ def project_archive(pid):
     # Archiving moves the Dropbox folder — owner (LP) or admin only
     # (Cleanup A #14, 2026-11-02; any editor could before).
     _require_project_role(pid, 'owner')
+    # _ARCHIVED lives as a SIBLING of _FP OPERATIONS FOLDER, not a child. The
+    # move records the folder's new location and rewrites the stored paths
+    # inside it (2026-11-04).
+    mv = None
+    prior_status = p.status
     if p.dropbox_folder:
-        try:
-            dbx = _dbx_client()
-            src  = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
-            # _ARCHIVED lives as a SIBLING of _FP OPERATIONS FOLDER, not a child.
-            from datetime import date as _date
-            stamp = _date.today().strftime("%Y-%m-%d")
-            dest = f"{_DBX_ARCHIVE_ROOT}/{stamp}_{p.dropbox_folder}"
-            dbx.files_move_v2(src, dest, autorename=True)
-            logging.info(f"Archived project Dropbox folder: {src} → {dest}")
-        except Exception as e:
-            logging.warning(f"Could not move Dropbox folder on archive: {e}")
+        mv = _move_project_folder(p, _stamped_dest(_DBX_ARCHIVE_ROOT, p), why='archive')
     p.status = 'archived'
     db.session.commit()
     try:
         _log_activity(action='update', entity_type='project',
                       entity_id=pid, entity_label=p.name,
                       project_id=pid,
-                      before={'status': 'active'}, after={'status': 'archived'},
-                      note=f'Archived project "{p.name}"')
+                      before={'status': prior_status, 'dropbox_root': (mv or {}).get('src')},
+                      after={'status': 'archived', 'dropbox_root': p.dropbox_root,
+                             'dropbox_paths_remapped': (mv or {}).get('remapped'),
+                             'dropbox_move_error': (mv or {}).get('error')},
+                      note=f'Archived project "{p.name}"' + _move_note(mv))
     except Exception: pass
-    flash(f"Project '{p.name}' archived.", "success")
+    flash(f"Project '{p.name}' archived." + _move_flash(mv), "success")
     return redirect(url_for("dashboard"))
 
 
@@ -6011,7 +6096,7 @@ def projects_bulk_delete():
         p = ProjectSheet.query.get(pid)
         if not p:
             continue
-        _p_snap = _NS(id=p.id, name=p.name, dropbox_folder=p.dropbox_folder)
+        _p_snap = _NS(id=p.id, name=p.name, dropbox_folder=p.dropbox_folder, dropbox_root=p.dropbox_root)
         _pdfs = _render_project_budget_pdfs(p)
         try:
             _delete_project_rows(pid)
@@ -6055,24 +6140,68 @@ def projects_bulk_archive():
         if _user_project_role(pid) != 'owner':
             skipped += 1
             continue
+        mv = None
+        prior_status = p.status
         if p.dropbox_folder:
-            try:
-                dbx = _dbx_client()
-                src = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
-                from datetime import date as _date
-                stamp = _date.today().strftime("%Y-%m-%d")
-                dest = f"{_DBX_ARCHIVE_ROOT}/{stamp}_{p.dropbox_folder}"
-                dbx.files_move_v2(src, dest, autorename=True)
-            except Exception as e:
-                logging.warning(f"Could not move Dropbox folder on bulk archive: {e}")
+            mv = _move_project_folder(p, _stamped_dest(_DBX_ARCHIVE_ROOT, p), why='bulk archive')
         p.status = 'archived'
         archived += 1
+        db.session.commit()
+        try:
+            _log_activity(action='update', entity_type='project',
+                          entity_id=pid, entity_label=p.name, project_id=pid,
+                          before={'status': prior_status, 'dropbox_root': (mv or {}).get('src')},
+                          after={'status': 'archived', 'dropbox_root': p.dropbox_root,
+                                 'dropbox_paths_remapped': (mv or {}).get('remapped'),
+                                 'dropbox_move_error': (mv or {}).get('error')},
+                          note=f'Archived project "{p.name}"' + _move_note(mv))
+        except Exception: pass
     db.session.commit()
     flash(f"Archived {archived} project{'s' if archived != 1 else ''}.", "success")
     if skipped:
         flash(f"Skipped {skipped} project{'s' if skipped != 1 else ''} — only the "
               f"project owner or an admin can archive.", "warning")
     return redirect(url_for("dashboard"))
+
+
+def _moved_project_roots():
+    """The roots wrap / archive move project folders to."""
+    return [_DBX_WRAP_ROOT, _DBX_ARCHIVE_ROOT]
+
+
+def _find_moved_project_folder(dbx, slug, listings=None):
+    """Every folder under _WRAPPED PROJECTS / _ARCHIVED that IS this
+    project's folder: named `<YYYY-MM-DD>_<slug>` or exactly `<slug>`
+    (case-insensitive). ONE rule for reactivate and for Maintenance →
+    Re-link documents (2026-11-04). `listings` is an optional cache
+    {root: [FolderMetadata…]} so a scan over many projects lists each root
+    once. Returns full paths (path_display)."""
+    import dropbox as _dbx_mod
+    out = []
+    sl = (slug or '').lower()
+    if not sl:
+        return out
+    for root in _moved_project_roots():
+        entries = (listings or {}).get(root)
+        if entries is None:
+            try:
+                res = dbx.files_list_folder(root)
+                entries = list(res.entries)
+                while getattr(res, 'has_more', False):
+                    res = dbx.files_list_folder_continue(res.cursor)
+                    entries.extend(res.entries)
+            except Exception as _le:
+                logging.warning(f"[DBX FIND] could not list {root}: {_le}")
+                entries = []
+            if listings is not None:
+                listings[root] = entries
+        for e in entries:
+            if not isinstance(e, _dbx_mod.files.FolderMetadata):
+                continue
+            name = (getattr(e, 'name', '') or '').lower()
+            if name == sl or name.endswith(f"_{sl}"):
+                out.append(getattr(e, 'path_display', None) or f"{root}/{e.name}")
+    return out
 
 
 @app.route("/projects/<int:pid>/reactivate", methods=["POST"])
@@ -6085,10 +6214,12 @@ def project_reactivate(pid):
     Moves the most recent match back to the ops root, stripping the date
     prefix."""
     p = ProjectSheet.query.get_or_404(pid)
+    prior_status = p.status
     p.status = 'active'
     db.session.commit()
 
     dbx_note = ""
+    mv = None
     try:
         has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
         if (has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN')) and p.dropbox_folder:
@@ -6096,45 +6227,44 @@ def project_reactivate(pid):
             slug = p.dropbox_folder
 
             # Destination = ops root under the same slug name.
-            dest = f"/{slug}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{slug}"
+            dest = _project_dbx_root(slug)
 
-            # Candidate source roots to search: _ARCHIVED first, then
-            # _WRAPPED PROJECTS. Archived folders are named
-            # '{YYYY-MM-DD}_{slug}' (or similar stamp prefix). We match on
-            # anything ending with '_{slug}' OR exactly equal to slug.
-            _wrap_root = os.getenv('DROPBOX_WRAP_PATH', '/_WRAPPED PROJECTS')
-            search_roots = [_DBX_ARCHIVE_ROOT, _wrap_root]
+            # Where is the folder now? The recorded location first
+            # (dropbox_root, written by wrap / archive since 2026-11-04);
+            # for older wraps, search _ARCHIVED then _WRAPPED PROJECTS for
+            # '{YYYY-MM-DD}_{slug}' or the bare slug — the most recent wins.
             found_src = None
             found_from = None
-            for root in search_roots:
+            if p.dropbox_root:
                 try:
-                    res = dbx.files_list_folder(root)
-                    entries = list(res.entries)
-                    while getattr(res, 'has_more', False):
-                        res = dbx.files_list_folder_continue(res.cursor)
-                        entries.extend(res.entries)
-                    # Match by suffix (date_prefix + underscore + slug) or exact name
-                    candidates = [e for e in entries
-                                  if getattr(e, 'name', '').endswith(f"_{slug}")
-                                  or getattr(e, 'name', '') == slug]
-                    # Pick the most recent (archives are date-prefixed so sort desc)
-                    candidates.sort(key=lambda e: getattr(e, 'name', ''), reverse=True)
-                    if candidates:
-                        found_src = getattr(candidates[0], 'path_display', None) or f"{root}/{candidates[0].name}"
-                        found_from = root
-                        break
-                except Exception as _le:
-                    logging.warning(f"[DBX REACTIVATE] could not list {root}: {_le}")
-                    continue
+                    dbx.files_get_metadata(p.dropbox_root)
+                    found_src, found_from = p.dropbox_root, 'its recorded location'
+                except Exception as _re:
+                    logging.warning(f"[DBX REACTIVATE] recorded root {p.dropbox_root} "
+                                    f"not found ({_re}); searching")
+            if not found_src:
+                found = _find_moved_project_folder(dbx, slug)
+                if len(found) == 1:
+                    found_src = found[0]
+                    found_from = found_src.rsplit('/', 1)[0]
+                elif len(found) > 1:
+                    # several date-stamped copies: the newest stamp
+                    found_src = sorted(found, key=lambda x: x.rsplit('/', 1)[-1], reverse=True)[0]
+                    found_from = found_src.rsplit('/', 1)[0]
 
             if found_src:
-                try:
-                    dbx.files_move_v2(found_src, dest, autorename=True)
-                    logging.warning(f"[DBX REACTIVATE] moved {found_src} → {dest}")
-                    dbx_note = f" Dropbox folder restored from {found_from}."
-                except Exception as _me:
-                    logging.error(f"[DBX REACTIVATE] move failed {found_src} → {dest}: {_me}")
-                    dbx_note = f" (Dropbox move failed — folder still in {found_from}. Error: {_me})"
+                p.dropbox_root = found_src     # so the move starts from where it is
+                mv = _move_project_folder(p, dest, why='reactivate')
+                if mv['ok']:
+                    db.session.commit()
+                    logging.warning(f"[DBX REACTIVATE] moved {found_src} → {mv['dest']}")
+                    dbx_note = f" Dropbox folder restored from {found_from}." + _move_flash(mv)
+                else:
+                    db.session.rollback()
+                    p = ProjectSheet.query.get(pid)
+                    logging.error(f"[DBX REACTIVATE] move failed {found_src} → {dest}: {mv.get('error')}")
+                    dbx_note = (f" (Dropbox move failed — folder still in {found_from}. "
+                                f"Error: {mv.get('error')})")
             else:
                 logging.warning(f"[DBX REACTIVATE] no archived/wrapped folder found for slug={slug!r}")
                 dbx_note = (f" (no archived folder found matching '{slug}' — "
@@ -6142,6 +6272,15 @@ def project_reactivate(pid):
     except Exception as _e:
         logging.exception(f"[DBX REACTIVATE] unexpected: {_e}")
         dbx_note = f" (Dropbox restore errored: {_e})"
+    try:
+        _log_activity(action='update', entity_type='project',
+                      entity_id=pid, entity_label=p.name, project_id=pid,
+                      before={'status': prior_status, 'dropbox_root': (mv or {}).get('src')},
+                      after={'status': 'active', 'dropbox_root': p.dropbox_root,
+                             'dropbox_paths_remapped': (mv or {}).get('remapped'),
+                             'dropbox_move_error': (mv or {}).get('error')},
+                      note=f'Reactivated project "{p.name}"' + _move_note(mv))
+    except Exception: pass
 
     flash(f"Project '{p.name}' reactivated.{dbx_note}", "success")
     return redirect(url_for("dashboard"))
@@ -20176,7 +20315,14 @@ def activity_undo(pid, bid, aid):
     if row.undone_at is not None:
         return jsonify({"ok": False, "error": "Already undone"}), 409
     if row.entity_type not in ('budget_line', 'transaction', 'transaction_match',
-                               'schedule_day', 'doc_upload'):
+                               'schedule_day', 'doc_upload', 'project'):
+        return jsonify({"ok": False, "error": "Undo isn't supported for this action yet"}), 400
+    if row.entity_type == 'project' and not (
+            row.action == 'update' and '"relink"' in (row.after_json or '')
+            and 'dropbox_root' in (row.before_json or '')):
+        # Only the Re-link tool's "project folder is now at …" change is
+        # undoable on a project (it moved nothing in Dropbox). A wrap /
+        # archive row is not: undoing it would un-record a real move.
         return jsonify({"ok": False, "error": "Undo isn't supported for this action yet"}), 400
     if row.entity_type == 'doc_upload' and not (
             row.action == 'update' and row.before_json
@@ -20510,6 +20656,15 @@ def activity_undo(pid, bid, aid):
         except Exception as _ue:
             db.session.rollback()
             return jsonify({"ok": False, "error": f"Could not reverse the match: {_ue}"}), 400
+
+    elif row.entity_type == 'project':
+        # Re-link's project-level change: put the recorded folder root back.
+        _pr = ProjectSheet.query.get(row.entity_id)
+        if not _pr:
+            return jsonify({"ok": False, "error": "That project no longer exists."}), 400
+        if not before or 'dropbox_root' not in before:
+            return jsonify({"ok": False, "error": "No saved state to restore for this action."}), 400
+        _pr.dropbox_root = before['dropbox_root']
 
     elif row.entity_type == 'doc_upload':
         # A re-linked Dropbox path (Maintenance → Re-link documents): put the
@@ -23255,8 +23410,7 @@ def _archive_callsheet_to_dropbox(project, selected_date, version_label, pdf_byt
         logging.warning(f"[CALLSHEET ARCHIVE] Dropbox client unavailable: {e}")
         return None
     try:
-        proj_root = (f"/{project.dropbox_folder.strip('/')}" if _DBX_NAMESPACE_ID
-                     else f"{_DBX_OPS_ROOT}/{project.dropbox_folder.strip('/')}")
+        proj_root = _project_root_for(project)
         _ver = re.sub(r"[^\w\-]+", "_", (version_label or 'v1')).strip('_') or 'v1'
         fname = f"CallSheet_{selected_date.isoformat()}_{_ver}.pdf"
         dbx_path = f"{proj_root}/01_ADMIN/CALL SHEETS/{fname}"
@@ -29076,6 +29230,9 @@ def _web_worker_essential_columns():
                 "  ON transaction_split (transaction_id)",
                 # A split piece may target a SECTION (2026-11-04, alembic 0027).
                 "ALTER TABLE transaction_split ADD COLUMN IF NOT EXISTS account_code INTEGER",
+                # Where the project folder IS when wrapped / archived
+                # (2026-11-04, alembic 0029).
+                "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS dropbox_root VARCHAR(500)",
                 # analyzer_batch (audit H7, alembic 0002) was only ever created
                 # by db.create_all() in preDeploy — which ran against sqlite —
                 # so a worker that rehydrates a doc batch after a recycle
@@ -32265,7 +32422,7 @@ _DROP_SWEEP_MAX_BYTES = 25 * 1024 * 1024
 
 
 def _drop_folder_path(project):
-    return f"{_project_dbx_root(project.dropbox_folder)}/{_DROP_FOLDER_NAME}"
+    return f"{_project_root_for(project)}/{_DROP_FOLDER_NAME}"
 
 
 def _current_project_slug(project):
@@ -32276,8 +32433,17 @@ def _current_project_slug(project):
     2026-11-04 (project 307). READ COMMITTED sees the new slug per
     statement, so no rollback is needed."""
     try:
-        return (db.session.query(ProjectSheet.dropbox_folder)
-                .filter(ProjectSheet.id == project.id).scalar())
+        row = (db.session.query(ProjectSheet.dropbox_folder, ProjectSheet.dropbox_root)
+               .filter(ProjectSheet.id == project.id).first())
+        if row is None:
+            return None
+        # Carry the recorded location too (wrap / archive, 2026-11-04) so the
+        # caller's root is the folder's CURRENT one.
+        try:
+            project.dropbox_root = row[1]
+        except Exception:
+            pass
+        return row[0]
     except Exception:
         db.session.rollback()
         return project.dropbox_folder
@@ -32298,7 +32464,7 @@ def _create_drop_folder(dbx, project):
         logging.info(f"[drop-sweep] project {project.id}: slug changed "
                      f"{project.dropbox_folder!r} → {slug_now!r}; using the current one")
         project.dropbox_folder = slug_now
-    root = _project_dbx_root(slug_now)
+    root = _project_root_for(project)
     path = f"{root}/{_DROP_FOLDER_NAME}"
     try:
         dbx.files_get_metadata(root)
@@ -33069,7 +33235,7 @@ def docs_upload_retry_filing(uid):
                      or (uploader.email or '').split('@')[0]
                      or 'unknown') if uploader else 'unknown'
         _safe_user = _re.sub(r"[^\w\- ]", "", _raw_user) or "unknown"
-        _proj_root = f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}"
+        _proj_root = _project_root_for(project)
         # Sanitize the filename into a single path segment — a '/' or '\' in the
         # original filename must not create surprise subfolders.
         _safe_name = _ana_safe_filename(upload.original_filename)
