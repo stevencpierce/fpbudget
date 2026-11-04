@@ -545,21 +545,24 @@ def _cents(x):
     return int(d.copy_abs().quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) * 100) * (-1 if d < 0 else 1)
 
 
-def validate_splits(txn_amount, splits, allowed_line_ids=None):
+def validate_splits(txn_amount, splits, allowed_line_ids=None, allowed_section_codes=None):
     """Validate a split request. Pure — no DB.
 
-    splits: list of {budget_line_id, amount, note?}. Rules:
+    splits: list of {budget_line_id | account_code, amount, note?}. Rules:
       • at least two rows (one row is an assignment, not a split)
-      • every row names a budget_line_id; when allowed_line_ids is given,
-        every id must be in it (lines of THIS project's current Working)
+      • every row names EXACTLY ONE target: a budget_line_id (when
+        allowed_line_ids is given, a line of THIS project's current
+        Working) or, since 2026-11-04, an account_code — a COA section with
+        no line yet, the split twin of section-only coding (when
+        allowed_section_codes is given, it must be in it)
       • every amount is a number, non-zero, and has the same sign as the
         transaction (a refund splits into negative pieces)
       • the amounts sum to the transaction amount TO THE CENT
     Returns (clean_rows, None) on success, where clean_rows carry
-    budget_line_id:int, amount:float (2dp), note:str|None — or
-    (None, {"error": str, "delta": float|None}) on failure. delta is
-    (sum of splits) - (transaction amount), in dollars, when that is the
-    problem."""
+    budget_line_id:int|None, account_code:int|None, amount:float (2dp),
+    note:str|None — or (None, {"error": str, "delta": float|None}) on
+    failure. delta is (sum of splits) - (transaction amount), in dollars,
+    when that is the problem."""
     if not isinstance(splits, (list, tuple)) or len(splits) < 2:
         return None, {"error": "A split needs at least two lines.", "delta": None}
     try:
@@ -572,15 +575,34 @@ def validate_splits(txn_amount, splits, allowed_line_ids=None):
     for i, row in enumerate(splits, 1):
         if not isinstance(row, dict):
             return None, {"error": f"Split {i} is not an object.", "delta": None}
-        lid = row.get('budget_line_id')
-        try:
-            lid = int(lid)
-        except (TypeError, ValueError):
-            return None, {"error": f"Split {i} has no budget line.", "delta": None}
-        if allowed_line_ids is not None and lid not in allowed_line_ids:
-            return None, {"error": f"Split {i}: line #{lid} is not on this "
-                                   "project's current Working budget.",
+        lid, code = row.get('budget_line_id'), row.get('account_code')
+        # A picker value 'section:4700' is a section target too.
+        if isinstance(lid, str) and lid.startswith('section:'):
+            lid, code = None, lid.split(':', 1)[1]
+        has_line = lid not in (None, '', 0, '0')
+        has_code = code not in (None, '', 0, '0')
+        if has_line and has_code:
+            return None, {"error": f"Split {i}: pick a line or a section, not both.",
                           "delta": None}
+        if has_code:
+            try:
+                code = int(code)
+            except (TypeError, ValueError):
+                return None, {"error": f"Split {i} has no budget line.", "delta": None}
+            if allowed_section_codes is not None and code not in allowed_section_codes:
+                return None, {"error": f"Split {i}: section {code} is not a section "
+                                       "of the chart of accounts.", "delta": None}
+            lid = None
+        else:
+            try:
+                lid = int(lid)
+            except (TypeError, ValueError):
+                return None, {"error": f"Split {i} has no budget line.", "delta": None}
+            if allowed_line_ids is not None and lid not in allowed_line_ids:
+                return None, {"error": f"Split {i}: line #{lid} is not on this "
+                                       "project's current Working budget.",
+                              "delta": None}
+            code = None
         try:
             amt_c = _cents(row.get('amount'))
         except ValueError:
@@ -591,7 +613,8 @@ def validate_splits(txn_amount, splits, allowed_line_ids=None):
             return None, {"error": f"Split {i}: amount must have the same sign "
                                    "as the transaction.", "delta": None}
         note = (row.get('note') or '').strip()[:300] or None
-        clean.append({"budget_line_id": lid, "amount": amt_c / 100.0, "note": note})
+        clean.append({"budget_line_id": lid, "account_code": code,
+                      "amount": amt_c / 100.0, "note": note})
         sum_c += amt_c
     if sum_c != total_c:
         delta = (sum_c - total_c) / 100.0
@@ -708,19 +731,472 @@ def split_pieces_for_lines(project_id, line_ids):
 
 def split_sums_by_section_code(project_id):
     """{account_code: signed split total} — the section-level twin of
-    split_sums_by_line for _actuals_by_section_code (top sheet)."""
+    split_sums_by_line for _actuals_by_section_code (top sheet). A piece
+    on a line lands on the line's account code; a SECTION piece
+    (account_code set, no line — 2026-11-04) lands on its own code."""
     from sqlalchemy import func, case
     from models import TransactionSplit
+    code = func.coalesce(TransactionSplit.account_code, BudgetLine.account_code)
     rows = (db.session.query(
-                BudgetLine.account_code,
+                code.label('code'),
                 func.sum(case((Transaction.is_expense == True, TransactionSplit.amount),   # noqa: E712
                               else_=-TransactionSplit.amount)))
             .join(Transaction, Transaction.id == TransactionSplit.transaction_id)
-            .join(BudgetLine, BudgetLine.id == TransactionSplit.budget_line_id)
+            .outerjoin(BudgetLine, BudgetLine.id == TransactionSplit.budget_line_id)
             .filter(Transaction.project_id == project_id,
                     counts_as_spend(set()))
-            .group_by(BudgetLine.account_code).all())
-    return {code: float(amt or 0) for code, amt in rows if code is not None}
+            .group_by(code).all())
+    return {c: float(amt or 0) for c, amt in rows if c is not None}
+
+
+def split_section_sums(project_id):
+    """{section account_code: signed total} of the split pieces that target
+    a SECTION with no line (2026-11-04). The section-only twin of
+    split_sums_by_line: budget_view's section-coded spend row, the Actuals
+    pane's "Section-coded" row and the section drill-down add these to the
+    section-only coded charges so a split piece on "4700 · Post-production
+    services" counts exactly like a charge coded to that section."""
+    from sqlalchemy import func, case
+    from models import TransactionSplit
+    rows = (db.session.query(
+                TransactionSplit.account_code,
+                func.sum(case((Transaction.is_expense == True, TransactionSplit.amount),   # noqa: E712
+                              else_=-TransactionSplit.amount)))
+            .join(Transaction, Transaction.id == TransactionSplit.transaction_id)
+            .filter(Transaction.project_id == project_id,
+                    TransactionSplit.budget_line_id.is_(None),
+                    TransactionSplit.account_code.isnot(None),
+                    counts_as_spend(set()))
+            .group_by(TransactionSplit.account_code).all())
+    return {int(c): float(amt or 0) for c, amt in rows if c is not None}
+
+
+def split_pieces_for_section(project_id, code):
+    """(split, parent) pairs for the SECTION pieces on one section code —
+    the section drill-down lists them beside the section-only charges."""
+    from models import TransactionSplit
+    return (db.session.query(TransactionSplit, Transaction)
+            .join(Transaction, Transaction.id == TransactionSplit.transaction_id)
+            .filter(Transaction.project_id == project_id,
+                    TransactionSplit.budget_line_id.is_(None),
+                    TransactionSplit.account_code == int(code),
+                    counts_as_spend(set()))
+            .order_by(Transaction.txn_date.desc().nullslast(), TransactionSplit.id.asc())
+            .all())
+
+
+# ── ONE split mechanism (2026-11-04) ──────────────────────────────────────
+# Owner, Nov 4: "even a split invoice could be used as backup across
+# multiple lines … she has one invoice with both labor and something else."
+# Live GINTS (project 300): ACH 7246 $993.35 was split $900 to 2000-04 while
+# its invoice (doc 3485, its own row 4544) was separately itemized 3×$300 to
+# the same line and never attached — line actual $1,800 vs $900.
+#
+# The rule: a charge is split with transaction_split rows, and the ONE
+# document attached to it is the backup for every piece. The legacy
+# invoice_split child rows survive only on a document with NO charge yet
+# (an accrual). When such a document is attached to a charge its children
+# become transaction_split pieces on the charge and are deleted — never
+# both. A split parent carries no line and no section of its own.
+
+class SplitParentError(ValueError):
+    """Coding a split parent to one line / section would double count."""
+
+
+SPLIT_PARENT_MESSAGE = "This charge is split — edit the split instead."
+REMAINDER_NOTE = 'Remainder → main line'
+
+
+def invoice_children_to_split_rows(charge_amount, children, charge_target=None):
+    """Turn a document's itemization (invoice_split children) into
+    transaction_split rows for the charge it is attached to. Pure — no DB.
+
+    children: [{budget_line_id, account_code, amount, note}] — each child's
+    own target (line, else section) and amount, the order kept.
+    charge_target: ('line', id) | ('section', code) | None — the charge's
+    own coding, which takes a positive remainder (a tip on top of the
+    invoice).
+
+    The pieces must sum to the CHARGE (the bank's figure) to the cent:
+      • equal → the children as they are;
+      • the charge is more → the difference goes to the "Remainder → main
+        line" piece when the itemization had one, else a new piece on the
+        charge's own coding, else the largest piece (noted);
+      • the charge is less → the difference comes off the remainder piece,
+        else the largest piece, when that leaves it non-zero with the same
+        sign; otherwise the conversion is refused.
+    Returns (rows, None) — rows like validate_splits' clean rows; ONE row
+    means "code the charge to this target" (pieces that collapse to one) —
+    or (None, error)."""
+    try:
+        total_c = _cents(charge_amount)
+    except ValueError:
+        return None, "The charge amount is not a number."
+    pieces = []
+    for k in children or []:
+        try:
+            a = _cents(k.get('amount'))
+        except ValueError:
+            return None, "An itemized line has no amount."
+        if a == 0:
+            continue
+        lid = k.get('budget_line_id') or None
+        code = None if lid else (k.get('account_code') or None)
+        if not lid and not code:
+            return None, "An itemized line has no budget line or section."
+        pieces.append({"budget_line_id": lid, "account_code": code, "c": a,
+                       "note": ((k.get('note') or '').strip()[:300] or None)})
+    if not pieces:
+        return None, "The document has no itemized amounts to move."
+    # The itemization sums to the document; signs follow the charge.
+    if total_c < 0:
+        for p in pieces:
+            p["c"] = -abs(p["c"])
+    else:
+        for p in pieces:
+            p["c"] = abs(p["c"])
+    diff = total_c - sum(p["c"] for p in pieces)
+    if diff:
+        rem = next((p for p in pieces if p["note"] == REMAINDER_NOTE), None)
+        largest = max(pieces, key=lambda p: abs(p["c"]))
+        grows = (diff > 0) == (total_c > 0)
+        if grows:
+            if rem is not None:
+                rem["c"] += diff
+            elif charge_target:
+                kind, val = charge_target
+                pieces.append({"budget_line_id": val if kind == 'line' else None,
+                               "account_code": val if kind == 'section' else None,
+                               "c": diff, "note": "Difference to the charge"})
+            else:
+                largest["c"] += diff
+                largest["note"] = ((largest["note"] + ' · ') if largest["note"] else '') \
+                    + f"+${abs(diff) / 100.0:,.2f} to match the charge"
+        else:
+            tgt = rem if rem is not None else largest
+            new_c = tgt["c"] + diff
+            if new_c == 0 or (new_c > 0) != (total_c > 0):
+                return None, (f"The invoice lines total "
+                              f"${abs(total_c - diff) / 100.0:,.2f}, more than the "
+                              f"${abs(total_c) / 100.0:,.2f} charge — fix the "
+                              "itemization first.")
+            tgt["c"] = new_c
+    rows = [{"budget_line_id": p["budget_line_id"], "account_code": p["account_code"],
+             "amount": p["c"] / 100.0, "note": p["note"]} for p in pieces if p["c"]]
+    if len({(r["budget_line_id"], r["account_code"]) for r in rows}) == 1 and len(rows) > 1 \
+            and all(not r["note"] or r["note"] == REMAINDER_NOTE for r in rows):
+        r0 = dict(rows[0]); r0["amount"] = total_c / 100.0
+        return [r0], None
+    return rows, None
+
+
+def _txn_target(t):
+    """('line', id) | ('section', code) | None for a row's own coding."""
+    if getattr(t, 'budget_line_id', None):
+        return ('line', t.budget_line_id)
+    if getattr(t, 'account_code', None):
+        return ('section', t.account_code)
+    return None
+
+
+def _child_dicts(children):
+    return [{"budget_line_id": getattr(k, 'budget_line_id', None),
+             "account_code": getattr(k, 'account_code', None),
+             "amount": getattr(k, 'amount', None),
+             "note": getattr(k, 'note', None)} for k in children]
+
+
+def invoice_children_of(doc_row_or_charge, doc_upload_id=None):
+    """The invoice_split children of a row: parent_transaction_id → it, or
+    (for a document) the same doc_upload_id. Order kept."""
+    from sqlalchemy import or_
+    q = Transaction.query.filter(Transaction.source == 'invoice_split')
+    conds = [Transaction.parent_transaction_id == doc_row_or_charge.id]
+    if doc_upload_id:
+        conds.append(Transaction.doc_upload_id == doc_upload_id)
+    return q.filter(or_(*conds)).order_by(Transaction.id).all()
+
+
+def write_splits(txn, project_id, rows, user_id=None):
+    """Replace a transaction's split rows with `rows` (validate_splits'
+    clean shape) and make it a split parent: no line, no section of its own
+    (the bug on GINTS 7246 was a parent with BOTH). Commit-free."""
+    from models import TransactionSplit
+    TransactionSplit.query.filter_by(transaction_id=txn.id).delete(synchronize_session=False)
+    now = datetime.utcnow()
+    for r in rows:
+        db.session.add(TransactionSplit(
+            transaction_id=txn.id, budget_line_id=r.get("budget_line_id"),
+            account_code=r.get("account_code"), project_id=project_id,
+            amount=r["amount"], note=r.get("note"),
+            created_at=now, created_by_user_id=user_id))
+    txn.budget_line_id = None
+    txn.account_code = None
+    txn.account_code_name = None
+    txn.updated_at = now
+
+
+def split_snapshot(txn_id):
+    """The split rows of one transaction as plain dicts (undo payloads)."""
+    from models import TransactionSplit
+    return [{"budget_line_id": sp.budget_line_id, "account_code": sp.account_code,
+             "amount": float(sp.amount or 0), "note": sp.note}
+            for sp in TransactionSplit.query.filter_by(transaction_id=txn_id)
+                                            .order_by(TransactionSplit.id).all()]
+
+
+def fold_invoice_children_onto_charge(charge, children, project_id, user_id=None,
+                                      keep_charge_split=None):
+    """The ONE conversion: a document's invoice_split children → the
+    charge's transaction_split pieces (amounts / lines / sections / notes
+    kept, the charge's amount rules — invoice_children_to_split_rows), then
+    the children are deleted (evidence first; backups pointing at them are
+    re-pointed at the charge). Never both.
+
+    keep_charge_split: when the charge is ALREADY split, True keeps the
+    charge's split and only drops the children (the default when it is
+    split); False replaces it with the invoice's lines.
+
+    Commit-free. Returns {"mode": 'converted' | 'coded' | 'kept_charge_split'
+    | 'refused', "rows": [...], "deleted": [txn_snapshot...], "error"?}."""
+    from models import TransactionSplit, ExpenseEvidence
+    info = {"mode": None, "rows": [], "deleted": [], "error": None}
+    children = list(children or [])
+    if not children:
+        info["mode"] = 'none'
+        return info
+    has_split = TransactionSplit.query.filter_by(transaction_id=charge.id).first() is not None
+    if keep_charge_split is None:
+        keep_charge_split = has_split
+    if has_split and keep_charge_split:
+        info["mode"] = 'kept_charge_split'
+    else:
+        # Stored amounts carry the sign in is_expense; pieces follow the
+        # stored amount (split_sums_by_line signs them by the parent).
+        rows, err = invoice_children_to_split_rows(
+            charge.amount, _child_dicts(children), _txn_target(charge))
+        if err:
+            info["mode"], info["error"] = 'refused', err
+            return info
+        info["rows"] = rows
+        if len(rows) == 1:
+            TransactionSplit.query.filter_by(transaction_id=charge.id).delete(synchronize_session=False)
+            r = rows[0]
+            charge.budget_line_id = r["budget_line_id"]
+            if r["budget_line_id"]:
+                _ln = BudgetLine.query.get(r["budget_line_id"])
+                charge.account_code = _ln.account_code if _ln else None
+                charge.account_code_name = ((_ln.account_name or '')[:100] if _ln else None)
+            else:
+                charge.account_code = r["account_code"]
+            info["mode"] = 'coded'
+        else:
+            write_splits(charge, project_id, rows, user_id)
+            info["mode"] = 'converted'
+    ids = [k.id for k in children]
+    info["deleted"] = [{**txn_snapshot(k), "id": k.id} for k in children]
+    ExpenseEvidence.query.filter(ExpenseEvidence.transaction_id.in_(ids)).delete(
+        synchronize_session=False)
+    Transaction.query.filter(Transaction.backup_of_txn_id.in_(ids)).update(
+        {Transaction.backup_of_txn_id: charge.id}, synchronize_session=False)
+    for k in children:
+        db.session.delete(k)
+    charge.not_project_expense = False
+    charge.updated_at = datetime.utcnow()
+    db.session.flush()
+    return info
+
+
+def find_counted_twice(charges, doc_rows, *, splits_by_txn=None, kids_by_parent=None,
+                       day_window=30):
+    """Invoices counted twice — pure (rows as objects; unit-tested with
+    SimpleNamespace). Two shapes, both from live data on 2026-11-04:
+
+      (a) 'split_and_itemized': a charge with transaction_split pieces AND
+          invoice_split children (GINTS 7246 once its invoice is attached).
+      (b) 'doc_and_charge': a document row with NO charge behind it that
+          counts (activated and coded, or itemized into children) + a
+          counted bank charge in the same project with the same payee
+          (vendor_match_key), |amount| within $0.01, dated within
+          `day_window` days, and no other receipt on the charge. The
+          GrubHub (309) Gotham Sound / Lyft / Delta cases and the
+          "Katherine shape" (one invoice itemized across labor + something
+          else while the charge is coded whole).
+
+    charges: bank rows (source qbo_sync / reconciled / csv_import) with id,
+      project_id, vendor, amount, txn_date, doc_upload_id, budget_line_id,
+      account_code, not_project_expense, backup_of_txn_id.
+    doc_rows: document-born rows (source doc_upload, no parent) with the
+      same fields plus activated_at.
+    splits_by_txn: {txn_id: [split…]}; kids_by_parent: {txn_id: [child…]}.
+    Returns [{"kind", "charge", "doc_row"?}] — one entry per problem; a
+    document row pairs with at most one charge (closest date, then lowest
+    id) and a charge with at most one document row."""
+    splits_by_txn = splits_by_txn or {}
+    kids_by_parent = kids_by_parent or {}
+    out = []
+
+    def _d(v):
+        try:
+            return datetime.strptime(str(v)[:10], '%Y-%m-%d').date()
+        except (TypeError, ValueError):
+            return None
+
+    def _charge_counts(t):
+        if getattr(t, 'not_project_expense', False) or getattr(t, 'backup_of_txn_id', None):
+            return False
+        return bool(getattr(t, 'budget_line_id', None) or getattr(t, 'account_code', None)
+                    or splits_by_txn.get(t.id) or kids_by_parent.get(t.id))
+
+    for c in charges:
+        if splits_by_txn.get(c.id) and kids_by_parent.get(c.id):
+            out.append({"kind": "split_and_itemized", "charge": c})
+
+    used = set()
+    for r in sorted(doc_rows, key=lambda x: x.id):
+        if getattr(r, 'not_project_expense', False) or getattr(r, 'backup_of_txn_id', None):
+            continue
+        itemized = bool(kids_by_parent.get(r.id))
+        coded = bool(getattr(r, 'activated_at', None)
+                     and (getattr(r, 'budget_line_id', None) or getattr(r, 'account_code', None)
+                          or splits_by_txn.get(r.id)))
+        if not (itemized or coded):
+            continue
+        rk = vendor_match_key(getattr(r, 'vendor', None))
+        rd = _d(getattr(r, 'txn_date', None))
+        try:
+            rc = abs(_cents(getattr(r, 'amount', None)))
+        except ValueError:
+            continue
+        if not rk or not rc:
+            continue
+        best = None
+        for c in charges:
+            if c.id in used or c.project_id != r.project_id or not _charge_counts(c):
+                continue
+            if getattr(c, 'doc_upload_id', None) and c.doc_upload_id != getattr(r, 'doc_upload_id', None):
+                continue
+            if vendor_match_key(getattr(c, 'vendor', None)) != rk:
+                continue
+            try:
+                if abs(abs(_cents(c.amount)) - rc) > 1:
+                    continue
+            except ValueError:
+                continue
+            cd = _d(getattr(c, 'txn_date', None))
+            gap = abs((cd - rd).days) if (cd and rd) else None
+            if gap is None or gap > day_window:
+                continue
+            k = (gap, c.id)
+            if best is None or k < best[0]:
+                best = (k, c)
+        if best is not None:
+            used.add(best[1].id)
+            out.append({"kind": "doc_and_charge", "charge": best[1], "doc_row": r})
+    return out
+
+
+BANK_ROW_SOURCES = ('qbo_sync', 'reconciled', 'csv_import')
+
+
+def counted_twice_for_project(project_id, day_window=30):
+    """find_counted_twice over one project's rows (the DB wrapper the
+    workspace suggestion, Review matches and the Maintenance tool share).
+    Returns the same entries as find_counted_twice."""
+    from models import TransactionSplit
+    rows = (Transaction.query
+            .filter(Transaction.project_id == project_id,
+                    db.or_(Transaction.source.in_(BANK_ROW_SOURCES),
+                           db.and_(Transaction.source == 'doc_upload',
+                                   Transaction.parent_transaction_id.is_(None))))
+            .all())
+    charges = [t for t in rows if t.source in BANK_ROW_SOURCES]
+    doc_rows = [t for t in rows if t.source == 'doc_upload']
+    ids = [t.id for t in rows]
+    splits_by_txn, kids_by_parent = {}, {}
+    if ids:
+        for sp in TransactionSplit.query.filter(TransactionSplit.transaction_id.in_(ids)).all():
+            splits_by_txn.setdefault(sp.transaction_id, []).append(sp)
+        for k in Transaction.query.filter(Transaction.source == 'invoice_split',
+                                          Transaction.parent_transaction_id.in_(ids)).all():
+            kids_by_parent.setdefault(k.parent_transaction_id, []).append(k)
+    # A document already riding on a charge is not "no charge".
+    on_charge = {t.doc_upload_id for t in charges if t.doc_upload_id}
+    doc_rows = [r for r in doc_rows if not (r.doc_upload_id and r.doc_upload_id in on_charge)]
+    return find_counted_twice(charges, doc_rows, splits_by_txn=splits_by_txn,
+                              kids_by_parent=kids_by_parent, day_window=day_window)
+
+
+def coding_contribution(txn):
+    """{('line', id) | ('section', code): signed amount} — what one row adds
+    to the budget today: its split pieces, else its invoice_split children,
+    else its own line / section. Used by the counted-twice preview."""
+    from models import TransactionSplit
+    out = {}
+    sign = 1 if getattr(txn, 'is_expense', True) else -1
+
+    def _add(k, amt):
+        out[k] = round(out.get(k, 0.0) + sign * float(amt or 0), 2)
+    sps = TransactionSplit.query.filter_by(transaction_id=txn.id).all()
+    kids = invoice_children_of(txn)
+    if sps:
+        for sp in sps:
+            _add(('line', sp.budget_line_id) if sp.budget_line_id else ('section', sp.account_code), sp.amount)
+    elif kids:
+        for k in kids:
+            tgt = _txn_target(k)
+            if tgt:
+                _add(tgt, k.amount)
+    else:
+        tgt = _txn_target(txn)
+        if tgt and not getattr(txn, 'not_project_expense', False):
+            _add(tgt, txn.amount)
+    return out
+
+
+def target_actuals(project_id, targets):
+    """Current Actual for each ('line', id) / ('section', code) target, by the
+    rollup rules (counts_as_spend + splits; a section = its section-only
+    coded rows + section split pieces). For previews."""
+    from sqlalchemy import func, case
+    signed = case((Transaction.is_expense == True, Transaction.amount),   # noqa: E712
+                  else_=-Transaction.amount)
+    line_ids = [v for k, v in targets if k == 'line' and v]
+    codes = [v for k, v in targets if k == 'section' and v]
+    out = {}
+    if line_ids:
+        for lid, amt in (db.session.query(Transaction.budget_line_id, func.sum(signed))
+                         .filter(Transaction.budget_line_id.in_(line_ids), counts_as_spend())
+                         .group_by(Transaction.budget_line_id).all()):
+            out[('line', lid)] = float(amt or 0)
+        for lid, amt in split_sums_by_line(project_id, line_ids).items():
+            out[('line', lid)] = out.get(('line', lid), 0.0) + amt
+    if codes:
+        for code, amt in (db.session.query(Transaction.account_code, func.sum(signed))
+                          .filter(Transaction.project_id == project_id,
+                                  Transaction.budget_line_id.is_(None),
+                                  Transaction.account_code.in_(codes), counts_as_spend())
+                          .group_by(Transaction.account_code).all()):
+            out[('section', code)] = float(amt or 0)
+        for code, amt in split_section_sums(project_id).items():
+            if code in codes:
+                out[('section', code)] = out.get(('section', code), 0.0) + amt
+    return {k: round(out.get(k, 0.0), 2) for k in targets}
+
+
+def split_parents_still_coded(project_id=None):
+    """Split parents that still carry a line or a section of their own —
+    the 7246 shape (the drill-down showed the whole charge plus its piece).
+    The "Split charges still coded" Maintenance check lists them; its Fix
+    uncodes the parent."""
+    from models import TransactionSplit
+    q = (Transaction.query
+         .filter(db.exists().where(TransactionSplit.transaction_id == Transaction.id),
+                 db.or_(Transaction.budget_line_id.isnot(None),
+                        Transaction.account_code.isnot(None))))
+    if project_id:
+        q = q.filter(Transaction.project_id == project_id)
+    return q.order_by(Transaction.id).all()
 
 
 # ── Company ledger: the pool, claiming and releasing (2026-11-03) ─────────
@@ -1985,6 +2461,12 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     txn = Transaction.query.get(transaction_id)
     if not txn:
         raise ValueError(f"transaction {transaction_id} not found")
+    # A split parent is uncoded by rule (2026-11-04): its pieces carry the
+    # coding. Every caller — set-line, the bulk drop, itemize's main line,
+    # the receipt confirm — goes through here, so the refusal lives here.
+    from models import TransactionSplit as _TSg
+    if _TSg.query.filter_by(transaction_id=txn.id).first() is not None:
+        raise SplitParentError(SPLIT_PARENT_MESSAGE)
     working_line = BudgetLine.query.get(working_line_id)
     if not working_line:
         raise ValueError(f"budget_line {working_line_id} not found")
@@ -2644,12 +3126,29 @@ def confirm_match(qbo_transaction_id):
     sister = (Transaction.query
               .filter_by(doc_upload_id=q.doc_upload_id, source='doc_upload')
               .first())
+    converted = None
     if sister and sister.id != q.id:
+        # ONE split mechanism (2026-11-04): the receipt row's itemization
+        # (invoice_split children) becomes the charge's transaction_split
+        # pieces and the children go — never both (GINTS 7246: the charge's
+        # split AND the invoice's 3×$300 both counted). A charge that is
+        # already split keeps its split; the children are dropped.
+        from models import TransactionSplit as _TSc
+        _kids = invoice_children_of(sister, q.doc_upload_id)
+        if _kids:
+            converted = fold_invoice_children_onto_charge(
+                q, _kids, (q.project_id or sister.project_id))
+            if converted.get("mode") == 'refused':
+                raise ValueError(converted.get("error") or "could not move the itemization")
+        _q_is_split = _TSc.query.filter_by(transaction_id=q.id).first() is not None
         # Preserve everything useful from the sister (the receipt's own row)
         # before deleting it. Previously coding was promoted ONLY when q had
         # none, silently losing a different line / card / note when both rows
-        # were coded. (Code review 2026-06-04.)
-        if not q.budget_line_id and sister.budget_line_id:
+        # were coded. (Code review 2026-06-04.) A split parent is never
+        # promoted a line (2026-11-04 — 7246 had both).
+        if _q_is_split or converted:
+            pass
+        elif not q.budget_line_id and sister.budget_line_id:
             q.budget_line_id      = sister.budget_line_id
             q.account_code        = sister.account_code
             q.account_code_name   = sister.account_code_name
@@ -2721,7 +3220,10 @@ def confirm_match(qbo_transaction_id):
     except Exception:
         pass
     db.session.commit()
-    return {'transaction_id': q.id, 'merged_doc_txn': sister.id if sister else None}
+    return {'transaction_id': q.id, 'merged_doc_txn': sister.id if sister else None,
+            'itemization': ({k: v for k, v in converted.items() if k != 'deleted'}
+                            if converted else None),
+            'itemization_deleted': (converted or {}).get('deleted') or []}
 
 
 def dismiss_suggestion(transaction_id, remember=True, user_id=None):
@@ -2774,6 +3276,15 @@ def unmatch_receipt(transaction_id):
     t.match_status     = 'unmatched'
     t.match_confidence = None
     t.updated_at       = datetime.utcnow()
+    # The receipt no longer backs the charge: drop its primary evidence link
+    # so the charge shows Needs backup again (the detail window's Detach).
+    if doc_id:
+        try:
+            from models import ExpenseEvidence as _EEu
+            _EEu.query.filter_by(transaction_id=t.id, doc_upload_id=doc_id,
+                                 kind='primary').delete(synchronize_session=False)
+        except Exception:
+            log.info("[actuals/unmatch] evidence cleanup skipped", exc_info=True)
     # A QuickBooks row is no longer 'reconciled' once its receipt is gone —
     # leaving it stamped was how rows ended up "reconciled" with no receipt
     # and no coding (9 of them in the 2026-11-03 production preview).

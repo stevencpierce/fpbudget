@@ -112,6 +112,31 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   (`include_dismissed=True` for the Not project tab / Restore). Never set
   `not_project_expense` on a QuickBooks row; `release` turns a legacy mark
   into a dismissal.
+- ONE split mechanism (2026-11-04): a charge is split with
+  `transaction_split` rows; the one document attached to it backs every
+  piece. A piece targets a line OR a section (`account_code`, Alembic 0027
+  + essential pass) — exactly one (`validate_splits`); section pieces count
+  in the section like section-only coding (`split_section_sums`,
+  `split_sums_by_section_code`). The legacy `invoice_split` children live
+  only on a document with NO charge yet (accrual) — and on payroll packages
+  (per-person payee rows, `_is_payroll_itemization`). Attaching a document
+  (link-doc / confirm_match) folds its children into the charge's split
+  (`actuals.fold_invoice_children_onto_charge`) and deletes them — never
+  both; the doc modal's itemize on an attached doc writes the charge's split
+  (`_itemize_onto_charge`). A split parent is UNCODED (no line / section):
+  `link_transaction_to_line` raises `SplitParentError`, set-line refuses with
+  `SPLIT_PARENT_MESSAGE`, drill-downs list a parent only as its pieces.
+  Invoices counted twice = `actuals.find_counted_twice` (one rule for the
+  workspace suggestion, Review matches, the detail window and Maintenance →
+  "Find invoices counted twice"). Undo of these moves rides on
+  `before['recreate_rows' / 'recreate_evidence' / 'evidence']`
+  (`app._undo_restore_rows`).
+- The detail window (2026-11-04) is ONE component (`static/txn-detail.js`,
+  `FPDetail`) over ONE payload (`routes/actuals_detail.py`
+  `…/transaction/<tid>/detail.json`, `…/doc/<did>/detail.json`) for Actuals
+  rows and the budget page's drill-down. Every picker (Assign dialog, split
+  rows, the window) builds options with `FP.linePickerOptions` /
+  `FP.LinePicker` — never a private `<select>`.
 
 ## Splitting app.py (M1, ongoing)
 Route slices move to `routes/<name>.py` — plain modules using `@app.route` on

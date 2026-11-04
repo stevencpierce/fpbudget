@@ -245,8 +245,33 @@ def seed(db, models, budget_calc):
                    filed_filename="2026-09-28_RECEIPT_Travel_Lyft_88.44.pdf", status="filed",
                    vendor="Lyft", amount=Decimal("88.44"), doc_date=date(2026, 9, 28),
                    category="receipt", content_type="image/png", card_last4="4417")
-    db.session.add_all([d1, d2, d3, d4])
+    # 2026-11-04 (detail window): an invoice with two line items attached to
+    # its QuickBooks charge and split by it across two lines (the one
+    # document backs both pieces), and a charge coded to a SECTION with no
+    # line (Rare Medium → 4700 Post-Production Services).
+    d5 = DocUpload(project_id=p.id, uploader_id=u.id, original_filename="gotham-sound-inv-2231.pdf",
+                   filed_filename="2026-10-08_INVOICE_Sound_Gotham-Sound_217.75.pdf", status="filed",
+                   vendor="Gotham Sound", amount=Decimal("217.75"), doc_date=date(2026, 10, 8),
+                   category="invoice", content_type="application/pdf",
+                   veryfi_data=json.dumps({"line_items": [
+                       {"description": "Wireless lav kit rental, 3 days", "total": 150.00},
+                       {"description": "Batteries and expendables", "total": 67.75}]}))
+    db.session.add_all([d1, d2, d3, d4, d5])
     db.session.flush()
+    t20 = txn("Gotham Sound", 217.75, "2026-10-10", source="reconciled", qbo_txn_id="18655",
+              qbo_txn_type="Purchase", card_last4="4417", doc_upload_id=d5.id,
+              match_status="confirmed", qbo_category="Equipment Rental")
+    db.session.add(ExpenseEvidence(transaction_id=t20.id, doc_upload_id=d5.id, kind="primary"))
+    db.session.add_all([
+        TransactionSplit(transaction_id=t20.id, budget_line_id=pkg.id, project_id=p.id,
+                         amount=Decimal("150.00"), note="Wireless lav kit rental, 3 days",
+                         created_at=now, created_by_user_id=u.id),
+        TransactionSplit(transaction_id=t20.id, budget_line_id=media.id, project_id=p.id,
+                         amount=Decimal("67.75"), note="Batteries and expendables",
+                         created_at=now, created_by_user_id=u.id)])
+    txn("Rare Medium", 1650.00, "2026-10-15", source="qbo_sync", qbo_txn_id="1300000330",
+        qbo_txn_type="BillPayment", account_code=4700,
+        account_code_name="Post-Production Services", note="Color and conform")
     t11.doc_upload_id = d2.id
     db.session.add(ExpenseEvidence(transaction_id=t11.id, doc_upload_id=d2.id, kind="primary"))
     t6.doc_upload_id = d3.id

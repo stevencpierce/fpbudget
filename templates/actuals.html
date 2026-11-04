@@ -30,7 +30,12 @@
     --aw-bar-border: var(--border);
     --aw-cols: 40px 84px minmax(180px, 1fr) 110px 74px 80px minmax(200px, 1fr) 160px;
     --aw-rcols: 48px 80px minmax(160px, 1fr) 96px minmax(230px, 1.4fr) 300px;
-    --aw-ncols: 40px 84px minmax(180px, 1fr) 110px 74px 80px minmax(220px, 1.2fr) 110px;
+    --aw-ncols: 40px 84px minmax(180px, 1fr) 110px 74px 80px minmax(220px, 1.2fr) 170px;
+    /* One horizontal grid for the header, the view chips, the filter bar
+       and the table (owner's screenshot, Nov 4: uneven spacing): every
+       block starts at --aw-gutter, the table's first cell text included
+       (12px cell padding + 12px table inset). */
+    --aw-gutter: 24px; --aw-gap: 8px;
     --aw-nums: 76px 76px 70px;
     color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.4;
     -webkit-font-smoothing: antialiased;
@@ -79,7 +84,7 @@
             border-radius: 4px; background: var(--bg-3); }
 
   /* ── Header ── */
-  .aw-head { height: 56px; box-sizing: border-box; padding: 0 24px; display: flex; align-items: center;
+  .aw-head { height: 56px; box-sizing: border-box; padding: 0 var(--aw-gutter); display: flex; align-items: center;
              justify-content: space-between; gap: 16px; background: var(--bg-2);
              border-bottom: 1px solid var(--border); flex-shrink: 0; }
   .aw-crumbs { display: flex; align-items: center; gap: 14px; min-width: 0; font-size: 14px; }
@@ -99,6 +104,7 @@
   .aw-right { flex: 1 1 480px; min-width: 360px; max-width: 560px; display: flex; flex-direction: column;
               background: var(--bg); min-height: 0; }
   @media (max-width: 1100px) {
+    .aw-divider { display: none; }
     .aw-root { height: auto; }
     .aw-panes { flex-direction: column; }
     .aw-left { border-right: 0; border-bottom: 1px solid var(--border); }
@@ -107,7 +113,7 @@
   }
 
   /* ── Left tools ── */
-  .aw-tools { padding: 16px 24px 0; display: flex; flex-direction: column; gap: 12px; flex-shrink: 0; }
+  .aw-tools { padding: 14px var(--aw-gutter) 0; display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; }
   .aw-views { display: flex; gap: 2px; padding: 3px; background: var(--bg-3); border-radius: 8px;
               width: fit-content; max-width: 100%; flex-wrap: wrap; }
   .aw-view { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
@@ -119,8 +125,8 @@
   .aw-count { font-size: 11px; font-weight: 600; color: var(--text-muted); }
   .aw-count.accent { padding: 1px 6px; border-radius: 10px; background: var(--accent); color: #fff; }
   .aw-count.red { padding: 1px 6px; border-radius: 10px; background: var(--aw-red-soft); color: var(--red); }
-  .aw-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .aw-filters input[type="search"] { width: 300px; max-width: 100%; }
+  .aw-filters { display: flex; align-items: center; gap: var(--aw-gap); flex-wrap: wrap; min-height: 34px; }
+  .aw-filters input[type="search"] { width: 300px; max-width: 100%; flex: 0 1 300px; }
   .aw-filters select { width: auto; min-width: 120px; }
   .aw-filters input[type="date"] { width: 150px; }
   .aw-filters[hidden] { display: none; }
@@ -138,12 +144,12 @@
   .aw-linefilter button { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0; display: inline-flex; }
 
   /* ── Table ── */
-  .aw-tablewrap { margin-top: 12px; overflow: auto; flex: 1 1 auto; min-height: 0; padding-bottom: 84px; }
+  .aw-tablewrap { margin-top: 10px; overflow: auto; flex: 1 1 auto; min-height: 0; padding: 0 12px 84px; }
   .aw-table { min-width: 900px; }
   .aw-table.receipts { min-width: 900px; }
   .aw-hrow, .aw-row { display: grid; grid-template-columns: var(--aw-cols); align-items: center; }
   .aw-table.receipts .aw-hrow, .aw-table.receipts .aw-row { grid-template-columns: var(--aw-rcols); }
-  .aw-table.notproject .aw-hrow, .aw-table.notproject .aw-row { grid-template-columns: var(--aw-ncols); }
+  .aw-table.not_project .aw-hrow, .aw-table.not_project .aw-row { grid-template-columns: var(--aw-ncols); }
   .aw-hrow { height: 32px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
              background: var(--bg); font-size: 11px; font-weight: 600; letter-spacing: .04em;
              text-transform: uppercase; color: var(--text-muted); position: sticky; top: 0; z-index: 2; }
@@ -174,8 +180,8 @@
   .aw-grp .code { color: var(--text-muted); }
   .aw-grp .tot { margin-left: auto; font-weight: 500; color: var(--text-muted); }
   .aw-grp.line { font-weight: 500; padding-left: 24px; background: var(--bg-2); top: auto; position: static; }
-  .aw-empty { margin: 14px 24px; font-size: 13px; color: var(--text-muted); }
-  .aw-hint { margin: 10px 24px 0; font-size: 12px; color: var(--text-muted); }
+  .aw-empty { margin: 14px 12px; font-size: 13px; color: var(--text-muted); }
+  .aw-hint { margin: 10px 12px 0; font-size: 12px; color: var(--text-muted); }
   .aw-thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border);
               background: var(--bg-3); display: block; }
   .aw-table.receipts .aw-row { height: 56px; }
@@ -458,23 +464,37 @@
   .aw-kv dt { color: var(--text-muted); } .aw-kv dd { margin: 0; }
   .aw-acct { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; cursor: pointer; }
   .aw-acct .n { flex: 1 1 auto; } .aw-acct .t { font-size: 11px; color: var(--text-muted); }
+
+  /* ── Section-coded spend in the budget pane (2026-11-04) ── */
+  .aw-line.aw-seccoded { background: color-mix(in srgb, var(--accent) 6%, var(--bg-2)); font-size: 12px; font-weight: 500; color: var(--aw-text-2); cursor: pointer; }
+  .aw-line.aw-seccoded .chev { display: inline-block; width: 12px; color: var(--text-muted); }
+  .aw-line.aw-seccoded-row { padding-left: 40px; font-size: 12px; height: 30px; color: var(--aw-text-2); }
+  /* ── Resizable panes and columns (a05.js) ── */
+  .aw-divider { flex: 0 0 7px; margin: 0 -3px; cursor: col-resize; position: relative; z-index: 4; background: transparent; touch-action: none; }
+  .aw-divider::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: var(--border); }
+  .aw-divider:hover::after, .aw-divider.drag::after, .aw-divider:focus-visible::after { width: 3px; left: 2px; background: var(--accent); }
+  .aw-divider:focus-visible { outline: none; }
+  .aw-colgrip { position: absolute; top: 4px; bottom: 4px; right: -3px; width: 7px; cursor: col-resize; z-index: 3; touch-action: none; }
+  .aw-colgrip::after { content: ""; position: absolute; top: 4px; bottom: 4px; left: 3px; width: 1px; background: var(--border); }
+  .aw-colgrip:hover::after { background: var(--accent); width: 2px; }
+  body.aw-resizing, body.aw-resizing * { cursor: col-resize !important; user-select: none !important; }
+  .aw-left { border-right: 0; }
+  .aw-spick { min-width: 0; }
+  .aw-srow .fplp-in { height: 36px; }
+  .aw-popt.new { color: var(--accent); border-top: 1px solid var(--border); }
+  /* The detail window sits over the budget pane; the list stays usable. */
+  body.fpd-open .aw-toasts { right: calc(min(560px, 100vw) + 20px); }
+  @media (max-width: 768px) {
+    .aw { --aw-gutter: 16px; }
+    .aw-filters input[type="search"] { flex: 1 1 100%; width: auto; }
+    .aw-filters select, .aw-filters input[type="date"] { flex: 1 1 0; width: auto; min-width: 0; }
+    .aw-filters .spacer { display: none; }
+  }
 </style>
 
-{# Budget-line options — LINES ONLY — the same shape /register's
-   #rg-line-opts had. Cloned into the split modal's selects and read by the
-   picker dialog (through window.__AJ.lineGroups). #}
-<template id="aw-line-opts">
-  <option value="">— assign budget line —</option>
-  {% for grp in line_groups %}
-  <optgroup label="{{ grp.code }} · {{ grp.name }}">
-    {# Phase 4: the per-department Payroll Fringes lines (6500) and the
-       auto-calc lines are coding targets, so they stay in the picker. #}
-    {% for o in grp.opts %}
-    <option value="{{ o.id }}" data-kind="{{ o.kind }}">{{ '    ' if o.kind == 'child' else '' }}{{ o.label }}</option>
-    {% endfor %}
-  </optgroup>
-  {% endfor %}
-</template>
+{# Budget-line options reach every picker (Assign dialog, split rows, the
+   detail window) through window.__AJ.lineGroups and FP.linePickerOptions
+   (static/txn-detail.js) — ONE option builder (2026-11-04). #}
 
 <div class="aw aw-root" id="aw">
   {# THE project nav strip (templates/_project_nav.html) — Actuals active. It
@@ -542,6 +562,9 @@
         </button>
       </div>
     </section>
+
+    {# Drag to resize the two panes (a05.js); double-click resets. #}
+    <div class="aw-divider" id="aw-divider" role="separator" aria-orientation="vertical" aria-label="Resize the budget pane" tabindex="0" title="Drag to resize · double-click to reset"></div>
 
     <aside class="aw-right" aria-label="Budget lines">
       {# Phase 5: the candidate panel takes the budget pane's place while a
@@ -797,6 +820,9 @@ __AJ.pid = {{ project.id }};
 __AJ.bid = {{ budget_id|tojson }};
 __AJ.projectName = {{ project.name|tojson }};
 __AJ.lineGroups = {{ line_groups|tojson }};
+{# Every COA section, so a picker can target a section with no lines yet. #}
+__AJ.sections = {{ coa_sections|tojson }};
+__AJ.uid = {{ current_user.id|tojson }};
 __AJ.crew = {{ crew|tojson }};
 __AJ.focusTxn = {{ focus_txn|tojson }};
 __AJ.initialView = {{ initial_view|tojson }};
@@ -812,8 +838,11 @@ __AJ.urls = {
   upload: "{{ url_for('mobile_upload') }}"
 };
 </script>
+{# The ONE detail window + line picker (shared with the budget page). #}
+<script src="{{ url_for('static', filename='txn-detail.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="{{ url_for('static', filename='actuals-js/a01.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="{{ url_for('static', filename='actuals-js/a02.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="{{ url_for('static', filename='actuals-js/a03.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="{{ url_for('static', filename='actuals-js/a04.js') }}?v={{ APP_COMMIT }}"></script>
+<script src="{{ url_for('static', filename='actuals-js/a05.js') }}?v={{ APP_COMMIT }}"></script>
 {% endblock %}

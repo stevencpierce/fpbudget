@@ -40,23 +40,19 @@
   // ── Line picker (A, Assign to line, Move) ────────────────────────────
   let pickerFor = [];      // txns the pick applies to
   let pickerIdx = 0;
+  // The ONE option builder (static/txn-detail.js FP.linePickerOptions):
+  // the same search, "All <section>" rows and "+ New line…" as the split
+  // rows and the detail window (owner, Nov 4: "split … should work exactly
+  // the same way as assign").
   function pickerOptions(q) {
-    q = (q || '').trim().toLowerCase();
-    const out = [];
-    const recent = (AW.recentTargets ? AW.recentTargets() : []).filter(e => e.kind === 'line' && S.lineById.has(+e.lineId));
-    if (!q && recent.length) {
-      out.push({ group: 'Recent' });
-      recent.forEach(e => { const l = S.lineById.get(+e.lineId); out.push({ lineId: l.id, label: l.label, est: l.estimate, act: l.actual }); });
-    }
-    (AJ.lineGroups || []).forEach(g => {
-      const opts = g.opts.filter(o => (!q || o.label.toLowerCase().includes(q) || String(g.code).includes(q) || (g.name || '').toLowerCase().includes(q)));
-      const secMatch = q && (String(g.code).includes(q) || (g.name || '').toLowerCase().includes(q));
-      if (!opts.length && !secMatch) return;
-      out.push({ group: `${g.code} · ${g.name}` });
-      out.push({ section: true, code: g.code, name: g.name, label: `${g.code} · ${g.name} — whole section`, sub: 'no line yet' });
-      opts.forEach(o => { const l = S.lineById.get(o.id) || {}; out.push({ lineId: o.id, label: o.label, child: o.kind === 'child', est: l.estimate, act: l.actual }); });
-    });
-    return out;
+    const recent = (AW.recentTargets ? AW.recentTargets() : []).filter(e => e.kind === 'line' && S.lineById.has(+e.lineId))
+      .map(e => { const l = S.lineById.get(+e.lineId); return { value: l.id, label: l.label, kind: 'line', sub: `est ${AW.whole(l.estimate)} · act ${AW.whole(l.actual)}` }; });
+    return FP.linePickerOptions(AJ.lineGroups, q, { recent, allSections: AJ.sections, rawQuery: (q || '').trim(),
+      lineSub: o => { const l = S.lineById.get(o.id); return l ? `est ${AW.whole(l.estimate)} · act ${AW.whole(l.actual)}` : ''; } })
+      .map(o => o.group ? o : (o.kind === 'section'
+        ? { section: true, code: o.value.split(':')[1], name: AW.sectionName(+o.value.split(':')[1]) || o.label.replace(/^All \d+ · /, ''), label: o.label, sub: o.sub }
+        : o.kind === 'new' ? { isNew: true, label: o.label, sub: '' }
+        : { lineId: +o.value, label: o.label, child: o.child, sub: o.sub }));
   }
   function renderPicker() {
     const list = $('aw-picker-list');
@@ -68,16 +64,31 @@
       if (o.group) return `<div class="aw-pgrp">${esc(o.group)}</div>`;
       i++;
       const sel = i === pickerIdx;
-      const right = o.section ? esc(o.sub) : (o.est != null ? `est ${AW.whole(o.est)} · act ${AW.whole(o.act)}` : '');
-      return `<div class="aw-popt${o.child ? ' child' : ''}${o.section ? ' section' : ''}" role="option" id="aw-popt-${i}" aria-selected="${sel}" data-i="${i}"
-        ${o.section ? `data-code="${esc(o.code)}" data-name="${esc(o.name)}"` : `data-line-id="${o.lineId}" data-label="${esc(o.label)}"`}>
+      const right = esc(o.sub || '');
+      return `<div class="aw-popt${o.child ? ' child' : ''}${o.section ? ' section' : ''}${o.isNew ? ' new' : ''}" role="option" id="aw-popt-${i}" aria-selected="${sel}" data-i="${i}"
+        ${o.isNew ? 'data-new="1"' : o.section ? `data-code="${esc(o.code)}" data-name="${esc(o.name)}"` : `data-line-id="${o.lineId}" data-label="${esc(o.label)}"`}>
         <span class="l">${esc(o.label)}</span><span class="r num">${right}</span></div>`;
     }).join('') || '<div class="aw-popt"><span class="l muted">No line matches</span></div>';
     const cur = list.querySelector('[aria-selected="true"]');
     if (cur) { cur.scrollIntoView({ block: 'nearest' }); $('aw-picker-q').setAttribute('aria-activedescendant', cur.id); }
   }
-  function pickCurrent(el) {
+  async function pickCurrent(el) {
     el = el || $('aw-picker-list').querySelector('[aria-selected="true"]');
+    if (el && el.dataset.new) {
+      const q = $('aw-picker-q').value.trim();
+      const tids0 = pickerFor.map(t => t.id);
+      $('aw-picker').close();
+      const ans = await FP.askNewLine(AJ.lineGroups, AJ.sections, q);
+      if (!ans) return;
+      try {
+        const nl = await FP.newLine(PID, ans.code, ans.description);
+        let g = (AJ.lineGroups || []).find(x => +x.code === +nl.code);
+        if (!g) { g = { code: nl.code, name: nl.sectionName, opts: [] }; AJ.lineGroups.push(g); }
+        g.opts.push({ id: nl.id, label: nl.label, kind: 'top' });
+        AW.applyDrop({ lineId: nl.id, label: nl.label }, tids0);
+      } catch (e) { AW.toast('Could not add the line: ' + (e.message || e), 'red'); }
+      return;
+    }
     if (!el || (!el.dataset.lineId && !el.dataset.code)) return;
     const target = el.dataset.lineId ? { lineId: +el.dataset.lineId, label: el.dataset.label } : { code: el.dataset.code, name: el.dataset.name };
     const tids = pickerFor.map(t => t.id);
@@ -116,6 +127,8 @@
     else if (btn.dataset.suggestSection) AW.applyDrop({ code: btn.dataset.suggestSection, name: AW.sectionName(+btn.dataset.suggestSection) }, [tid]);
   };
   A.goto = btn => { const tid = +btn.dataset.tid; if (tid) AW.focusTransaction(tid); };
+  A.detail = btn => { const tid = tidFrom(btn); if (tid) AW.openDetail(tid); };
+  A['doc-detail'] = btn => { const did = +btn.dataset.doc; if (did) AW.openDocDetail(did); };
 
   // ── Unassign ─────────────────────────────────────────────────────────
   A.unassign = async btn => {
@@ -184,13 +197,14 @@
 
   // ── Split ────────────────────────────────────────────────────────────
   let splitFor = null;
-  function splitRow(lineId, amount) {
+  // Split rows use the SAME searchable picker as Assign (FP.LinePicker):
+  // lines, "All <section>" (a piece may target a section, 2026-11-04) and
+  // "+ New line…".
+  function splitRow(value, amount, label) {
     const row = document.createElement('div');
     row.className = 'aw-srow';
-    const sel = document.createElement('select');
-    sel.setAttribute('aria-label', 'Budget line');
-    sel.appendChild($('aw-line-opts').content.cloneNode(true));
-    if (lineId) sel.value = String(lineId);
+    const pick = document.createElement('div');
+    pick.className = 'aw-spick';
     const inp = document.createElement('input');
     inp.type = 'text'; inp.inputMode = 'decimal'; inp.className = 'num'; inp.placeholder = '0.00';
     inp.setAttribute('aria-label', 'Amount');
@@ -200,16 +214,20 @@
     rm.setAttribute('aria-label', 'Remove this line');
     rm.innerHTML = '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg>';
     rm.addEventListener('click', () => { row.remove(); splitRecalc(); });
-    row.append(sel, inp, rm);
+    row.append(pick, inp, rm);
+    row._picker = FP.LinePicker(pick, { groups: AJ.lineGroups, allSections: AJ.sections, pid: PID,
+      value: value ? String(value) : '', label: label || '', onChange: splitRecalc,
+      lineSub: o => { const l = S.lineById.get(o.id); return l ? `est ${AW.whole(l.estimate)} · act ${AW.whole(l.actual)}` : ''; } });
     inp.addEventListener('input', splitRecalc);
-    sel.addEventListener('change', splitRecalc);
     return row;
   }
   function splitRows() {
-    return Array.from($('aw-split-rows').querySelectorAll('.aw-srow')).map(r => ({
-      budget_line_id: +r.querySelector('select').value || null,
-      amount: parseFloat(String(r.querySelector('input').value).replace(/[$,]/g, '')),
-    }));
+    return Array.from($('aw-split-rows').querySelectorAll('.aw-srow')).map(r => {
+      const v = r._picker ? r._picker.value : '';
+      const sec = v.startsWith('section:');
+      return { value: v, budget_line_id: (!sec && v) ? +v : null, account_code: sec ? +v.split(':')[1] : null,
+               amount: parseFloat(String(r.querySelector('input.num').value).replace(/[$,]/g, '')) };
+    });
   }
   function splitRecalc() {
     if (!splitFor) return;
@@ -219,7 +237,7 @@
     const remain = (total - sum) / 100;
     const el = $('aw-split-remain');
     $('aw-split-remain-amt').textContent = money(remain);
-    const complete = rows.length >= 2 && rows.every(r => r.budget_line_id && !isNaN(r.amount) && r.amount !== 0);
+    const complete = rows.length >= 2 && rows.every(r => r.value && !isNaN(r.amount) && r.amount !== 0);
     const ok = complete && Math.abs(remain) < 0.005;
     el.className = 'aw-remain num ' + (ok ? 'ok' : (rows.some(r => !isNaN(r.amount)) ? 'bad' : ''));
     $('aw-split-save').disabled = !ok;
@@ -233,17 +251,22 @@
     splitFor = t;
     $('aw-split-sub').textContent = `${t.vendor} · ${money(t.amount)} · ${AW.shortDate(t.date)}`;
     const host = $('aw-split-rows'); host.innerHTML = '';
-    if (t.splits && t.splits.length) t.splits.forEach(s => host.appendChild(splitRow(s.budget_line_id, s.amount)));
-    else { host.appendChild(splitRow(t.assigned_line ? t.assigned_line.id : null, '')); host.appendChild(splitRow(null, '')); }
+    if (t.splits && t.splits.length) t.splits.forEach(s => host.appendChild(splitRow(s.budget_line_id || (s.account_code ? 'section:' + s.account_code : ''), s.amount,
+      s.budget_line_id ? s.label : (s.account_code ? `All ${s.account_code} · ${AW.sectionName(AW.sectionFor(+s.account_code)) || ''}` : ''))));
+    else {
+      host.appendChild(splitRow(t.assigned_line ? t.assigned_line.id : (t.section_only ? 'section:' + t.section_only.code : null), '',
+        t.assigned_line ? t.assigned_line.label : (t.section_only ? 'All ' + t.section_only.label : '')));
+      host.appendChild(splitRow(null, ''));
+    }
     $('aw-split-err').textContent = '';
     splitRecalc();
     openDialog('aw-split');
-    setTimeout(() => { const f = host.querySelector('select'); if (f) f.focus(); }, 0);
+    setTimeout(() => { const f = host.querySelector('.fplp-in'); if (f) f.focus(); }, 0);
   };
   $('aw-split-add').addEventListener('click', () => { $('aw-split-rows').appendChild(splitRow(null, '')); splitRecalc(); });
   $('aw-split-save').addEventListener('click', async () => {
     if (!splitFor) return;
-    const rows = splitRows().map(r => ({ budget_line_id: r.budget_line_id, amount: Math.round(r.amount * 100) / 100 }));
+    const rows = splitRows().map(r => ({ budget_line_id: r.budget_line_id, account_code: r.account_code, amount: Math.round(r.amount * 100) / 100 }));
     const t = splitFor;
     try {
       const r = await AW.post(AW.txnUrl(t.id, 'split'), { splits: rows });
@@ -484,7 +507,7 @@
     if (menuBtn === btn) { AW.closeMenu(); return; }
     AW.closeMenu();
     menuBtn = btn; btn.setAttribute('aria-expanded', 'true');
-    const items = [];
+    const items = [{ act: 'detail', label: 'Open details' }, { hr: true }];
     const assigned = AW.isAssigned(t);
     if (!AW.isContainer(t)) items.push({ act: 'assign-one', label: assigned ? 'Move to another line' : 'Assign to line' });
     if (assigned) items.push({ act: 'unassign', label: (t.splits && t.splits.length) ? 'Remove the split' : 'Unassign' });

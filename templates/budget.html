@@ -5117,6 +5117,8 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
 {% endblock %}
 
 {% block scripts %}
+{# The ONE detail window (static/txn-detail.js) — opened from the Actual drill-down. #}
+<script src="{{ url_for('static', filename='txn-detail.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 {% if GOOGLE_MAPS_API_KEY %}
 <script src="https://maps.googleapis.com/maps/api/js?key={{ GOOGLE_MAPS_API_KEY }}&libraries=places" async></script>
@@ -6062,13 +6064,17 @@ window.saveInlinePo = async function() {
       const splitTag = (t.source === 'invoice_split')
         ? ' <span class="muted" style="font-size:.7rem;color:#c084fc" '
           + 'title="Part of a document itemized across multiple budget lines — open the doc to see the full split">(split)</span>'
-        : '';
+        : (t.is_split ? ' <span class="muted" style="font-size:.7rem;color:#c084fc" title="One piece of a charge split across lines">(piece of '
+          + _fmtMoney(t.split_of) + ')</span>' : '');
       html += '<tr class="wad-subrow" draggable="true" data-tid="' + t.id + '" data-scope="' + scope + '" '
         + 'title="Drag onto another line or section heading to reassign — click to multi-select" '
         + 'style="border-top:1px solid var(--border);cursor:grab">'
         + '<td style="padding:5px 6px;color:var(--text-muted);font-variant-numeric:tabular-nums;width:90px">'
         + _esc(t.date || '—') + '</td>'
-        + '<td style="padding:5px 6px;width:38%">' + _esc(t.vendor || '—') + splitTag + '</td>'
+        + '<td style="padding:5px 6px;width:38%"><button type="button" class="wad-detail-btn" data-tid="' + t.id + '" '
+        + 'title="Open the details: backup, coding, splits, history" '
+        + 'style="background:none;border:0;padding:0;color:inherit;font:inherit;cursor:pointer;text-align:left;text-decoration:underline;text-decoration-color:var(--border);text-underline-offset:3px">'
+        + _esc(t.vendor || '—') + '</button>' + splitTag + '</td>'
         + '<td style="padding:5px 6px;width:32%">' + docCell + '</td>'
         + '<td style="padding:5px 6px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;'
         + 'color:' + (amtNeg ? '#fb7185' : 'var(--text)') + '">'
@@ -6169,6 +6175,18 @@ window.saveInlinePo = async function() {
       openDocDetail(parseInt(link.dataset.uid), null);
     }
     // else: default anchor navigation to /docs/<uid>/editor
+  });
+
+  // Vendor → the detail window (static/txn-detail.js, 2026-11-04) — the
+  // SAME component the Actuals rows open. A change there reloads the page
+  // when the window closes so every Actual cell is fresh.
+  document.addEventListener('click', e => {
+    const btn = e.target.closest && e.target.closest('.wad-detail-btn');
+    if (!btn || !window.FPDetail) return;
+    e.stopPropagation();
+    FPDetail.open({ pid: PROJ_ID, tid: parseInt(btn.dataset.tid),
+      hooks: { openLine: lid => { FPDetail.close(); if (typeof window.openLineLedger === 'function') window.openLineLedger(lid); } },
+      onClose: dirty => { if (dirty) location.reload(); } });
   });
 
   // 📒 inline button → open the full Line Ledger side panel.
