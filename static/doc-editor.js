@@ -613,6 +613,10 @@
         d.existing.forEach(x => itemAddRow(x.description, x.amount, x.budget_line_id, x.payee_id));
       } else itemUpdateTotal();
       itemSetOverride(d.existing ? d.existing.length : 0);
+      // ONE split mechanism (2026-11-04): a document attached to a charge
+      // splits THE CHARGE; the one document backs every piece.
+      E._itemWrites = d.writes || 'itemize';
+      if (st && d.writes === 'split') { st.textContent = 'Attached to a charge: saving splits the charge by these lines, and this document backs every piece.'; st.style.color = ''; }
       window._docItemizeDirty = false;
     } catch (e) {}
   }
@@ -645,7 +649,10 @@
       const d = await r.json().catch(() => ({}));
       if (r.ok && d.ok) {
         if (st) {
-          if (d.cleared) st.textContent = 'Itemization cleared.';
+          if (d.writes === 'split') st.textContent = d.mode === 'split'
+            ? '✓ Saved as a split on the charge — ' + d.pieces + ' pieces; this document backs every piece.'
+            : (d.mode === 'cleared' ? 'Coding cleared on the charge.' : '✓ Saved — the charge is coded to one line.');
+          else if (d.cleared) st.textContent = 'Itemization cleared.';
           else if (d.over) st.textContent = '⚠ Saved, but sublines are ' + money(-d.remainder) + ' over the doc total — check the amounts.';
           else st.textContent = '✓ Saved — ' + money(d.sublines_total) + ' peeled off, ' + money(d.main_line_amount) + ' stays on the main line'
             + (d.uncoded_n ? ' (incl. ' + money(d.uncoded_total) + ' from ' + d.uncoded_n + ' line' + (d.uncoded_n !== 1 ? 's' : '') + ' without a budget line)' : '') + '.';

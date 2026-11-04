@@ -77,6 +77,7 @@
     // Phase 5: the selected receipt (Receipts view), the charge ticked in
     // the candidate panel, and the charge Find backup is open on.
     selDoc: null, pickCharge: null, findFor: null, docById: new Map(),
+    openSecCoded: new Set(),
   };
 
   // ── Data ─────────────────────────────────────────────────────────────
@@ -114,7 +115,11 @@
   AW.isContainer = t => !!((t.splits && t.splits.length) || (t.itemized && t.itemized.length));
   AW.sectionCodeOf = t => {
     if (t.assigned_line && S.sectionOfLine.get(t.assigned_line.id)) return S.sectionOfLine.get(t.assigned_line.id).code;
-    if (t.splits && t.splits.length) { const sec = S.sectionOfLine.get(t.splits[0].budget_line_id); if (sec) return sec.code; }
+    if (t.splits && t.splits.length) {
+      const p = t.splits[0];
+      if (!p.budget_line_id && p.account_code) return AW.sectionFor(+p.account_code);
+      const sec = S.sectionOfLine.get(p.budget_line_id); if (sec) return sec.code;
+    }
     if (t.section_only) return t.section_only.code;
     if (t.assigned_line) { const m = /^(\d+)/.exec(t.assigned_line.label || ''); if (m) return AW.sectionFor(+m[1]); }
     return null;
@@ -229,6 +234,8 @@
   function flagChip(t) {
     const red = t.flags.red || [], yel = t.flags.yellow || [];
     if (red.includes('voided_in_qbo')) return '<span class="aw-flag red">Voided in QuickBooks</span>';
+    // 2026-11-04: the invoice is coded on its own AND as this charge.
+    if (yel.includes('counted_twice')) return `<button type="button" class="aw-flag yellow linky" data-act="detail" data-tid="${t.id}" title="Its invoice is counted on its own as well — open to attach it to the charge">Counted twice</button>`;
     // A possible duplicate outranks the red flags here: the person should
     // settle whether it is one charge or two before coding it.
     if (yel.includes('possible_duplicate') && t.dup_group) return `<button type="button" class="aw-flag yellow linky" data-act="open-dup" data-key="${esc(t.dup_group)}" title="Open this duplicate group">Possible duplicate</button>`;
@@ -278,7 +285,7 @@
          ${container ? 'data-container="1"' : ''} ${t.receipt ? 'data-has-doc="1"' : ''}>
       <div class="aw-cell"><input type="checkbox" ${selected ? 'checked' : ''} aria-label="Select ${esc(t.vendor)}" data-sel="${t.id}"></div>
       <div class="aw-cell num muted">${esc(shortDate(t.date))}</div>
-      <div class="aw-cell"><span class="vendor ell">${esc(t.vendor)}</span>${memo}</div>
+      <div class="aw-cell"><span class="vendor ell" title="Double-click the row or press Enter for details">${esc(t.vendor)}</span>${memo}</div>
       <div class="aw-cell num right ${amtCls}">${money(t.amount)}</div>
       <div class="aw-cell num muted">${cardCell(t)}</div>
       <div class="aw-cell">${sourceChip(t)}</div>
@@ -287,6 +294,7 @@
         ${view === 'needs_backup' && !t.receipt
           ? `<button type="button" class="aw-btn sm" data-act="find-backup" data-tid="${t.id}" title="Ranked receipts for this charge">Find backup</button>`
           : `<button type="button" class="aw-btn sm" data-act="assign-one" data-tid="${t.id}" ${container ? 'disabled title="Split or itemized rows carry their coding on the sublines"' : ''}>${AW.isAssigned(t) ? 'Move' : 'Assign'}</button>`}
+        <button type="button" class="aw-btn sm" data-act="detail" data-tid="${t.id}" title="Open the details (Enter)">Details</button>
         <button type="button" class="aw-btn sm icon" data-act="menu" data-tid="${t.id}" aria-label="More actions for ${esc(t.vendor)}" aria-haspopup="menu">
           <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="2" cy="6" r="1.3"/><circle cx="6" cy="6" r="1.3"/><circle cx="10" cy="6" r="1.3"/></svg>
         </button></span></div>
@@ -406,6 +414,7 @@
           <button type="button" class="aw-btn sm" data-act="dismiss-match" data-tid="${sc.id}" title="Separate them; not suggested again">Not a match</button></span></span>`);
       }
       if (r.dup_pending) status.push('<span class="aw-flag yellow">Possible duplicate</span>');
+      if (r.counted_twice) status.push(`<button type="button" class="aw-flag yellow linky" data-act="doc-detail" data-doc="${r.doc_id}" title="Coded on its own AND as a charge — open to attach it">Counted twice · attach to ${esc(r.counted_twice.vendor || 'the charge')}</button>`);
       if (!status.length) status.push('<span class="aw-flag none">Waiting</span>');
       const selected = S.selDoc === r.doc_id;
       const canLink = selected && !!selCharge;
@@ -421,6 +430,7 @@
         <div class="aw-cell">${status.join(' ')}</div>
         <div class="aw-cell" style="gap:6px">
           <button type="button" class="aw-btn sm${canLink ? ' primary' : ''}" data-act="link-selected" data-doc="${r.doc_id}" ${canLink ? '' : 'disabled'} title="${esc(linkTitle)}">Link to selected</button>
+          <button type="button" class="aw-btn sm" data-act="doc-detail" data-doc="${r.doc_id}" title="Open the details">Details</button>
           <button type="button" class="aw-btn sm" data-act="create-expense" data-doc="${r.doc_id}">Create expense</button>
           <button type="button" class="aw-btn sm danger" data-act="receipt-not-project" data-doc="${r.doc_id}" data-txn="${r.txn_id || ''}">Not project</button>
         </div>
@@ -447,7 +457,7 @@
           <div class="aw-cell num muted">${cardCell(t)}</div>
           <div class="aw-cell">${sourceChip(t)}</div>
           <div class="aw-cell" style="font-size:12px"><span class="ell" title="${esc(x.reason || '')}">${who}${x.reason ? ' · ' + esc(x.reason) : ''}</span></div>
-          <div class="aw-cell right"><button type="button" class="aw-btn sm" data-act="recover" data-tid="${t.id}">Recover</button></div>
+          <div class="aw-cell right" style="gap:4px"><button type="button" class="aw-btn sm" data-act="detail" data-tid="${t.id}">Details</button><button type="button" class="aw-btn sm" data-act="recover" data-tid="${t.id}">Recover</button></div>
         </div>`;
       });
     }
@@ -510,6 +520,23 @@
           <span class="code num">${sec.code != null ? sec.code : ''}</span><span class="ell">${esc(sec.name)}</span><span class="spacer"></span>
           <div class="aw-nums num"><span>${whole(sec.estimate)}</span><span>${whole(sec.actual)}</span>${varCell(sec.variance)}</div>
         </div>`;
+      // Section-coded spend (owner, Nov 4: "Rare Medium … assigned to the
+      // 4700 post-production services section … I can't see it"): charges
+      // coded to the section with no line + section split pieces, under the
+      // header; expandable to the charges; a drop here codes to the section.
+      const sc = sec.section_coded;
+      if (sc && sc.count) {
+        const open = S.openSecCoded && S.openSecCoded.has(sec.code);
+        html += `<div class="aw-line aw-seccoded" data-target="section" data-code="${sec.code}" data-name="${esc(sec.name)}" data-seccoded="${sec.code}" tabindex="0" role="button" aria-expanded="${!!open}"
+            aria-label="Section-coded ${money(sc.total)}, ${sc.count} charge${sc.count === 1 ? '' : 's'}: click to ${open ? 'hide' : 'list'} them; drop to code to the section">
+          <span class="name"><span class="chev" aria-hidden="true">${open ? '\u25BE' : '\u25B8'}</span> Section-coded <span class="muted">(${sc.count})</span></span>
+          <div class="aw-nums num"><span></span><span>${whole(sc.total)}</span><span></span></div></div>`;
+        if (open) sc.rows.forEach(x => {
+          html += `<div class="aw-line aw-seccoded-row" data-open-tid="${x.id}" tabindex="0" role="button" aria-label="Open ${esc(x.vendor)} ${money(x.amount)}">
+            <span class="name"><span class="muted num">${esc(shortDate(x.date))}</span> ${esc(x.vendor)}${x.split ? ' <span class="muted">· split piece</span>' : ''}${+x.code !== +sec.code ? ` <span class="muted">· ${esc(x.code)}</span>` : ''}</span>
+            <div class="aw-nums num"><span></span><span>${money(x.amount)}</span><span></span></div></div>`;
+        });
+      }
       const lines = (sec.lines || []).slice();
       // Children ride under their parent. Phase 4 (Steven, Oct 30): the
       // per-department Payroll Fringes lines live in 6500 Administrative
@@ -639,16 +666,35 @@
     if (ghost) { if (AW.actions && AW.actions['accept-suggestion']) AW.actions['accept-suggestion'](ghost, e); return; }
     if (e.target.closest('a')) return;
     const row = e.target.closest('.aw-row[data-tid][data-idx]');
-    if (row) { clickRow(row, e); return; }
+    if (row) {
+      clickRow(row, e);
+      if (window.FPDetail && FPDetail.isOpen() && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.target.closest('input')) AW.openDetail(+row.dataset.tid);
+      return;
+    }
+    const xrow = e.target.closest('.aw-row.excluded[data-tid]');
+    if (xrow) { AW.openDetail(+xrow.dataset.tid); return; }
     const drow = e.target.closest('.aw-row[data-doc]');
     if (drow && S.view === 'receipts' && AW.selectDoc) AW.selectDoc(+drow.dataset.doc);
   });
+  // The detail window (static/txn-detail.js, 2026-11-04): Details on a row,
+  // a double-click, or Enter opens it; while it is open a plain click on
+  // another row swaps it to that row.
+  $('aw-table').addEventListener('dblclick', e => {
+    if (e.target.closest('button, a, input')) return;
+    const row = e.target.closest('.aw-row[data-tid]');
+    if (row) { AW.openDetail(+row.dataset.tid); return; }
+    const drow = e.target.closest('.aw-row[data-doc]');
+    if (drow) AW.openDocDetail(+drow.dataset.doc);
+  });
   $('aw-table').addEventListener('keydown', e => {
     const drow = e.target.closest && e.target.closest('.aw-row[data-doc]');
-    if (drow && e.target === drow && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); if (AW.selectDoc) AW.selectDoc(+drow.dataset.doc); return; }
-    const row = e.target.closest && e.target.closest('.aw-row[data-tid][data-idx]');
+    if (drow && e.target === drow && e.key === 'Enter') { e.preventDefault(); AW.openDocDetail(+drow.dataset.doc); return; }
+    if (drow && e.target === drow && e.key === ' ') { e.preventDefault(); if (AW.selectDoc) AW.selectDoc(+drow.dataset.doc); return; }
+    const row = e.target.closest && e.target.closest('.aw-row[data-tid]');
     if (!row || e.target !== row) return;
-    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); clickRow(row, e); }
+    if (e.key === 'Enter') { e.preventDefault(); AW.openDetail(+row.dataset.tid); return; }
+    if (!row.dataset.idx) return;
+    if (e.key === ' ') { e.preventDefault(); clickRow(row, e); }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       const idx = +row.dataset.idx + (e.key === 'ArrowDown' ? 1 : -1);
@@ -668,6 +714,15 @@
   // Budget pane: click a line → list its transactions; Enter/Space on a
   // target with a selection → assign (the keyboard path for every drop).
   $('aw-budget').addEventListener('click', e => {
+    const openRow = e.target.closest('[data-open-tid]');
+    if (openRow) { AW.openDetail(+openRow.dataset.openTid); return; }
+    const sc = e.target.closest('[data-seccoded]');
+    if (sc && !(S.sel.size && S.view !== 'receipts' && S.view !== 'not_project')) {
+      const code = +sc.dataset.seccoded;
+      if (S.openSecCoded.has(code)) S.openSecCoded.delete(code); else S.openSecCoded.add(code);
+      renderBudget(); return;
+    }
+    if (sc) { if (AW.actions && AW.actions['assign-to']) AW.actions['assign-to']({ code: sc.dataset.code, name: sc.dataset.name }); return; }
     const line = e.target.closest('.aw-line[data-target="line"]');
     if (line) {
       const lid = +line.dataset.lineId;
@@ -760,6 +815,20 @@
     setTimeout(() => { if (el.isConnected) el.remove(); }, ttl);
     return el;
   };
+
+  // ── Detail window glue ───────────────────────────────────────────────
+  const detailHooks = {
+    openLine: lid => { FPDetail.close(); S.lineFilter = lid; AW.setView('assigned'); },
+    openSection: code => {
+      FPDetail.close();
+      const el = document.querySelector(`#aw-budget .aw-sec[data-sec="${AW.sectionFor(code)}"]`);
+      if (el) { el.scrollIntoView({ block: 'start', behavior: 'smooth' }); S.openSecCoded.add(AW.sectionFor(code)); renderBudget(); }
+    },
+  };
+  AW.openDetail = tid => { if (window.FPDetail && tid) FPDetail.open({ pid: PID, tid, hooks: detailHooks, onChange: () => AW.load({ keepFocus: true }) }); };
+  AW.openDocDetail = did => { if (window.FPDetail && did) FPDetail.open({ pid: PID, did, tid: null, hooks: detailHooks, onChange: () => AW.load({ keepFocus: true }) }); };
+  // A drag needs the budget pane: the detail window steps aside.
+  document.addEventListener('dragstart', () => { if (window.FPDetail && FPDetail.isOpen()) FPDetail.close(); }, true);
 
   // ── Boot ─────────────────────────────────────────────────────────────
   AW.load();

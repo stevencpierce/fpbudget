@@ -172,10 +172,14 @@ def test_split_must_sum(ws):
     rows.nth(0).click()
     page.click('#aw-actionbar [data-act="split"]')
     page.wait_for_selector("#aw-split[open]")
-    sel = page.locator("#aw-split-rows select")
-    sel.nth(0).select_option(index=1)
-    sel.nth(1).select_option(index=2)
-    inputs = page.locator("#aw-split-rows input")
+    # The split rows use the SAME searchable picker as Assign (2026-11-04).
+    pick_ids = []
+    for i, nth in ((0, 0), (1, 1)):
+        page.locator("#aw-split-rows .fplp-in").nth(i).click()
+        opt = page.locator("#aw-split-rows .fplp").nth(i).locator(".fplp-opt.line").nth(nth)
+        pick_ids.append(int(opt.get_attribute("data-value")))
+        opt.click()
+    inputs = page.locator("#aw-split-rows input.num")
     inputs.nth(0).fill(f"{amount - 10:.2f}")
     inputs.nth(1).fill("5.00")
     expect(page.locator("#aw-split-save")).to_be_disabled()
@@ -183,8 +187,8 @@ def test_split_must_sum(ws):
     # The server refuses too, even if the button were forced.
     tid = int(rows.nth(0).get_attribute("data-tid"))
     r = _fetch(page, f"/projects/{pid}/actuals/transaction/{tid}/split", "POST",
-               {"splits": [{"budget_line_id": int(sel.nth(0).input_value()), "amount": amount - 10},
-                           {"budget_line_id": int(sel.nth(1).input_value()), "amount": 5}]})
+               {"splits": [{"budget_line_id": pick_ids[0], "amount": amount - 10},
+                           {"budget_line_id": pick_ids[1], "amount": 5}]})
     assert r["status"] == 400, r
     assert abs(float((r["json"] or {}).get("delta", 0))) == pytest.approx(5.0)
     # Fix the second amount: Save turns on and the split lands.
@@ -394,3 +398,91 @@ def test_review_matches_approve_all_strong(seeded):
     page.keyboard.press("Escape")
     r = _fetch(page, f"/projects/{pid}/actuals/workspace.json")
     assert r["json"]["counts"]["strong_matches"] == 0
+
+
+# ── The detail window, the shared picker, section-coded spend (2026-11-04) ──
+
+def test_detail_window_shows_the_chain_for_a_charge_split_by_its_invoice(seeded):
+    page, pid = seeded
+    _reload_ws(page, pid, "assigned")
+    row = page.locator("#aw-table .aw-row[data-tid]", has_text="Gotham Sound")
+    if row.count() == 0:
+        pytest.skip("The seeded Gotham Sound charge is not on this app.")
+    row.first.hover()
+    row.first.locator('[data-act="detail"]').first.click()
+    page.wait_for_selector("#fpd:not([hidden]) .fpd-chain")
+    det = page.locator("#fpd")
+    expect(det.locator(".fpd-src")).to_have_text("QuickBooks")
+    expect(det.locator(".fpd-lock")).to_contain_text("the bank's figure")
+    expect(det.locator(".fpd-doc")).to_have_count(1)
+    expect(det.locator(".fpd-chain")).to_have_count(2)
+    expect(det.locator(".fpd-chain").nth(0)).to_contain_text("$150.00")
+    expect(det.locator(".fpd-chain .fpd-node.doc")).to_have_count(2)       # one document backs both pieces
+    # edit the split in place with the shared picker, section option included
+    det.locator('[data-fpd="split-edit"]').click()
+    expect(det.locator(".fpd-srow")).to_have_count(2)
+    det.locator(".fpd-srow .fplp-in").nth(1).click()
+    det.locator(".fpd-srow .fplp-in").nth(1).fill("transport")
+    expect(det.locator(".fpd-srow .fplp").nth(1).locator(".fplp-opt.section")).to_contain_text("All 3400")
+    det.locator(".fpd-srow .fplp").nth(1).locator(".fplp-opt.section").first.click()
+    det.locator('[data-fpd="split-save"]').click()
+    page.wait_for_timeout(1200)
+    expect(det.locator(".fpd-chain .fpd-node.sec")).to_contain_text("3400")
+    expect(det.locator(".fpd-hist li").first).to_contain_text("Split")
+    # undo the latest entry from History
+    det.locator('.fpd-hist [data-fpd="undo"]').first.click()
+    page.wait_for_timeout(1200)
+    expect(det.locator(".fpd-chain .fpd-node.sec")).to_have_count(0)
+    page.keyboard.press("Escape")
+    expect(page.locator("#fpd")).to_be_hidden()
+
+
+def test_section_coded_charge_shows_under_its_section_in_the_budget_pane(seeded):
+    page, pid = seeded
+    _reload_ws(page, pid, "assigned")
+    sc = page.locator('#aw-budget .aw-seccoded[data-seccoded="4700"]')
+    if sc.count() == 0:
+        pytest.skip("The seeded Rare Medium section-coded charge is not on this app.")
+    expect(sc).to_contain_text("Section-coded")
+    expect(sc).to_contain_text("1,650")
+    expect(sc).to_contain_text("(1)")
+    sc.click()
+    row = page.locator('#aw-budget .aw-seccoded-row', has_text="Rare Medium")
+    expect(row).to_have_count(1)
+    row.click()
+    page.wait_for_selector("#fpd:not([hidden]) .fpd-chain")
+    expect(page.locator("#fpd .fpd-node.sec")).to_contain_text("4700")
+    page.keyboard.press("Escape")
+
+
+def test_assign_picker_searches_and_offers_a_whole_section(ws):
+    page, pid = ws
+    _reload_ws(page, pid)
+    rows = page.locator("#aw-table .aw-row[data-tid]")
+    rows.nth(0).click()
+    page.keyboard.press("a")
+    page.wait_for_selector("#aw-picker[open]")
+    page.fill("#aw-picker-q", "post-production services")
+    expect(page.locator("#aw-picker-list .aw-popt.section").first).to_contain_text("All 4700")
+    expect(page.locator("#aw-picker-list .aw-popt.new")).to_have_count(1)
+    page.keyboard.press("Escape")
+
+
+def test_resizable_divider_persists_its_width(seeded):
+    page, pid = seeded
+    _reload_ws(page, pid)
+    div = page.locator("#aw-divider")
+    if not div.is_visible():
+        pytest.skip("Narrow viewport: the panes stack, no divider.")
+    box = div.bounding_box()
+    before = page.locator(".aw-right").bounding_box()["width"]
+    page.mouse.move(box["x"] + 3, box["y"] + 200)
+    page.mouse.down()
+    page.mouse.move(box["x"] - 120, box["y"] + 200, steps=6)
+    page.mouse.up()
+    after = page.locator(".aw-right").bounding_box()["width"]
+    assert after > before + 80
+    _reload_ws(page, pid)
+    assert abs(page.locator(".aw-right").bounding_box()["width"] - after) < 4
+    page.locator("#aw-divider").dblclick()
+    assert abs(page.locator(".aw-right").bounding_box()["width"] - before) < 4

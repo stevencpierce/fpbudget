@@ -215,8 +215,28 @@
     const strong = ps.filter(t => t.receipt_suggestion.strong).length;
     $('aw-review-sub').textContent = ps.length ? `${ps.length} pair${ps.length === 1 ? '' : 's'} waiting · ${strong} strong. Nothing links until you approve it.` : 'No suggested matches right now.';
     const all = $('aw-review-allstrong'); all.disabled = !strong; all.textContent = `Approve all strong${strong ? ' (' + strong + ')' : ''}`;
-    if (!ps.length) { host.innerHTML = '<p class="aw-empty">Every receipt is linked or has no candidate. Upload a receipt or sync QuickBooks and the engine will pair them.</p>'; return; }
-    host.innerHTML = `<div class="aw-rhead" style="display:grid;grid-template-columns:48px minmax(0,1.2fr) 24px minmax(0,1.2fr) 150px 190px;gap:12px"><span></span><span>Receipt</span><span></span><span>Charge</span><span>Confidence</span><span></span></div>`
+    // Invoices counted twice (2026-11-04): an invoice coded on its own AND a
+    // charge with the same payee and amount — "Attach this invoice to the
+    // charge — it's counted twice". Attaching folds them into one.
+    const twice = ((S.data || {}).transactions || []).filter(t => t.counted_twice && t.counted_twice.kind === 'doc_and_charge' && t.counted_twice.charge_id === t.id);
+    let twiceHtml = '';
+    if (twice.length) {
+      twiceHtml = `<div class="aw-rhead">Counted twice · attach the invoice to its charge</div>` + twice.map(t => {
+        const c = t.counted_twice;
+        return `<div class="aw-rpair" data-tid="${t.id}" style="box-shadow:inset 3px 0 0 var(--yellow)">
+          <a href="/docs/upload/${c.doc_id}/raw" target="_blank" rel="noopener"><img class="aw-thumb" src="/docs/upload/${c.doc_id}/thumb" alt="" loading="lazy" onerror="this.style.visibility='hidden'"></a>
+          <div class="side"><span class="v">${esc(c.doc_name || 'Invoice')}</span><span class="m num">${esc(shortDate(c.doc_date))} · coded on its own</span></div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="side"><span class="v">${esc(t.vendor)}</span><span class="m num">${esc(shortDate(t.date))} · ${money(t.amount)}</span></div>
+          <div class="why"><span class="pct">Counted twice</span><span>same payee and amount</span></div>
+          <div class="acts"><button type="button" class="aw-btn sm primary" data-act="review-attach" data-tid="${t.id}" data-doc="${c.doc_id}">Attach</button>
+            <button type="button" class="aw-btn sm" data-act="review-open" data-tid="${t.id}">Details</button></div>
+        </div>`;
+      }).join('');
+      $('aw-review-sub').textContent = `${ps.length} pair${ps.length === 1 ? '' : 's'} waiting · ${strong} strong · ${twice.length} counted twice. Nothing links until you approve it.`;
+    }
+    if (!ps.length) { host.innerHTML = twiceHtml || '<p class="aw-empty">Every receipt is linked or has no candidate. Upload a receipt or sync QuickBooks and the engine will pair them.</p>'; return; }
+    host.innerHTML = twiceHtml + `<div class="aw-rhead" style="display:grid;grid-template-columns:48px minmax(0,1.2fr) 24px minmax(0,1.2fr) 150px 190px;gap:12px"><span></span><span>Receipt</span><span></span><span>Charge</span><span>Confidence</span><span></span></div>`
       + ps.map(t => {
         const r = t.receipt_suggestion;
         return `<div class="aw-rpair${r.strong ? ' strong' : ''}" data-tid="${t.id}">
@@ -236,6 +256,16 @@
   $('aw-review').addEventListener('click', async e => {
     const b = e.target.closest('[data-act]'); if (!b) return;
     const act = b.dataset.act;
+    if (act === 'review-open') { $('aw-review').close(); AW.openDetail(+b.dataset.tid); return; }
+    if (act === 'review-attach') {
+      b.disabled = true;
+      try {
+        const r = await AW.post(AW.txnUrl(+b.dataset.tid, 'link-doc'), { doc_upload_id: +b.dataset.doc });
+        AW.toast('Invoice attached — it counts once now', '', { activityId: r.activity_id });
+        await AW.load({ keepFocus: true }); renderReview();
+      } catch (x) { b.disabled = false; AW.toast(x.message || 'Could not attach', 'red'); }
+      return;
+    }
     if (act === 'review-approve' || act === 'review-reject') {
       const tid = +b.dataset.tid; b.disabled = true;
       try {

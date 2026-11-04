@@ -43,8 +43,8 @@ def _split_parent_error(txn):
     (Phase 2) is cleared with DELETE …/split; an itemized document from the
     doc modal."""
     if TransactionSplit.query.filter_by(transaction_id=txn.id).first() is not None:
-        return ("This transaction is split across lines — the splits carry the "
-                "coding. Remove the split to code it as one line.")
+        from actuals import SPLIT_PARENT_MESSAGE
+        return SPLIT_PARENT_MESSAGE
     return ("This document is itemized into line items — the sublines carry "
             "the coding. Open the doc and clear the itemization to code it as "
             "one line.")
@@ -611,9 +611,13 @@ def actuals_line_transactions(pid, lid):
     else:
         _sib_q = _sib_q.filter(BudgetLine.id == line.id)
     _sib_ids = [l.id for l in _sib_q.all()] or [line.id]
+    # A split parent is listed ONLY as its pieces (below) — even a parent
+    # left coded by an old bug (GINTS 7246 showed $993.35 + its $900 piece).
+    _sp_parents = _split_parent_id_set(pid)
     txns = (Transaction.query
             .filter(Transaction.project_id == pid,
-                    Transaction.budget_line_id.in_(_sib_ids))
+                    Transaction.budget_line_id.in_(_sib_ids),
+                    *([Transaction.id.notin_(list(_sp_parents))] if _sp_parents else []))
             .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
             .all())
     out = []
@@ -723,9 +727,12 @@ def actuals_line_ledger(pid, lid):
     if line is None:
         abort(404)
 
+    # A split parent is listed only as its pieces (2026-11-04).
+    _sp_parents_lg = _split_parent_id_set(pid)
     txns = (Transaction.query
             .filter(Transaction.project_id == pid,
-                    Transaction.budget_line_id.in_(sib_ids))
+                    Transaction.budget_line_id.in_(sib_ids),
+                    *([Transaction.id.notin_(list(_sp_parents_lg))] if _sp_parents_lg else []))
             .order_by(Transaction.txn_date.asc().nullsfirst(),
                       Transaction.id.asc())
             .all())
@@ -1097,6 +1104,31 @@ def actuals_section_transactions(pid, code):
             "account_code": t.account_code,
             "note": t.note,
         })
+    # Split pieces that target this SECTION (2026-11-04) count here like a
+    # section-coded charge; each is listed with ITS amount.
+    try:
+        from actuals import split_pieces_for_section
+        for sp, pt in split_pieces_for_section(pid, code):
+            doc = DocUpload.query.get(pt.doc_upload_id) if pt.doc_upload_id else None
+            _dt = pt.txn_date
+            out.append({
+                "id": pt.id, "split_id": sp.id, "is_split": True,
+                "vendor": pt.vendor,
+                "amount": float(sp.amount or 0),
+                "split_of": float(pt.amount) if pt.amount is not None else None,
+                "date": (_dt.isoformat() if hasattr(_dt, 'isoformat') else _dt),
+                "source": pt.source, "match_status": pt.match_status,
+                "is_expense": bool(pt.is_expense),
+                "doc_upload_id": pt.doc_upload_id,
+                "has_image": bool(doc and doc.content_type and doc.content_type.startswith('image/')),
+                "doc_category": (doc.category if doc else None),
+                "doc_filename": (doc.filed_filename or doc.original_filename) if doc else None,
+                "qbo_txn_id": pt.qbo_txn_id, "account_code": code,
+                "note": sp.note or pt.note,
+            })
+        out.sort(key=lambda r: ((r.get("date") or ""), r["id"]), reverse=True)
+    except Exception as _spe:
+        logging.warning(f"[section-txns] split pieces skipped for {code}: {_spe}")
     return jsonify({
         "ok": True,
         "section": {"code": code,
@@ -2138,6 +2170,7 @@ def actuals_workspace_page(pid):
                            budget_id=(_pick_budget.id if _pick_budget else None),
                            line_groups=line_groups,
                            crew=_ws_crew_options(pid),
+                           coa_sections=[{"code": c, "name": n} for c, n in FP_COA_SECTIONS],
                            focus_txn=focus_txn, initial_view=view,
                            can_sync=bool(getattr(current_user, 'has_all_project_access', False)))
 
@@ -2648,6 +2681,7 @@ def actuals_confirm_match(pid, tid):
     txn = _pool_txn_or_404(pid, tid)
     from actuals import confirm_match
     try:
+        _undo_before = _link_undo_before(txn, txn.doc_upload_id)
         result = confirm_match(tid)
         _act = None
         try:
@@ -2656,7 +2690,7 @@ def actuals_confirm_match(pid, tid):
             _act = _log_activity(
                 action='update', entity_type='transaction_match',
                 entity_id=txn.id, entity_label=_label,
-                project_id=pid,
+                project_id=pid, before=_undo_before,
                 after={'match_status': 'confirmed',
                        'doc_upload_id': txn.doc_upload_id},
                 note=f'Confirmed match: {_label} ${_amt:,.2f}')
@@ -2910,6 +2944,39 @@ def actuals_docs_list_for_picker(pid):
     return jsonify({"ok": True, "docs": out})
 
 
+def _link_undo_before(txn, doc_id):
+    """Snapshot for undoing a receipt link / confirm (2026-11-04): the
+    charge's coding, splits and evidence, plus the document's own row and its
+    itemization children (the link absorbs the row and folds the children
+    into the charge's split) so activity_undo can put every row back."""
+    from actuals import split_snapshot, txn_snapshot, invoice_children_of
+    from models import ExpenseEvidence
+    before = {'budget_line_id': txn.budget_line_id, 'account_code': txn.account_code,
+              'account_code_name': txn.account_code_name,
+              'doc_upload_id': txn.doc_upload_id, 'match_status': txn.match_status,
+              'source': txn.source, 'splits': split_snapshot(txn.id),
+              'evidence': [{'doc_upload_id': e.doc_upload_id, 'kind': e.kind}
+                           for e in ExpenseEvidence.query.filter_by(transaction_id=txn.id).all()]}
+    rows, evid = [], []
+    if doc_id:
+        for sis in Transaction.query.filter(Transaction.doc_upload_id == doc_id,
+                                            Transaction.source == 'doc_upload',
+                                            Transaction.id != txn.id).all():
+            rows.append({**txn_snapshot(sis), 'id': sis.id})
+            for k in invoice_children_of(sis, doc_id):
+                if k.id not in {r['id'] for r in rows}:
+                    rows.append({**txn_snapshot(k), 'id': k.id})
+    for r in rows:
+        for e in ExpenseEvidence.query.filter_by(transaction_id=r['id']).all():
+            evid.append({'transaction_id': r['id'], 'doc_upload_id': e.doc_upload_id, 'kind': e.kind})
+    # children first in the snapshot list would break their parent FK on
+    # recreate: parents (doc rows) first.
+    rows.sort(key=lambda r: (r.get('source') == 'invoice_split', r['id']))
+    before['recreate_rows'] = rows
+    before['recreate_evidence'] = evid
+    return before
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/link-doc", methods=["POST"])
 @login_required
 def actuals_link_existing_doc(pid, tid):
@@ -2939,6 +3006,7 @@ def actuals_link_existing_doc(pid, tid):
     if not doc:
         return jsonify({"error": "DocUpload not found in this project"}), 404
 
+    _undo_before = _link_undo_before(txn, doc.id)
     # Attaching a receipt claims the charge for this project (company ledger).
     try:
         claim_for(txn, pid, why='receipt attached')
@@ -2957,10 +3025,11 @@ def actuals_link_existing_doc(pid, tid):
     # "Receipts to place" even though the doc now rides on this charge.
     # (User 2026-07-08: handwritten tip → $2 amount mismatch → manual link
     # left the placeholder behind.)
+    _fold = None
     if txn.source != 'doc_upload':
         try:
             from actuals import confirm_match
-            confirm_match(tid)
+            _fold = (confirm_match(tid) or {}).get('itemization')
         except Exception as _e:
             # Roll back FIRST: after a failed flush the session is poisoned
             # and even reading txn.id re-raises — which is exactly how this
@@ -2976,14 +3045,22 @@ def actuals_link_existing_doc(pid, tid):
         _label = (txn.vendor or f'Txn #{txn.id}')[:80]
         _amt = float(txn.amount or 0)
         _doc_label = doc.filed_filename or doc.original_filename or f'Doc #{doc.id}'
+        _fold_note = ''
+        if _fold and _fold.get('mode') == 'converted':
+            _fold_note = f' · its {len(_fold.get("rows") or [])} invoice lines became the split'
+        elif _fold and _fold.get('mode') == 'kept_charge_split':
+            _fold_note = ' · the charge was already split; the invoice\'s itemization was folded away (no double count)'
+        elif _fold and _fold.get('mode') == 'coded':
+            _fold_note = ' · its invoice line coded the charge'
         _act = _log_activity(
             action='update', entity_type='transaction_match',
             entity_id=txn.id, entity_label=_label,
-            project_id=pid,
+            project_id=pid, before=_undo_before,
             after={'doc_upload_id': doc.id, 'match_status': 'confirmed'},
-            note=f'Linked existing receipt "{_doc_label}" → ${_amt:,.2f} {_label}')
+            note=f'Linked existing receipt "{_doc_label}" → ${_amt:,.2f} {_label}{_fold_note}'[:500])
     except Exception: pass
     return jsonify({
+        "itemization":     _fold,
         "ok":              True,
         "transaction_id":  txn.id,
         "doc_upload_id":   doc.id,
@@ -4008,6 +4085,31 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
                                        Transaction.budget_line_id.isnot(None)).all():
         _sister_line_by_doc.setdefault(_s.doc_upload_id, _s.budget_line_id)
 
+    # Invoices counted twice (2026-11-04): a coded / itemized document row
+    # with no charge + a counted charge with the same payee and amount — the
+    # matcher suggests "Attach this invoice to the charge", on both rows and
+    # in Review matches. ONE rule: actuals.counted_twice_for_project.
+    twice_by_charge, twice_by_docrow = {}, {}
+    try:
+        from actuals import counted_twice_for_project
+        for _e in counted_twice_for_project(pid):
+            _c = _e["charge"]; _r = _e.get("doc_row")
+            if _e["kind"] == "doc_and_charge" and _r is not None:
+                _dd = docs.get(_r.doc_upload_id)
+                _info = {"kind": _e["kind"], "charge_id": _c.id, "doc_row_id": _r.id,
+                         "doc_id": _r.doc_upload_id,
+                         "doc_name": ((_dd.filed_filename or _dd.original_filename) if _dd else None),
+                         "vendor": _c.vendor, "amount": float(_c.amount or 0),
+                         "charge_date": (_c.txn_date or '')[:10], "doc_date": (_r.txn_date or '')[:10]}
+                twice_by_charge[_c.id] = _info
+                twice_by_docrow[_r.id] = _info
+                if _r.doc_upload_id:
+                    twice_by_docrow[('doc', _r.doc_upload_id)] = _info
+            else:
+                twice_by_charge[_c.id] = {"kind": _e["kind"], "charge_id": _c.id}
+    except Exception as _cte:
+        logging.warning(f"[workspace.json] counted-twice scan failed: {_cte}")
+
     transactions, not_project, claimed_elsewhere = [], [], []
     matched_doc_ids = set()
     try:
@@ -4019,7 +4121,9 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
         t = rep
         _sps = splits_by_txn.get(t.id, [])
         splits = [{"id": sp.id, "budget_line_id": sp.budget_line_id,
-                   "label": _line_label_any(sp.budget_line_id) if sp.budget_line_id else None,
+                   "account_code": sp.account_code,
+                   "label": (_line_label_any(sp.budget_line_id) if sp.budget_line_id
+                             else _split_piece_label(sp)),
                    "amount": float(sp.amount or 0), "note": sp.note} for sp in _sps]
         _kids = kids_by_parent.get(t.id)
         itemized = [{"id": k.id, "desc": (k.note or '')[:90],
@@ -4127,7 +4231,11 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
             "reviewed": bool(getattr(t, 'reviewed_at', None)),
             "dup_group": dup_group_of.get(t.id),
             "voided": bool(flag_input["voided"]),
+            # "Attach this invoice to the charge — it's counted twice".
+            "counted_twice": (twice_by_charge.get(t.id) or twice_by_docrow.get(t.id)),
         }
+        if row["counted_twice"] and 'counted_twice' not in flags["yellow"]:
+            flags["yellow"].insert(0, 'counted_twice')
         if t.not_project_expense or t.id in _dismissed_ids:
             not_project.append(row)
         else:
@@ -4151,7 +4259,8 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
         if dt is not None and (dt.activated_at is not None or dt.not_project_expense):
             continue
         r = {**_doc_brief(d), "txn_id": (dt.id if dt is not None else None),
-             "status": d.status, "suggested_charge_id": None, "suggested_charge": None}
+             "status": d.status, "suggested_charge_id": None, "suggested_charge": None,
+             "counted_twice": twice_by_docrow.get(('doc', d.id))}
         # The charge this receipt is suggested for (Phase 5: the suggestion
         # shows on BOTH sides — "Matches charge · Lyft · Sep 28 · $88.44 ·
         # 88%" with Confirm / Not a match on the receipt row too).
@@ -4221,15 +4330,43 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
                                    or (not bool(ln.sync_omit)
                                        and (ln.line_tag or '') not in ('header', 'spacer'))),
             })
+        # Section-coded spend (owner, Nov 4: "Rare Medium … assigned to the
+        # 4700 post-production services section … I can't see it"): charges
+        # coded to a section with no line, plus split pieces that target a
+        # section. Shown as a "Section-coded $X (n)" row under the header and
+        # counted in the section's Actual — the budget page's rule.
+        sec_coded = {}
+        for _r in transactions:
+            if _r.get("section_only") and not _r.get("splits") and not _r.get("pooled"):
+                _sc = _section_for_code(int(_r["section_only"]["code"]))
+                sec_coded.setdefault(_sc, []).append({
+                    "id": _r["id"], "vendor": _r["vendor"], "amount": _r["amount"],
+                    "date": _r["date"], "code": _r["section_only"]["code"], "split": False})
+            for _p in (_r.get("splits") or []):
+                if _p.get("account_code") and not _p.get("budget_line_id"):
+                    _sc = _section_for_code(int(_p["account_code"]))
+                    sec_coded.setdefault(_sc, []).append({
+                        "id": _r["id"], "vendor": _r["vendor"],
+                        "amount": (_p["amount"] if _r["amount"] >= 0 else -_p["amount"]),
+                        "date": _r["date"], "code": _p["account_code"], "split": True,
+                        "split_of": _r["amount"]})
+        for _sc in sec_coded:
+            by_sec.setdefault(_sc, [])
         _order = {code: i for i, (code, _n) in enumerate(FP_COA_SECTIONS)}
         for sec in sorted(by_sec, key=lambda c: (_order.get(c, 9999), c or 0)):
             rows = by_sec[sec]
+            _coded = sec_coded.get(sec) or []
+            _coded_total = round(sum(float(x["amount"] or 0) for x in _coded), 2)
+            _est = round(sum(r["estimate"] for r in rows), 2)
+            _act = round(sum(r["actual"] for r in rows) + _coded_total, 2)
             sections.append({
                 "code": sec, "name": (_section_name(sec) if sec is not None else 'Other'),
-                "estimate": round(sum(r["estimate"] for r in rows), 2),
-                "actual": round(sum(r["actual"] for r in rows), 2),
-                "variance": round(sum(r["variance"] for r in rows), 2),
+                "estimate": _est,
+                "actual": _act,
+                "variance": round(_est - _act, 2),
                 "is_drop_target": sec is not None,
+                "section_coded": ({"total": _coded_total, "count": len(_coded),
+                                   "rows": _coded} if _coded else None),
                 "lines": rows})
 
     # Sync is company-wide (2026-11-03): the account set and the watermarks
@@ -4291,7 +4428,12 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
               "needs_backup": n_needs_backup, "receipts": len(receipts),
               "not_project": len(not_project),
               "duplicates": len(duplicates) + len(voided),
-              "matches_to_review": sum(1 for r in transactions if r.get("receipt_suggestion")),
+              "matches_to_review": (sum(1 for r in transactions if r.get("receipt_suggestion"))
+                                    + sum(1 for r in transactions
+                                          if (r.get("counted_twice") or {}).get("kind") == "doc_and_charge"
+                                          and (r["counted_twice"].get("charge_id") == r["id"]))),
+              "counted_twice": sum(1 for r in transactions
+                                   if (r.get("counted_twice") or {}).get("charge_id") == r["id"]),
               "strong_matches": sum(1 for r in transactions
                                     if (r.get("receipt_suggestion") or {}).get("strong")),
               "sync": (0 if sync["connected"] else 1),
@@ -4309,6 +4451,20 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
             "budget": {"sections": sections,
                        "name": (budget.name if budget else None),
                        "mode": (getattr(budget, 'budget_mode', None) if budget else None)}}
+
+
+def _split_piece_label(piece, lines_by_id=None):
+    """'2000-04 · Labor' for a line piece, '4700 · Post-production services
+    · section' for a section piece (dict or TransactionSplit)."""
+    from budget_calc import FP_COA_NAMES as _N
+    g = (piece.get if isinstance(piece, dict) else (lambda k, d=None: getattr(piece, k, d)))
+    lid, code = g('budget_line_id'), g('account_code')
+    if lid:
+        ln = (lines_by_id or {}).get(lid) or BudgetLine.query.get(lid)
+        return _ws_line_label(ln) if ln else f"line #{lid}"
+    if code:
+        return f"{code} · {_N.get(code, '') or _section_name(code) or ''} · section".replace(' ·  ·', ' ·')
+    return '—'
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/split", methods=["POST", "DELETE"])
@@ -4329,7 +4485,8 @@ def actuals_split_transaction(pid, tid):
     from actuals import validate_splits
     txn = _pool_txn_or_404(pid, tid)
     _require_project_role(pid, 'editor')
-    _old = [{"budget_line_id": sp.budget_line_id, "amount": float(sp.amount or 0),
+    _old = [{"budget_line_id": sp.budget_line_id, "account_code": sp.account_code,
+             "amount": float(sp.amount or 0),
              "note": sp.note} for sp in TransactionSplit.query.filter_by(transaction_id=tid).all()]
     _before = {'budget_line_id': txn.budget_line_id, 'account_code': txn.account_code,
                'account_code_name': txn.account_code_name,
@@ -4369,20 +4526,24 @@ def actuals_split_transaction(pid, tid):
     budget, lines_by_id = _ws_working_budget_and_lines(pid)
     if not budget:
         return jsonify({"error": "This project has no current budget to split against."}), 400
-    clean, err = validate_splits(_amt, body.get('splits'), set(lines_by_id.keys()))
+    # A piece names a line of the current Working OR (2026-11-04) a COA
+    # section with no line yet — the split twin of section-only coding.
+    clean, err = validate_splits(_amt, body.get('splits'), set(lines_by_id.keys()),
+                                 {c for c, _n in FP_COA_SECTIONS})
     if err:
         return jsonify({"error": err["error"], "delta": err["delta"],
                         "transaction_amount": _amt}), 400
-    TransactionSplit.query.filter_by(transaction_id=tid).delete(synchronize_session=False)
-    _now = datetime.utcnow()
+    from actuals import write_splits, ensure_section_in_working_budget
     for row in clean:
-        db.session.add(TransactionSplit(
-            transaction_id=tid, budget_line_id=row["budget_line_id"],
-            project_id=pid, amount=row["amount"], note=row["note"],
-            created_at=_now, created_by_user_id=current_user.id))
-    txn.budget_line_id    = None
-    txn.account_code      = None
-    txn.account_code_name = None
+        if row.get("account_code"):
+            try:
+                ensure_section_in_working_budget(pid, row["account_code"],
+                                                 dict(FP_COA_SECTIONS).get(row["account_code"], ''))
+            except Exception as _ese:
+                logging.warning(f"[split] ensure-section {row['account_code']} failed: {_ese}")
+    _now = datetime.utcnow()
+    # The parent goes uncoded (a split parent has no line / section of its own).
+    write_splits(txn, pid, clean, current_user.id)
     txn.not_project_expense = False
     txn.excluded_at = txn.excluded_by_user_id = txn.excluded_reason = None
     txn.match_status = 'confirmed' if txn.doc_upload_id else txn.match_status
@@ -4404,11 +4565,11 @@ def actuals_split_transaction(pid, tid):
                                     'account_code_name': None, 'not_project_expense': False,
                                     'splits': clean},
                       note=f'Split ${_amt:,.2f} across {len(clean)} lines: '
-                           + ', '.join(f'{_ws_line_label(lines_by_id[r["budget_line_id"]])} ${r["amount"]:,.2f}'
+                           + ', '.join(f'{_split_piece_label(r, lines_by_id)} ${r["amount"]:,.2f}'
                                        for r in clean)[:400])
     except Exception: pass
-    out = [{"id": sp.id, "budget_line_id": sp.budget_line_id,
-            "label": _ws_line_label(lines_by_id[sp.budget_line_id]),
+    out = [{"id": sp.id, "budget_line_id": sp.budget_line_id, "account_code": sp.account_code,
+            "label": _split_piece_label(sp, lines_by_id),
             "amount": float(sp.amount or 0), "note": sp.note}
            for sp in TransactionSplit.query.filter_by(transaction_id=tid)
                                            .order_by(TransactionSplit.id).all()]

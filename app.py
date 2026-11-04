@@ -8561,6 +8561,11 @@ def budget_view(pid, bid):
         ):
             if _ac is not None:
                 actual_section_only_by_code[int(_ac)] = float(_amt or 0)
+        # Split pieces that target a section (2026-11-04) are section-coded
+        # spend too — the same row, the same total.
+        from actuals import split_section_sums as _sss_bv
+        for _ac, _amt in _sss_bv(pid).items():
+            actual_section_only_by_code[_ac] = actual_section_only_by_code.get(_ac, 0.0) + _amt
     except Exception as _ae2:
         logging.warning(f"[actuals/section-only] computation failed: {_ae2}")
 
@@ -19989,6 +19994,51 @@ def activity_feed(pid, bid):
     return jsonify({"items": out, "count": len(out), "filter": flt, "entity": entity})
 
 
+def _undo_restore_rows(txn, before, pid):
+    """Undo helper (2026-11-04): recreate the rows an action deleted from
+    their snapshots (before['recreate_rows'], each a txn_snapshot + id),
+    their evidence (before['recreate_evidence']), and put the surviving
+    row's own evidence back to exactly before['evidence']. Commit-free."""
+    from models import ExpenseEvidence as _EE_u
+    _DT_KEYS = ('activated_at', 'excluded_at')
+    for snap in before.get('recreate_rows') or []:
+        if not isinstance(snap, dict) or not snap.get('id'):
+            continue
+        if Transaction.query.get(snap['id']) is not None:
+            continue
+        t = Transaction(id=snap['id'])
+        for k, v in snap.items():
+            if k == 'id':
+                continue
+            if k in _DT_KEYS and v:
+                try:
+                    v = datetime.fromisoformat(v)
+                except Exception:
+                    v = None
+            try:
+                setattr(t, k, v)
+            except Exception:
+                pass
+        t.created_at = t.updated_at = datetime.utcnow()
+        db.session.add(t)
+    db.session.flush()
+    if 'evidence' in before and isinstance(before.get('evidence'), list):
+        _EE_u.query.filter_by(transaction_id=txn.id).delete(synchronize_session=False)
+        for ev in before['evidence']:
+            if ev.get('doc_upload_id'):
+                db.session.add(_EE_u(transaction_id=txn.id, doc_upload_id=ev['doc_upload_id'],
+                                     kind=ev.get('kind') or 'primary'))
+    for ev in before.get('recreate_evidence') or []:
+        if ev.get('transaction_id') and ev.get('doc_upload_id') and not _EE_u.query.filter_by(
+                transaction_id=ev['transaction_id'], doc_upload_id=ev['doc_upload_id']).first():
+            db.session.add(_EE_u(transaction_id=ev['transaction_id'],
+                                 doc_upload_id=ev['doc_upload_id'],
+                                 kind=ev.get('kind') or 'itemized'))
+    if before.get('recreate_rows') and before.get('source'):
+        txn.source = before['source']
+    db.session.flush()
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/activity/<int:aid>/undo", methods=["POST"])
 @login_required
 def activity_undo(pid, bid, aid):
@@ -20204,7 +20254,10 @@ def activity_undo(pid, bid, aid):
                   # with its who / when / why; undoing a mark clears them.
                   'excluded_by_user_id', 'excluded_reason',
                   # Phase 5: the Voided-in-QuickBooks flag rides here too.
-                  'no_charge_reason', 'payment_method', 'paid_by_crew_member_id'):
+                  'no_charge_reason', 'payment_method', 'paid_by_crew_member_id',
+                  # The detail window's amount / vendor / date / memo edits
+                  # (2026-11-04) — only rows amount_edit_allowed let change.
+                  'vendor', 'amount', 'txn_date', 'note'):
             if k in before:
                 try:
                     setattr(txn, k, before[k])
@@ -20226,16 +20279,31 @@ def activity_undo(pid, bid, aid):
                 _TS_u.query.filter_by(transaction_id=txn.id).delete(synchronize_session=False)
                 _now_u = datetime.utcnow()
                 for _sp in before['splits']:
-                    if not isinstance(_sp, dict) or not _sp.get('budget_line_id'):
+                    if not isinstance(_sp, dict) or not (_sp.get('budget_line_id')
+                                                         or _sp.get('account_code')):
                         continue
                     db.session.add(_TS_u(
-                        transaction_id=txn.id, budget_line_id=int(_sp['budget_line_id']),
+                        transaction_id=txn.id,
+                        budget_line_id=(int(_sp['budget_line_id']) if _sp.get('budget_line_id') else None),
+                        # A section piece (2026-11-04) comes back as a section piece.
+                        account_code=(None if _sp.get('budget_line_id')
+                                      else int(_sp['account_code'])),
                         project_id=pid, amount=round(float(_sp.get('amount') or 0), 2),
                         note=_sp.get('note'), created_at=_now_u,
                         created_by_user_id=current_user.id))
             except Exception as _spe:
                 db.session.rollback()
                 return jsonify({"ok": False, "error": f"Could not restore the split: {_spe}"}), 400
+        # Rows an action deleted (the invoice-counted-twice Fix, the receipt
+        # row a link absorbed, itemization children folded into a split —
+        # 2026-11-04) come back from their snapshots; the charge's evidence
+        # goes back to exactly what it was.
+        if before.get('recreate_rows') or 'evidence' in before:
+            try:
+                _undo_restore_rows(txn, before, pid)
+            except Exception as _rre:
+                db.session.rollback()
+                return jsonify({"ok": False, "error": f"Could not restore the rows: {_rre}"}), 400
         txn.updated_at = datetime.utcnow()
         # Pool dismissals (Not project for this project only, 2026-11-04):
         # undoing a mark deletes the dismissal, undoing a Restore puts it back.
@@ -20273,7 +20341,46 @@ def activity_undo(pid, bid, aid):
         # to the pool, restore the receipt's own ledger row). (User 2026-06-16.)
         from actuals import unmatch_receipt
         try:
+            _doc_before = (Transaction.query.get(row.entity_id).doc_upload_id
+                           if Transaction.query.get(row.entity_id) else None)
             unmatch_receipt(row.entity_id)
+            # A link that folded the document's itemization into the charge's
+            # split (2026-11-04) logged the rows it removed: put them back —
+            # the receipt row unmatch just recreated is replaced by the
+            # original — and the charge's split / coding as it was.
+            if before and before.get('recreate_rows'):
+                _t_m = Transaction.query.get(row.entity_id)
+                _snap_ids = {r.get('id') for r in before['recreate_rows']}
+                if _doc_before:
+                    for _fresh in Transaction.query.filter(
+                            Transaction.doc_upload_id == _doc_before,
+                            Transaction.source == 'doc_upload').all():
+                        if _fresh.id not in _snap_ids:
+                            db.session.delete(_fresh)
+                    db.session.flush()
+                for k in ('budget_line_id', 'account_code', 'account_code_name'):
+                    if k in before:
+                        setattr(_t_m, k, before[k])
+                if isinstance(before.get('splits'), list):
+                    from models import TransactionSplit as _TS_m
+                    _TS_m.query.filter_by(transaction_id=_t_m.id).delete(synchronize_session=False)
+                    for _sp in before['splits']:
+                        db.session.add(_TS_m(transaction_id=_t_m.id,
+                                             budget_line_id=_sp.get('budget_line_id'),
+                                             account_code=(None if _sp.get('budget_line_id') else _sp.get('account_code')),
+                                             project_id=pid, amount=round(float(_sp.get('amount') or 0), 2),
+                                             note=_sp.get('note'), created_at=datetime.utcnow(),
+                                             created_by_user_id=current_user.id))
+                _undo_restore_rows(_t_m, before, pid)
+                try:
+                    from actuals import claim_for as _cf_m, release as _rel_m, is_claimed as _ic_m
+                    if _ic_m(_t_m):
+                        _cf_m(_t_m, pid, why='undo restored the coding')
+                    else:
+                        _rel_m(_t_m, why='undo cleared the link')
+                except Exception:
+                    pass
+                db.session.commit()
         except Exception as _ue:
             db.session.rollback()
             return jsonify({"ok": False, "error": f"Could not reverse the match: {_ue}"}), 400
@@ -28829,6 +28936,8 @@ def _web_worker_essential_columns():
                    )""",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_split_transaction_id "
                 "  ON transaction_split (transaction_id)",
+                # A split piece may target a SECTION (2026-11-04, alembic 0027).
+                "ALTER TABLE transaction_split ADD COLUMN IF NOT EXISTS account_code INTEGER",
                 # analyzer_batch (audit H7, alembic 0002) was only ever created
                 # by db.create_all() in preDeploy — which ran against sqlite —
                 # so a worker that rehydrates a doc batch after a recycle
@@ -36078,7 +36187,24 @@ def docs_upload_line_items(uid):
     # picker instead. (User 2026-07 remainder model.)
     existing = []
     main_line_id = None
-    if parent is not None:
+    writes = ('split' if (parent is not None and parent.source in ('qbo_sync', 'csv_import', 'reconciled')
+                          and (upload.category or '') not in ('payroll', 'timecard')) else 'itemize')
+    _charge_splits = (TransactionSplit.query.filter_by(transaction_id=parent.id)
+                      .order_by(TransactionSplit.id).all() if writes == 'split' else [])
+    if _charge_splits:
+        # The charge's split IS the itemization (2026-11-04).
+        for sp in _charge_splits:
+            _bl = BudgetLine.query.get(sp.budget_line_id) if sp.budget_line_id else None
+            _val = (str(_picker_value_for_line(_bl)) if _bl
+                    else (f"section:{sp.account_code}" if sp.account_code else None))
+            if (sp.note or '') == 'Remainder → main line':
+                main_line_id = _val
+                continue
+            existing.append({"id": sp.id, "description": sp.note or '',
+                             "amount": float(sp.amount or 0), "budget_line_id": _val,
+                             "line_label": (f"{_bl.account_code} · {_bl.description or _bl.account_name}" if _bl
+                                            else (f"{sp.account_code} · section" if sp.account_code else ''))})
+    if parent is not None and not _charge_splits:
         # Match the itemize replace-on-save sweep: children by parent OR by doc
         # (a parent flip between saves left stale children invisible here while
         # they still polluted totals — the Consulting Engineer case, 2026-07).
@@ -36122,6 +36248,9 @@ def docs_upload_line_items(uid):
         "existing": existing,
         "main_line_id": main_line_id,
         "is_itemized": bool(existing),
+        # 'split' = saving writes the attached charge's transaction_split
+        # (the one mechanism); 'itemize' = a document with no charge yet.
+        "writes": writes,
         "receipt_detail": _doc_receipt_detail(upload),
     })
 
@@ -36636,6 +36765,172 @@ def _absorb_receipt_as_backup(txn, target, ref=''):
     txn.updated_at = datetime.utcnow()
 
 
+_PAYROLL_ROW_RE = re.compile(r'\s[\u2014-]\s*(payroll|employer fringes)\s*$', re.I)
+
+
+def _is_payroll_itemization(upload, rows):
+    """A payroll package's per-person rows (Parse payroll): the document is
+    payroll / a timecard, or a row names its person (crew_member_id), or the
+    rows carry the parser's '<name> — payroll' / '— employer fringes'
+    descriptions. Those keep invoice_split rows (per-person payee)."""
+    if (getattr(upload, 'category', None) or '') in ('payroll', 'timecard'):
+        return True
+    for r in rows or []:
+        if r.get('crew_member_id') not in (None, '', 0, '0'):
+            return True
+        if _PAYROLL_ROW_RE.search(str(r.get('description') or '')):
+            return True
+    return False
+
+
+def _itemize_onto_charge(upload, charge, rows, main_line_raw):
+    """The itemize grid's save when the document is ATTACHED TO A CHARGE
+    (2026-11-04 — ONE split mechanism): the rows become transaction_split
+    pieces on the charge (the bank's figure), the one document backs every
+    piece, and any legacy invoice_split children of the doc / charge are
+    removed — never both. An unattached document (no charge yet, an accrual)
+    keeps the doc-row path, _itemize_apply.
+
+    Same row rules as _itemize_apply (strict): a row with no line stays in
+    the remainder, the remainder goes to the main line ('Remainder → main
+    line' piece), lines over the charge are refused. One piece = the charge
+    coded to that target; no rows + a main line = coded whole; nothing =
+    cleared. Logged with an undo payload. Commits. Returns (dict, status)."""
+    from actuals import (validate_splits, write_splits, split_snapshot, txn_snapshot,
+                         invoice_children_of, link_transaction_to_line, unlink_transaction,
+                         claim_for, ClaimError, REMAINDER_NOTE, ensure_section_in_working_budget)
+    from models import ExpenseEvidence as _EEi
+    pid = upload.project_id
+
+    def _parse(v):
+        if v in (None, '', 0, '0'):
+            return None
+        sv = str(v)
+        if sv.startswith('section:'):
+            try:
+                return ('section', int(sv.split(':', 1)[1]))
+            except (TypeError, ValueError):
+                return None
+        try:
+            return ('line', int(sv))
+        except (TypeError, ValueError):
+            return None
+
+    total = round(abs(float(charge.amount or 0)), 2)
+    mtarget = _parse(main_line_raw)
+    pieces, uncoded_total = [], 0.0
+    for r in rows or []:
+        try:
+            amt = round(abs(float(r.get("amount"))), 2)
+        except (TypeError, ValueError):
+            return {"error": "each row needs a numeric amount"}, 400
+        if not amt:
+            continue
+        tgt = _parse(r.get("budget_line_id"))
+        if tgt is None:
+            uncoded_total = round(uncoded_total + amt, 2)
+            continue
+        pieces.append({"budget_line_id": tgt[1] if tgt[0] == 'line' else None,
+                       "account_code": tgt[1] if tgt[0] == 'section' else None,
+                       "amount": amt, "note": (r.get("description") or '')[:300] or None})
+    sub = round(sum(p["amount"] for p in pieces), 2)
+    if sub > total + 0.01:
+        return {"error": f"The lines total ${sub:,.2f}, more than the ${total:,.2f} charge "
+                         "(the bank's figure) — fix the amounts before saving."}, 400
+    remainder = round(total - sub, 2)
+    if pieces and remainder > 0.01:
+        if mtarget is None:
+            return {"error": f"${remainder:,.2f} of the ${total:,.2f} charge has nowhere to go — "
+                             "pick a main budget line above (it takes the remainder), or code every line."}, 400
+        pieces.append({"budget_line_id": mtarget[1] if mtarget[0] == 'line' else None,
+                       "account_code": mtarget[1] if mtarget[0] == 'section' else None,
+                       "amount": remainder, "note": REMAINDER_NOTE})
+    # Undo payload: the charge as it was + every child row this replaces.
+    kids = invoice_children_of(charge, upload.id)
+    before = {'budget_line_id': charge.budget_line_id, 'account_code': charge.account_code,
+              'account_code_name': charge.account_code_name,
+              'splits': split_snapshot(charge.id),
+              'recreate_rows': [{**txn_snapshot(k), 'id': k.id} for k in kids],
+              'recreate_evidence': [{'transaction_id': e.transaction_id, 'doc_upload_id': e.doc_upload_id,
+                                     'kind': e.kind}
+                                    for e in (_EEi.query.filter(_EEi.transaction_id.in_([k.id for k in kids])).all()
+                                              if kids else [])]}
+    if kids:
+        _kid_ids = [k.id for k in kids]
+        _delete_evidence_for_txns(_kid_ids)
+        Transaction.query.filter(Transaction.backup_of_txn_id.in_(_kid_ids)).update(
+            {Transaction.backup_of_txn_id: charge.id}, synchronize_session=False)
+        for k in kids:
+            db.session.delete(k)
+        db.session.flush()
+    from models import TransactionSplit as _TSi
+    mode = None
+    try:
+        if len(pieces) >= 2:
+            _lines_ok = {l.id for l in BudgetLine.query.join(Budget, Budget.id == BudgetLine.budget_id)
+                         .filter(Budget.project_id == pid).all()}
+            clean, err = validate_splits(total, pieces, _lines_ok, {c for c, _n in FP_COA_SECTIONS})
+            if err:
+                db.session.rollback()
+                return {"error": err["error"], "delta": err.get("delta")}, 400
+            for r in clean:
+                if r.get("account_code"):
+                    try:
+                        ensure_section_in_working_budget(pid, r["account_code"],
+                                                         dict(FP_COA_SECTIONS).get(r["account_code"], ''))
+                    except Exception:
+                        pass
+            write_splits(charge, pid, clean, current_user.id)
+            claim_for(charge, pid, why='split by its invoice')
+            mode = 'split'
+        else:
+            one = pieces[0] if pieces else None
+            tgt = ((('line', one["budget_line_id"]) if one["budget_line_id"] else ('section', one["account_code"]))
+                   if one else mtarget)
+            _TSi.query.filter_by(transaction_id=charge.id).delete(synchronize_session=False)
+            db.session.flush()
+            if tgt is None:
+                db.session.commit()
+                unlink_transaction(charge.id)
+                mode = 'cleared'
+            elif tgt[0] == 'line':
+                db.session.commit()
+                link_transaction_to_line(charge.id, tgt[1], user_id=current_user.id)
+                mode = 'coded'
+            else:
+                charge.budget_line_id = None
+                charge.account_code = tgt[1]
+                charge.account_code_name = (dict(FP_COA_SECTIONS).get(tgt[1], '') or '')[:100]
+                charge.not_project_expense = False
+                try:
+                    ensure_section_in_working_budget(pid, tgt[1], charge.account_code_name)
+                except Exception:
+                    pass
+                claim_for(charge, pid, why='coded to a section')
+                mode = 'coded'
+    except ClaimError as e:
+        db.session.rollback()
+        return {"error": str(e)}, 409
+    _add_evidence(charge.id, upload.id, 'primary')
+    _clear_ai_code_suggestion(charge)
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='transaction', entity_id=charge.id,
+                      entity_label=(charge.vendor or f'Txn #{charge.id}')[:80], project_id=pid,
+                      before=before,
+                      after={'splits': split_snapshot(charge.id), 'budget_line_id': charge.budget_line_id,
+                             'account_code': charge.account_code},
+                      note=(f'Split ${total:,.2f} by its invoice into {len(pieces)} pieces'
+                            if mode == 'split' else f'Invoice coding saved on the charge ({mode})')
+                           + (f'; {len(kids)} old itemized rows folded in' if kids else ''))
+    except Exception:
+        pass
+    return {"ok": True, "mode": mode, "writes": "split", "charge_id": charge.id,
+            "children": 0, "pieces": len(pieces) if mode == 'split' else 0,
+            "sublines_total": sub, "remainder": remainder, "doc_total": total,
+            "uncoded_total": uncoded_total}, None
+
+
 @app.route("/docs/upload/<int:uid>/itemize", methods=["POST"])
 @login_required
 def docs_upload_itemize(uid):
@@ -36656,6 +36951,24 @@ def docs_upload_itemize(uid):
     main_line_raw = data.get("main_line_id")
     if not isinstance(rows, list):
         return jsonify({"error": "rows must be a list"}), 400
+    # ONE split mechanism (2026-11-04): a document attached to a charge
+    # splits THE CHARGE (transaction_split); only a document with no charge
+    # yet keeps its own itemization rows.
+    #
+    # The ONE exception: a PAYROLL package (the Parse payroll rows — one per
+    # person, carrying that person as the payee for 1099 / payee reporting,
+    # and read by the fringe machinery) keeps its per-person rows; a split
+    # piece has no payee of its own. Its parent is excluded from every
+    # rollup, so the charge is still counted once.
+    _bank = parent.source in ('qbo_sync', 'csv_import', 'reconciled')
+    if _bank and not _is_payroll_itemization(upload, rows):
+        result, status = _itemize_onto_charge(upload, parent, rows, main_line_raw)
+        if status:
+            return jsonify(result), status
+        return jsonify(result)
+    if _bank and TransactionSplit.query.filter_by(transaction_id=parent.id).first() is not None:
+        return jsonify({"error": "This charge is split — edit the split instead, or remove "
+                                 "it before saving the payroll package's lines."}), 409
     result, status = _itemize_apply(upload, parent, rows, main_line_raw)
     if status:
         return jsonify(result), status
@@ -38099,6 +38412,7 @@ import routes.payees  # noqa: E402,F401
 import routes.qbo_admin  # noqa: E402,F401
 import routes.admin_maintenance  # noqa: E402,F401
 import routes.ledger_admin  # noqa: E402,F401
+import routes.actuals_detail  # noqa: E402,F401
 
 
 if __name__ == "__main__":

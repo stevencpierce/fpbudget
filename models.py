@@ -324,7 +324,10 @@ class TransactionSplit(db.Model):
     ACTUALS_HANDOFF Phase 2, 2026-10-30). A transaction with splits has
     budget_line_id NULL and contributes to every rollup ONLY through its
     splits, which must sum to the transaction's amount to the cent (the
-    split route refuses anything else). project_id mirrors the parent's —
+    split route refuses anything else). ONE split mechanism (2026-11-04):
+    an invoice's line items attached to a charge become these rows too —
+    the legacy invoice_split child rows survive only on a document with no
+    charge yet. project_id mirrors the parent's —
     splits are within one project only for now. Replaced on every save;
     DELETE on the split route removes them all."""
     __tablename__ = "transaction_split"
@@ -334,6 +337,11 @@ class TransactionSplit(db.Model):
     budget_line_id     = db.Column(db.Integer, db.ForeignKey("budget_line.id"),
                                    nullable=True)
     project_id         = db.Column(db.Integer, nullable=True)
+    # A piece targets EITHER a line (budget_line_id) OR a COA section with
+    # no line yet (account_code) — exactly one (validate_splits; 2026-11-04,
+    # Alembic 0027 + the essential pass). Section pieces count in the
+    # section's Actual like section-only coded charges.
+    account_code       = db.Column(db.Integer, nullable=True)
     amount             = db.Column(db.Numeric(12, 2), nullable=False)
     note               = db.Column(db.String(300), nullable=True)
     created_at         = db.Column(db.DateTime, default=datetime.utcnow)
