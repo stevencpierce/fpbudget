@@ -60,6 +60,8 @@
           {% if id.email %}<span><a href="mailto:{{ id.email }}" style="color:inherit">{{ id.email }}</a></span>{% endif %}
           {% if id.phone %}<span>{{ id.phone }}</span>{% endif %}
           {% if id.default_rate is not none %}<span>Default rate <b class="pay-num">{{ id.default_rate | money0 }}</b> <span>{{ id.default_rate_label }}</span></span>{% endif %}
+          {% if d.loanouts %}<span>Paid via {% for lo in d.loanouts %}<b>{{ lo.company_name }}</b>{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}
+          {% if d.loanout_of %}<span>Loan-out of <a href="{{ d.loanout_of.url }}"><b>{{ d.loanout_of.name }}</b></a></span>{% endif %}
           {% if id.loan_outs_through %}<span>Loan-out for {% for p in id.loan_outs_through %}<a href="{{ url_for('payee_page', payee_id=p.id) }}">{{ p.name }}</a>{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}
         </div>
       </div>
@@ -198,6 +200,30 @@
           {% if current_user.can_run_maintenance %}<button type="button" class="btn btn-xs btn-outline" id="pp-sync-btn" onclick="payeeSyncDocs({{ id.id }})">Sync to Dropbox</button>{% endif %}
         </div>
       </section>
+
+      {% if id.kind == 'person' %}
+      <section class="pay-card" aria-label="Loan-out companies" id="pp-loanouts">
+        <div class="pay-card-h"><span>Loan-out companies</span><span class="sub">paid through · {{ d.year }}</span></div>
+        {% for lo in d.loanouts %}
+        <div class="pay-doc" data-loanout="{{ lo.id }}">
+          <span class="pay-dot ok" title="Charges and invoices from this company attribute to {{ id.name }}"></span>
+          <span class="nm" style="flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;white-space:normal" title="{{ lo.company_name }}">
+            <span style="overflow-wrap:anywhere">{{ lo.company_name }}</span>
+            <span style="font-size:.74rem;color:var(--text-muted)">{% if lo.qbo_vendor_id %}QuickBooks vendor · {{ lo.qbo_vendor_name or lo.qbo_vendor_id }}{% else %}Not linked to a QuickBooks vendor{% endif %}</span></span>
+          <span class="dt pay-num" title="Paid through {{ lo.company_name }} in {{ d.year }} · all time {{ lo.paid_all_time | money0 }}">{{ lo.paid_year | money0 }}</span>
+          <button type="button" class="pay-alias-x" title="Remove this loan-out" onclick="payeeLoanoutRemove({{ lo.remove_url | tojson }}, {{ lo.company_name | tojson }})">✕</button>
+        </div>
+        {% endfor %}
+        {% if not d.loanouts %}<div class="pay-empty" style="padding:12px 16px">No loan-out companies. Add the company {{ id.name }} invoices through, so its charges and invoices count as {{ id.name }}'s.</div>{% endif %}
+        <div class="pay-card-f" style="gap:8px;flex-wrap:wrap">
+          <input type="text" id="pp-lo-name" aria-label="Loan-out company name" class="pay-search" placeholder="Company name, e.g. Two Foot Shuffle LLC" style="flex:1 1 100%;min-width:0;height:28px">
+          <input type="text" id="pp-lo-qbo" aria-label="QuickBooks vendor (optional)" class="pay-search" list="pp-lo-qbo-list" placeholder="QuickBooks vendor (optional)" style="flex:1 1 160px;min-width:0;height:28px" autocomplete="off">
+          <datalist id="pp-lo-qbo-list">{% for v in d.qbo_vendor_options %}<option value="{{ v.name }}" data-id="{{ v.id }}"></option>{% endfor %}</datalist>
+          <button type="button" class="btn btn-xs btn-primary" id="pp-lo-add" onclick="payeeLoanoutAdd()">Add</button>
+        </div>
+        <div class="pay-note" id="pp-lo-msg">Picks from the QuickBooks vendor list only. Nothing is created or changed in QuickBooks.</div>
+      </section>
+      {% endif %}
 
       <section class="pay-card" aria-label="QuickBooks">
         <div class="pay-card-h"><span>QuickBooks</span><span class="sub">read-only mirror</span></div>
@@ -347,6 +373,43 @@ window.payeeAliasUnlink = async function(aliasId){
   } catch (e) { alert('Error: ' + e.message); }
 };
 document.addEventListener('keydown', function(e){ if (e.key === 'Escape') document.getElementById('edit-payee-modal').classList.add('hidden'); });
+
+/* Loan-out companies (2026-11-04). The QuickBooks field picks a vendor
+   from the mirror by name; an unknown name is refused, never created. */
+var LOANOUT_ADD_URL = {{ (d.loanout_add_url if d.identity.kind == 'person' else '') | tojson }};
+var QBO_VENDOR_OPTS = {{ d.qbo_vendor_options | tojson }};
+window.payeeLoanoutAdd = async function(){
+  var name = (document.getElementById('pp-lo-name').value || '').trim();
+  var qn = (document.getElementById('pp-lo-qbo').value || '').trim();
+  var msg = document.getElementById('pp-lo-msg'), btn = document.getElementById('pp-lo-add');
+  if (!name) { msg.textContent = 'Type the company name first.'; return; }
+  var qid = null;
+  if (qn) {
+    var hit = QBO_VENDOR_OPTS.filter(function(v){ return (v.name || '').toLowerCase() === qn.toLowerCase() || v.id === qn; });
+    if (hit.length !== 1) { msg.textContent = 'Pick a QuickBooks vendor from the list, or leave it blank.'; return; }
+    qid = hit[0].id;
+  }
+  if (!confirm('Add ' + name + ' as ' + PAYEE.name + "'s loan-out company?\n\nCharges and invoices from " + name + ' will count as ' + PAYEE.name + "'s, shown “" + PAYEE.name + ' · via ' + name + '”.')) return;
+  btn.disabled = true; msg.textContent = 'Linking…';
+  try {
+    var r = await fetch(LOANOUT_ADD_URL, { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ company_name: name, qbo_vendor_id: qid }) });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok || !d.ok) { msg.textContent = d.error || ('Failed (' + r.status + ')'); btn.disabled = false; return; }
+    msg.textContent = 'Linked' + (d.charges_attributed ? ' · ' + d.charges_attributed + ' charge(s) now count as ' + PAYEE.name + "'s" : '')
+      + (d.flags_cleared && d.flags_cleared.length ? ' · ' + d.flags_cleared.length + ' payee flag(s) cleared' : '') + ' · refreshing…';
+    setTimeout(function(){ location.reload(); }, 900);
+  } catch (e) { msg.textContent = 'Error: ' + e.message; btn.disabled = false; }
+};
+window.payeeLoanoutRemove = async function(url, name){
+  if (!confirm('Remove ' + name + ' as ' + PAYEE.name + "'s loan-out? Its charges stop counting as " + PAYEE.name + "'s through the QuickBooks vendor; other attributions stay.")) return;
+  try {
+    var r = await fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok || !d.ok) { alert(d.error || ('Failed (' + r.status + ')')); return; }
+    location.reload();
+  } catch (e) { alert('Error: ' + e.message); }
+};
 
 /* Upload paperwork to this payee (Documents Phase 2): sequential, fail-open
    per file, then reload so the Documents-on-file card and the W-9 tile

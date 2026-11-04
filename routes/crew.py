@@ -239,6 +239,14 @@ def crew_get_json(cid):
     })
 
 
+def _loanout_count(cid):
+    try:
+        from models import PayeeLoanout
+        return PayeeLoanout.query.filter_by(payee_id=cid).count()
+    except Exception:
+        return 0
+
+
 def _crew_delete_blockers(cid):
     """Everything that still references a CrewMember and would either FK-fail
     the delete (Timecard, ProjectCrewMember) or silently orphan records
@@ -254,6 +262,9 @@ def _crew_delete_blockers(cid):
         "project roster row": ProjectCrewMember.query.filter_by(crew_member_id=cid).count(),
         "loan-out link":      (CrewMember.query.filter_by(loan_out_vendor_id=cid).count()
                                + ProjectCrewMember.query.filter_by(loan_out_vendor_id=cid).count()),
+        # Loan-out companies on this person (2026-11-04) — remove them on
+        # the Payee page first; deleting would drop the identity link.
+        "loan-out company":   _loanout_count(cid),
     }
     return {k: v for k, v in checks.items() if v}
 

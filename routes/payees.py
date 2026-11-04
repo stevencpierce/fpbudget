@@ -40,7 +40,7 @@ from app import (app, admin_hub_required, _log_activity, _line_budget_total, _RA
                  _ingest_document_bytes, _validate_upload_file)
 from models import (db, CrewMember, CrewAssignment, Budget, BudgetLine, ProjectSheet,
                     DocUpload, Transaction, VendorAlias, ScheduleDay, ProjectCrewMember,
-                    QBOVendor, QBOConnection)
+                    QBOVendor, QBOConnection, PayeeLoanout)
 import actuals
 from actuals import (paid_by_payee, w9_status_for, w9_fallback_dates, flag_1099,
                      qbo_matches_w9, threshold_for_year, reporting_threshold_rows,
@@ -247,6 +247,20 @@ def _year_arg(default=None):
 
 # ── directory ──────────────────────────────────────────────────────────────
 
+def _loanout_of(cm, idx=None):
+    """{id, name} of the person whose loan-out this Payee record IS (a
+    company record named like — or carrying the QuickBooks vendor of — a
+    PayeeLoanout row), else None."""
+    idx = idx if idx is not None else actuals.loanout_index()
+    if not idx:
+        return None
+    pid_ = idx.person_for((cm.name, cm.qbo_vendor_id)) or idx.person_for(cm.legal_name)
+    if not pid_ or pid_ == cm.id:
+        return None
+    return {"id": pid_, "name": idx.name_of(pid_),
+            "url": url_for('payee_page', payee_id=pid_)}
+
+
 def _directory_data(year):
     thr_rows = reporting_threshold_rows()
     threshold = threshold_for_year(year, thr_rows)
@@ -266,6 +280,9 @@ def _directory_data(year):
 
     rows, counts = [], {"all": 0, "person": 0, "loan_out": 0, "vendor": 0,
                         "needs_attention": 0}
+    # Loan-outs (2026-11-04): a person's companies show as "via …"; a
+    # company Payee that IS someone's loan-out names its person.
+    lo_idx = actuals.loanout_index()
     for m in members:
         kind = _kind_of(m)
         by_year = paid.get(m.id, {})
@@ -290,6 +307,8 @@ def _directory_data(year):
             "is_w2_employee": bool(m.is_w2_employee), "active": bool(m.active),
             "department": m.department or '',
             "pays_as": lov, "loan_out_vendor_id": m.loan_out_vendor_id,
+            "loanouts": [c["company_name"] for c in lo_idx.loanouts(m.id)],
+            "loanout_of": _loanout_of(m, lo_idx),
             "projects": len(projects.get(m.id, {})),
             "paid_year": this["total"], "paid_year_card": this["card"],
             "paid_year_non_card": this["non_card"],
@@ -360,8 +379,11 @@ def payees_report_csv():
                 "Address", f"Paid {year} card", f"Paid {year} non-card",
                 f"Paid {year} total", "Threshold", "W-9 status", "W-9 received",
                 "QuickBooks vendor id", "QuickBooks 1099", "1099 status",
-                "Needs attention"])
+                "Needs attention", f"Paid {year} via loan-out"])
     members = {m.id: m for m in CrewMember.query.all()}
+    # The company each payment went to (loan-outs, 2026-11-04): the person
+    # is the row; the companies QuickBooks will report are listed beside.
+    via = actuals.paid_via_loanouts(year=year)
     rows = [r for r in data["rows"] if abs(r["paid_year"]) > 0.004]
     rows.sort(key=lambda r: (-r["paid_year_non_card"], r["name"].lower()))
     for r in rows:
@@ -374,7 +396,8 @@ def payees_report_csv():
                     f"{r['paid_year']:.2f}", f"{data['threshold']:.2f}",
                     r["w9"]["status"], r["w9"]["date"] or '',
                     m.qbo_vendor_id or '', qbo1099, r["flag"]["label"],
-                    'yes' if r["needs_attention"] else 'no'])
+                    'yes' if r["needs_attention"] else 'no',
+                    "; ".join(f"{co} {amt:.2f}" for co, amt in sorted(via.get(r["id"], {}).items()))])
     out = buf.getvalue()
     return Response(out, mimetype="text/csv",
                     headers={"Content-Disposition":
@@ -629,6 +652,23 @@ def _payee_page_data(cm, year):
         pass
     qbo_row = QBOVendor.query.get(cm.qbo_vendor_id) if cm.qbo_vendor_id else None
 
+    # Loan-out companies (2026-11-04): what this person is paid through,
+    # each optionally tied to a QuickBooks vendor from the mirror, with
+    # what went through it in the chosen year (the 1099 view: QuickBooks
+    # reports the vendor the money went to).
+    lo_idx = actuals.loanout_index()
+    via_year = actuals.paid_via_loanouts([cm.id], year=year, index=lo_idx).get(cm.id, {})
+    via_all = actuals.paid_via_loanouts([cm.id], index=lo_idx).get(cm.id, {})
+    _qv_names = {v.qbo_vendor_id: v.display_name for v in QBOVendor.query.all()}
+    loanouts = [{"id": lo.id, "company_name": lo.company_name,
+                 "qbo_vendor_id": lo.qbo_vendor_id,
+                 "qbo_vendor_name": _qv_names.get(lo.qbo_vendor_id) if lo.qbo_vendor_id else None,
+                 "paid_year": via_year.get(lo.company_name, 0.0),
+                 "paid_all_time": via_all.get(lo.company_name, 0.0),
+                 "created_label": _fmt_date(lo.created_at) if lo.created_at else '',
+                 "remove_url": url_for('payee_loanout_remove', payee_id=cm.id, loanout_id=lo.id)}
+                for lo in PayeeLoanout.query.filter_by(payee_id=cm.id)
+                .order_by(func.lower(PayeeLoanout.company_name)).all()]
     lov = CrewMember.query.get(cm.loan_out_vendor_id) if cm.loan_out_vendor_id else None
     loan_outs_through = ([{"id": p.id, "name": p.name} for p in
                           CrewMember.query.filter_by(loan_out_vendor_id=cm.id)
@@ -685,6 +725,11 @@ def _payee_page_data(cm, year):
                            and bool(QBOConnection.query.first())),
             "owned_fields": sorted(QBO_OWNED_FIELDS) if cm.qbo_vendor_id else [],
         },
+        "loanouts": loanouts,
+        "loanout_of": _loanout_of(cm, lo_idx),
+        "loanout_add_url": url_for('payee_loanout_add', payee_id=cm.id),
+        "qbo_vendor_options": sorted(({"id": k, "name": v or k} for k, v in _qv_names.items()),
+                                     key=lambda o: (o["name"] or '').lower()),
         "vendor_names": aliases,
         "vendor_strings_unlinked": [{"canon": k, "raw": v} for k, v in sorted(raw_strings.items())],
         "edit_url": url_for('crew_edit', cid=cm.id),
@@ -954,3 +999,64 @@ def payee_vendor_name_unlink(payee_id, alias_id):
                   after={"vendor_alias_id": a.id, "raw": a.raw_canonical, "charges_cleared": n},
                   note=f"Vendor name “{a.clean_name}” unlinked from {cm.name}")
     return jsonify({"ok": True, "alias_id": a.id, "charges_cleared": n})
+
+
+# ── Loan-out companies (2026-11-04) ────────────────────────────────────────
+# Owner, Nov 4: "Danielle Miller is Two Foot Shuffle LLC … we want the
+# individuals, but then we still need the company attached somehow." A
+# person Payee lists the companies they are paid through, each optionally
+# tied to a vendor from the QuickBooks MIRROR (picked, never created or
+# changed in QuickBooks). The ONE identity rule over these rows is
+# actuals.same_payee. Linking clears every "receipt payee differs" flag the
+# link now explains (ledger.recheck_payee_flags) and re-attributes the
+# company's charges to the person (actuals.add_loanout).
+
+@app.route("/payees/<int:payee_id>/loanouts", methods=["POST"])
+@login_required
+@admin_hub_required
+def payee_loanout_add(payee_id):
+    import ledger
+    cm = CrewMember.query.get_or_404(payee_id)
+    src = request.get_json(silent=True) or request.form
+    if _kind_of(cm) != 'person':
+        return jsonify({"ok": False, "error": f"{cm.name} is a {KIND_LABELS[_kind_of(cm)].lower()}, "
+                                              "not a person — add the loan-out on the person's page."}), 400
+    try:
+        lo, created, n_attr = actuals.add_loanout(cm, src.get("company_name"),
+                                                  (src.get("qbo_vendor_id") or None),
+                                                  user_id=current_user.id)
+    except actuals.LoanoutError as e:
+        db.session.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 400
+    cleared = ledger.recheck_payee_flags(user_id=current_user.id)
+    db.session.commit()
+    _log_activity(action='create' if created else 'update', entity_type='payee_loanout', entity_id=lo.id,
+                  entity_label=actuals.payee_display(cm.name, lo.company_name)[:80],
+                  after={"payee_id": cm.id, "company_name": lo.company_name,
+                         "qbo_vendor_id": lo.qbo_vendor_id, "charges_attributed": n_attr,
+                         "flags_cleared": cleared},
+                  note=f"Loan-out {lo.company_name} linked to {cm.name}"
+                       + (f" (QuickBooks vendor {lo.qbo_vendor_id})" if lo.qbo_vendor_id else '')
+                       + (f"; {n_attr} charge(s) attributed" if n_attr else '')
+                       + (f"; {len(cleared)} payee-differs flag(s) cleared" if cleared else ''))
+    return jsonify({"ok": True, "loanout_id": lo.id, "created": created,
+                    "company_name": lo.company_name, "qbo_vendor_id": lo.qbo_vendor_id,
+                    "charges_attributed": n_attr, "flags_cleared": cleared})
+
+
+@app.route("/payees/<int:payee_id>/loanouts/<int:loanout_id>/remove", methods=["POST"])
+@login_required
+@admin_hub_required
+def payee_loanout_remove(payee_id, loanout_id):
+    cm = CrewMember.query.get_or_404(payee_id)
+    lo = PayeeLoanout.query.get_or_404(loanout_id)
+    if lo.payee_id != cm.id:
+        return jsonify({"ok": False, "error": "That loan-out belongs to another payee."}), 409
+    before = {"payee_id": cm.id, "company_name": lo.company_name, "qbo_vendor_id": lo.qbo_vendor_id}
+    n = actuals.remove_loanout(lo)
+    db.session.commit()
+    _log_activity(action='delete', entity_type='payee_loanout', entity_id=loanout_id,
+                  entity_label=actuals.payee_display(cm.name, before["company_name"])[:80], before=before,
+                  note=f"Loan-out {before['company_name']} removed from {cm.name}"
+                       + (f"; {n} QuickBooks charge(s) back to the vendor's own payee" if n else ''))
+    return jsonify({"ok": True, "removed": loanout_id, "charges_reattributed": n})

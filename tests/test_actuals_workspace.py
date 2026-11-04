@@ -589,3 +589,100 @@ def test_resizable_divider_persists_its_width(seeded):
     assert abs(page.locator(".aw-right").bounding_box()["width"] - after) < 4
     page.locator("#aw-divider").dblclick()
     assert abs(page.locator(".aw-right").bounding_box()["width"] - before) < 4
+
+
+# ═══ Compare duplicates in place + loan-outs (2026-11-04) ═════════════════
+
+def _dup_count(page: Page) -> int:
+    return int(page.locator('#aw-views [data-count="duplicates"]').inner_text().strip() or 0)
+
+
+def test_compare_from_the_unclaimed_chip_then_keep_one(ws):
+    """Unclaimed → the yellow Possible duplicate chip opens Compare in place;
+    keep one column (← / → then Enter, Enter) and the twin disappears, the
+    chip goes from the kept row and the Duplicates count drops — no reload."""
+    page, pid = ws
+    for note in ("first entry", "second entry"):
+        _post_json(page, f"/projects/{pid}/actuals/manual-expense", {
+            "vendor": "WS Twin C", "amount": 91.15, "txn_date": "2026-10-26",
+            "payment_method": "company_card", "note": note})
+    _reload_ws(page, pid, "unclaimed")
+    rows = page.locator("#aw-table .aw-row[data-tid]", has_text="WS Twin C")
+    expect(rows).to_have_count(2)
+    before = _dup_count(page)
+    chip = rows.first.locator('.flagcell > [data-act="open-dup"]')
+    expect(chip).to_have_text("Possible duplicate")
+    # hovering hides the chip under the row actions, which offer Compare
+    rows.first.hover()
+    rows.first.locator('.aw-rowacts [data-act="open-dup"]').click()
+    panel = page.locator("#fpc")
+    expect(panel).to_be_visible()
+    expect(panel.locator(".fpc-h")).to_have_count(2)
+    expect(panel.locator(".fpc-h.keeper")).to_have_count(1)
+    expect(panel.locator(".fpc-lab.diff", has_text="Memo")).to_have_count(1)
+    take_step_screenshot(page, "actuals-compare-panel")
+    # keyboard: → moves the column focus; Enter asks, Enter confirms
+    page.keyboard.press("ArrowRight")
+    focused = int(panel.locator(".fpc-h.focus").get_attribute("data-col"))
+    page.keyboard.press("Enter")
+    expect(panel.locator(".fpc-confirm")).to_have_count(1)
+    page.keyboard.press("Enter")
+    expect(panel).to_be_hidden()
+    page.wait_for_timeout(800)
+    rows = page.locator("#aw-table .aw-row[data-tid]", has_text="WS Twin C")
+    expect(rows).to_have_count(1)
+    expect(rows.first.locator('[data-act="open-dup"]')).to_have_count(0)
+    assert _dup_count(page) == before - 1
+    expect(page.locator("#aw-toasts .aw-toast", has_text="duplicate")).to_have_count(1)
+    # the Duplicates tab no longer lists the group
+    _open_view(page, "duplicates")
+    expect(page.locator("#aw-table .aw-dgrp[data-key]", has_text="WS Twin C")).to_have_count(0)
+    assert focused in (0, 1)
+
+
+def test_compare_keep_both_from_the_duplicates_view(ws):
+    page, pid = ws
+    for _ in range(2):
+        _post_json(page, f"/projects/{pid}/actuals/manual-expense", {
+            "vendor": "WS Twin D", "amount": 12.34, "txn_date": "2026-10-27",
+            "payment_method": "company_card", "note": "e2e twin"})
+    _reload_ws(page, pid, "duplicates")
+    g = page.locator("#aw-table .aw-dgrp[data-key]", has_text="WS Twin D")
+    expect(g).to_have_count(1)
+    g.locator('[data-act="dup-compare"]').click()
+    expect(page.locator("#fpc")).to_be_visible()
+    page.once("dialog", lambda d: d.accept())
+    page.locator('#fpc [data-fpc="keep-both"]').click()
+    expect(page.locator("#fpc")).to_be_hidden()
+    page.wait_for_timeout(600)
+    expect(page.locator("#aw-table .aw-dgrp[data-key]", has_text="WS Twin D")).to_have_count(0)
+    _reload_ws(page, pid, "unclaimed")
+    expect(page.locator("#aw-table .aw-row[data-tid]", has_text="WS Twin D").locator('[data-act="open-dup"]')).to_have_count(0)
+
+
+def test_same_person_links_the_loan_out_from_the_detail_window(seeded):
+    """Danielle Miller is Two Foot Shuffle LLC: the detail window's payee-
+    differs box offers Same person; after it the header reads
+    "Danielle Miller · via Two Foot Shuffle LLC"."""
+    page, pid = seeded
+    _reload_ws(page, pid, "unclaimed")
+    page.wait_for_selector("#aw-table .aw-row[data-tid]")
+    row = page.locator("#aw-table .aw-row[data-tid]", has_text="Two Foot Shuffle")
+    if row.count() == 0:
+        pytest.skip("The seeded Two Foot Shuffle LLC payment is not on this app.")
+    row.first.hover()
+    row.first.locator('[data-act="detail"]').click()
+    det = page.locator("#fpd")
+    expect(det.locator("#fpd-payee-differs")).to_be_visible()
+    btn = det.locator('[data-fpd="same-person"]')
+    if btn.count() == 0:
+        pytest.skip("Already settled on this app.")
+    expect(btn).to_contain_text("Two Foot Shuffle LLC is Danielle Miller's loan-out")
+    page.once("dialog", lambda d: d.accept())
+    btn.click()
+    expect(det.locator("#fpd-payee-differs")).to_have_count(0)
+    expect(det.locator(".fpd-kv")).to_contain_text("Danielle Miller · via Two Foot Shuffle LLC")
+    page.keyboard.press("Escape")
+    _reload_ws(page, pid)
+    expect(page.locator("#aw-table .aw-row[data-tid]", has_text="Two Foot Shuffle").first).to_contain_text(
+        "Danielle Miller · via Two Foot Shuffle LLC")

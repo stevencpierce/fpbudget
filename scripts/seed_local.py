@@ -10,7 +10,10 @@ What it seeds
     (unclaimed with a suggestion, duplicate pair, refund, cash paid by crew,
     assigned with / without backup, split, not-project), two unclaimed
     charges in the company pool shared with the second project, a charge
-    claimed by both projects (review list), and three receipts in the inbox
+    claimed by both projects (review list), three receipts in the inbox, and
+    Danielle Miller + her loan-out Two Foot Shuffle LLC behind a payee-differs
+    flag (the Same person offer), beside a You Choose / Sarah Caye one that
+    stays different
 
 Usage (from the repo root)
   python scripts/seed_local.py --port 5055            # seed + serve
@@ -272,6 +275,45 @@ def seed(db, models, budget_calc):
     txn("Rare Medium", 1650.00, "2026-10-15", source="qbo_sync", qbo_txn_id="1300000330",
         qbo_txn_type="BillPayment", account_code=4700,
         account_code_name="Post-Production Services", note="Color and conform")
+    # Loan-outs (2026-11-04): Danielle Miller invoices through Two Foot
+    # Shuffle LLC. QuickBooks paid "Danielle Miller" (BillPayment
+    # 1300000304, $4,800, Sep 21) and the invoice matched to it is from the
+    # company, so the ledger flagged it "receipt payee differs from
+    # QuickBooks" — the Same person offer links the loan-out and clears it.
+    # A second flag stays different: You Choose, LLC is not Sarah Caye
+    # Productions. Both QuickBooks vendors are in the mirror.
+    dm = CrewMember(name="Danielle Miller", department="Post", active=True, kind="person",
+                    qbo_vendor_id="301", email="danielle@example.com")
+    sc = CrewMember(name="Sarah Caye", department="Production", active=True, kind="person",
+                    qbo_vendor_id="311")
+    db.session.add_all([dm, sc])
+    for vid, nm, co in (("301", "Danielle Miller", None), ("302", "Two Foot Shuffle LLC", "Two Foot Shuffle LLC"),
+                        ("311", "Sarah Caye Productions", "Sarah Caye Productions"),
+                        ("312", "You Choose, LLC", "You Choose, LLC")):
+        db.session.add(models.QBOVendor(qbo_vendor_id=vid, display_name=nm, company_name=co,
+                                        vendor_1099=True, active=True, synced_at=now))
+    db.session.flush()
+    d6 = DocUpload(project_id=p.id, uploader_id=u.id, original_filename="TFS-invoice-0921.pdf",
+                   filed_filename="2026-09-19_INVOICE_Edit_Two-Foot-Shuffle-LLC_4800.00.pdf", status="filed",
+                   vendor="Two Foot Shuffle LLC", amount=Decimal("4800.00"), doc_date=date(2026, 9, 19),
+                   category="invoice", content_type="application/pdf")
+    d7 = DocUpload(project_id=p.id, uploader_id=u.id, original_filename="you-choose-inv-7.pdf",
+                   filed_filename="2026-09-24_INVOICE_Prod_You-Choose-LLC_1250.00.pdf", status="filed",
+                   vendor="You Choose, LLC", amount=Decimal("1250.00"), doc_date=date(2026, 9, 24),
+                   category="invoice", content_type="application/pdf")
+    db.session.add_all([d6, d7])
+    db.session.flush()
+    t30 = txn("Two Foot Shuffle LLC", 4800.00, "2026-09-21", source="reconciled", qbo_txn_id="1300000304",
+              qbo_txn_type="BillPayment", qbo_entity_ref="301", doc_upload_id=d6.id,
+              match_status="confirmed", payee_id=dm.id, payee_source="qbo",
+              claim_conflict=True, claim_conflict_reason="receipt payee differs from QuickBooks (Danielle Miller)")
+    db.session.add(ExpenseEvidence(transaction_id=t30.id, doc_upload_id=d6.id, kind="primary"))
+    t31 = txn("You Choose, LLC", 1250.00, "2026-09-26", source="reconciled", qbo_txn_id="1300000307",
+              qbo_txn_type="BillPayment", qbo_entity_ref="311", doc_upload_id=d7.id,
+              match_status="confirmed", payee_id=sc.id, payee_source="qbo",
+              claim_conflict=True,
+              claim_conflict_reason="receipt payee differs from QuickBooks (Sarah Caye Productions)")
+    db.session.add(ExpenseEvidence(transaction_id=t31.id, doc_upload_id=d7.id, kind="primary"))
     t11.doc_upload_id = d2.id
     db.session.add(ExpenseEvidence(transaction_id=t11.id, doc_upload_id=d2.id, kind="primary"))
     t6.doc_upload_id = d3.id

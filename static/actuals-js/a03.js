@@ -520,7 +520,7 @@
       items.push({ act: 'attach', label: 'Attach receipt' });
       items.push({ act: 'add-reason', label: t.no_charge_reason ? 'Edit the missing-backup reason' : 'Add missing-backup reason' });
     }
-    if (t.dup_group) { items.push({ hr: true }); items.push({ act: 'open-dup', label: 'Open the duplicate group', key: t.dup_group }); }
+    if (t.dup_group) { items.push({ hr: true }); items.push({ act: 'open-dup', label: 'Compare the duplicates', key: t.dup_group, tid: t.id }); }
     items.push({ hr: true });
     items.push({ act: 'not-project', label: 'Not a project expense', danger: true });
     if (AJ.canSync && t.qbo_txn_id && !t.pooled) items.push({ act: 'release-pool', label: 'Release to unclaimed (company pool)', danger: true });

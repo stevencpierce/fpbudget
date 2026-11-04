@@ -3381,23 +3381,33 @@ def match_facts(obj):
         if date:
             break
     card = (g('card_last4') or g('card') or '')
+    # The QuickBooks vendor id behind the charge (EntityRef) — lets the
+    # vendor score see a loan-out link (actuals.same_payee, 2026-11-04).
+    ref = g('qbo_entity_ref') or g('entity_ref')
     return {"amount": amt, "date": date, "vendor": (g('vendor') or ''),
-            "card": str(card).strip()}
+            "card": str(card).strip(), "ref": (str(ref).strip() if ref else None)}
 
 
 def _vendor_tokens(key):
     return {t for t in (key or '').split() if len(t) >= 3}
 
 
-def vendor_score(a, b):
-    """1.0 same vendor_match_key · 0.6 share a word (or one contains the
-    other) · 0.2 otherwise (unknown vendors score 0.2 too, never 0)."""
+def vendor_score(a, b, ref_a=None, ref_b=None):
+    """1.0 same vendor_match_key · 1.0 same payee through a loan-out
+    (actuals.same_payee: "Two Foot Shuffle LLC" on the invoice, "Danielle
+    Miller" on the QuickBooks payment) · 0.6 share a distinctive word (or
+    one contains the other; LLC / Inc / Productions never count) · 0.2
+    otherwise (unknown vendors score 0.2 too, never 0)."""
     ka, kb = vendor_match_key(a), vendor_match_key(b)
     if not ka or not kb:
         return 0.2, 'vendor unknown'
     if ka == kb:
         return 1.0, 'same vendor'
-    if ka in kb or kb in ka or (_vendor_tokens(ka) & _vendor_tokens(kb)):
+    if same_payee((a, ref_a), (b, ref_b)):
+        return 1.0, 'same payee (loan-out)'
+    ta = {t for t in payee_tokens(a) if len(t) >= 3}
+    tb = {t for t in payee_tokens(b) if len(t) >= 3}
+    if ka in kb or kb in ka or (ta & tb):
         return 0.6, 'vendor words overlap'
     return 0.2, 'different vendor'
 
@@ -3447,7 +3457,7 @@ def score_match(charge, receipt):
     else:
         d_s = 0.0
         reasons.append('no date')
-    v_s, v_why = vendor_score(c["vendor"], r["vendor"])
+    v_s, v_why = vendor_score(c["vendor"], r["vendor"], c.get("ref"), r.get("ref"))
     reasons.append(v_why)
     bonus = 0.0
     if c["card"] and r["card"] and c["card"] == r["card"]:
@@ -3706,7 +3716,8 @@ def is_duplicate_twin(candidate, other, day_window=None):
     payee decides: different payees are NEVER twins, whatever the vendor
     text or card says (Joel Knutson vs Ryan Mauskopf, $4,500 a day apart,
     where a receipt had renamed one row); the same payee counts as the
-    same vendor. Deleting a 'duplicate' bank row is only allowed when such
+    same vendor — by actuals.same_payee, so a person and their loan-out
+    company are one payee (2026-11-04). Deleting a 'duplicate' bank row is only allowed when such
     a twin survives; without one the charge would simply vanish from the
     ledger."""
     if other is None or candidate is None:
@@ -3735,12 +3746,17 @@ def is_duplicate_twin(candidate, other, day_window=None):
     e1 = str(getattr(candidate, 'qbo_entity_ref', None) or '').strip()
     e2 = str(getattr(other, 'qbo_entity_ref', None) or '').strip()
     if e1 and e2:
-        return e1 == e2
+        # Two QuickBooks payees: the ONE identity rule decides (a person's
+        # vendor and their loan-out's vendor are the same payee).
+        return same_payee(('', e1), ('', e2))
     v1 = vendor_match_key(getattr(candidate, 'vendor', None))
     v2 = vendor_match_key(getattr(other, 'vendor', None))
     c1 = (getattr(candidate, 'card_last4', None) or '').strip()
     c2 = (getattr(other, 'card_last4', None) or '').strip()
     if v1 and v1 == v2:
+        return True
+    if v1 and v2 and same_payee((getattr(candidate, 'vendor', None), e1 or None),
+                                (getattr(other, 'vendor', None), e2 or None)):
         return True
     if c1 and c1 == c2:
         return True
@@ -4471,6 +4487,8 @@ def resolve_payee_candidates(txn, doc_owner_by_id, line_owners_by_id,
 def payee_for_vendor_string(project_id, vendor):
     """The Payee a vendor string pays, for CSV-imported and manual rows:
     VendorAlias.payee_id (this project's row first, then the global row),
+    else a person's loan-out company (an invoice from "Two Foot Shuffle
+    LLC" pays Danielle Miller — actuals.loanout_person_for, 2026-11-04),
     else an exact case-insensitive match of the string to ONE payee's
     name / legal name / company. Returns a crew_member_id or None. Never
     fuzzy — a near miss attributes nobody."""
@@ -4480,6 +4498,9 @@ def payee_for_vendor_string(project_id, vendor):
     try:
         from models import VendorAlias, CrewMember
         cv = canon_vendor(vendor)
+        _lo = loanout_person_for(vendor)
+        if _lo:
+            return _lo
         if cv:
             row = (VendorAlias.query
                    .filter(VendorAlias.raw_canonical == cv,
@@ -4587,3 +4608,563 @@ def unlink_vendor_alias(alias_row):
             if canon_vendor(t.vendor) == alias_row.raw_canonical and set_txn_payee(t, None, 'alias'):
                 n += 1
     return n
+
+
+# ── Loan-out companies + the ONE payee identity rule (2026-11-04) ─────────
+# Owner, Nov 4: "Danielle Miller is Two Foot Shuffle LLC. So we need to find
+# a way to match these loan-outs with the people, because we want the
+# individuals, but then we still need the company attached somehow." And:
+# "You Choose, LLC is not Sarah Caye Productions — those are different."
+#
+# A person Payee carries zero or more loan-out companies (models.PayeeLoanout:
+# a company NAME, optionally linked to a QuickBooks vendor from the mirror).
+# same_payee(a, b) is the ONE rule for "these two names / QuickBooks refs pay
+# the same payee": the ledger's payee-differs flag, the matching engine's
+# vendor score, the duplicate twin check, document → payee attribution and
+# QuickBooks EntityRef attribution all ask it. Nothing else reads the table.
+
+# Legal-entity suffixes dropped from the END of a name for identity
+# ("Two Foot Shuffle, LLC" ≡ "Two Foot Shuffle LLC" ≡ "Two Foot Shuffle").
+ENTITY_SUFFIX_WORDS = frozenset({'llc', 'inc', 'incorporated', 'ltd', 'limited', 'corp',
+                                 'corporation', 'co', 'company', 'pllc', 'llp', 'lp', 'pc'})
+# Words that never make two different names "share a word" — every loan-out
+# is an LLC and half the vendors are Productions (You Choose LLC is not Two
+# Foot Shuffle LLC just because both end in LLC).
+GENERIC_NAME_WORDS = frozenset(ENTITY_SUFFIX_WORDS | {
+    'the', 'and', 'of', 'productions', 'production', 'prods', 'studio', 'studios', 'media',
+    'group', 'services', 'service', 'films', 'film', 'pictures', 'entertainment',
+    'creative', 'agency', 'enterprises', 'holdings', 'llc.'})
+
+
+def payee_key(v):
+    """The identity key of a payee / company name: vendor_match_key with
+    trailing legal-entity suffixes removed ('Two Foot Shuffle, L.L.C.' →
+    'two foot shuffle'). '' for an empty name. Pure."""
+    parts = vendor_match_key(v).split()
+    while len(parts) >= 4 and parts[-3:] == ['l', 'l', 'c']:
+        parts = parts[:-3]
+    while len(parts) > 1 and parts[-1] in ENTITY_SUFFIX_WORDS:
+        parts.pop()
+    return ' '.join(parts)
+
+
+def payee_tokens(v, min_len=1):
+    """The distinctive words of a name: vendor_match_key words minus the
+    generic ones (LLC, Inc, Productions, Studios …). Falls back to every
+    word when nothing distinctive is left. Pure."""
+    words = [t for t in vendor_match_key(v).replace('-', ' ').split() if len(t) >= min_len]
+    keep = {t for t in words if t not in GENERIC_NAME_WORDS}
+    return keep or set(words)
+
+
+def _payee_parts(x):
+    """(name, qbo_vendor_id) from a name string, a (name, ref) pair, a dict
+    ({name|vendor|company_name, qbo_vendor_id|ref|qbo_entity_ref|entity_ref})
+    or a Transaction-like object (vendor, qbo_entity_ref)."""
+    if x is None:
+        return '', None
+    if isinstance(x, str):
+        return x, None
+    if isinstance(x, (tuple, list)):
+        n = x[0] if len(x) > 0 else ''
+        r = x[1] if len(x) > 1 else None
+        return (n or ''), (str(r).strip() if r not in (None, '') else None)
+    g = (x.get if isinstance(x, dict) else (lambda k, d=None: getattr(x, k, d)))
+    n = g('name', None) or g('vendor', None) or g('company_name', None) or ''
+    r = (g('qbo_vendor_id', None) or g('ref', None) or g('qbo_entity_ref', None)
+         or g('entity_ref', None))
+    return str(n or ''), (str(r).strip() if r not in (None, '') else None)
+
+
+class LoanoutIndex:
+    """Who a name or a QuickBooks vendor id IS, for the people who have
+    loan-out companies. Built by build_loanout_index (pure) or read from
+    the database by loanout_index(). A key two people share is ambiguous
+    and maps to nobody — never guessed.
+
+      person_for(x)          → person payee id, or None
+      company_for(pid, x)    → the loan-out company name of person `pid`
+                               that `x` names, or None
+      loanouts(pid)          → [{id, company_name, qbo_vendor_id, key}]
+      name_of(pid)           → the person's name
+    """
+    def __init__(self):
+        self.by_key = {}
+        self.by_ref = {}
+        self.names = {}
+        self.companies = {}
+
+    def _put(self, table, k, pid):
+        if not k:
+            return
+        if k in table and table[k] != pid:
+            table[k] = None
+        else:
+            table.setdefault(k, pid)
+
+    def person_for(self, x):
+        name, ref = _payee_parts(x)
+        if ref and self.by_ref.get(ref):
+            return self.by_ref[ref]
+        k = payee_key(name)
+        return self.by_key.get(k) if k else None
+
+    def company_for(self, pid, *xs):
+        for x in xs:
+            name, ref = _payee_parts(x)
+            k = payee_key(name)
+            for c in self.companies.get(pid, ()):
+                if (ref and c.get('qbo_vendor_id') and str(c['qbo_vendor_id']) == ref) or (k and c['key'] == k):
+                    return c['company_name']
+        return None
+
+    def loanouts(self, pid):
+        return list(self.companies.get(pid, ()))
+
+    def name_of(self, pid):
+        return self.names.get(pid)
+
+    def __bool__(self):
+        return bool(self.companies)
+
+
+def build_loanout_index(people, loanouts):
+    """Pure. `people`: objects / dicts with id, name, legal_name,
+    qbo_vendor_id (the persons who own a loan-out). `loanouts`: objects /
+    dicts with id, payee_id, company_name, qbo_vendor_id. Only people who
+    own at least one loan-out are indexed (identity beyond plain name
+    equality only exists through a loan-out)."""
+    g = lambda o, k: (o.get(k) if isinstance(o, dict) else getattr(o, k, None))
+    idx = LoanoutIndex()
+    owners = set()
+    for lo in loanouts or ():
+        pid = g(lo, 'payee_id')
+        if not pid or not (g(lo, 'company_name') or '').strip():
+            continue
+        owners.add(pid)
+        k = payee_key(g(lo, 'company_name'))
+        ref = str(g(lo, 'qbo_vendor_id')).strip() if g(lo, 'qbo_vendor_id') else None
+        idx.companies.setdefault(pid, []).append({
+            "id": g(lo, 'id'), "company_name": g(lo, 'company_name').strip(),
+            "qbo_vendor_id": ref, "key": k})
+        idx._put(idx.by_key, k, pid)
+        if ref:
+            idx._put(idx.by_ref, ref, pid)
+    for p in people or ():
+        pid = g(p, 'id')
+        if pid not in owners:
+            continue
+        idx.names[pid] = g(p, 'name')
+        for n in (g(p, 'name'), g(p, 'legal_name')):
+            idx._put(idx.by_key, payee_key(n), pid)
+        if g(p, 'qbo_vendor_id'):
+            idx._put(idx.by_ref, str(g(p, 'qbo_vendor_id')).strip(), pid)
+    for pid in idx.companies:
+        idx.companies[pid].sort(key=lambda c: (c['company_name'] or '').lower())
+    return idx
+
+
+EMPTY_LOANOUT_INDEX = LoanoutIndex()
+_LOANOUT_OVERRIDE = []
+
+
+class use_loanout_index:
+    """Context manager for pure tests and batch jobs: every same_payee /
+    score_match / is_duplicate_twin call inside reads `idx`."""
+    def __init__(self, idx):
+        self.idx = idx
+
+    def __enter__(self):
+        _LOANOUT_OVERRIDE.append(self.idx)
+        return self.idx
+
+    def __exit__(self, *a):
+        _LOANOUT_OVERRIDE.pop()
+        return False
+
+
+def _load_loanout_index():
+    from models import PayeeLoanout, CrewMember
+    rows = PayeeLoanout.query.all()
+    if not rows:
+        return LoanoutIndex()
+    ids = {r.payee_id for r in rows}
+    people = CrewMember.query.filter(CrewMember.id.in_(list(ids))).all()
+    return build_loanout_index(people, rows)
+
+
+def loanout_index(refresh=False):
+    """The loan-out index for this request (cached on flask.g; rebuilt by
+    invalidate_loanout_index after a write). Outside an app context (pure
+    unit tests) it is empty unless use_loanout_index set one. Fail-open:
+    an unreadable table is an empty index, never an error."""
+    if _LOANOUT_OVERRIDE:
+        return _LOANOUT_OVERRIDE[-1]
+    try:
+        from flask import g, has_app_context
+    except Exception:
+        return EMPTY_LOANOUT_INDEX
+    if not has_app_context():
+        return EMPTY_LOANOUT_INDEX
+    if not refresh:
+        cached = g.get('_fp_loanout_index')
+        if cached is not None:
+            return cached
+    try:
+        idx = _load_loanout_index()
+    except Exception as e:
+        log.warning("[loanout] index unavailable (treated as empty): %s", e)
+        idx = LoanoutIndex()
+    g._fp_loanout_index = idx
+    return idx
+
+
+def invalidate_loanout_index():
+    try:
+        from flask import g, has_app_context
+        if has_app_context():
+            g.pop('_fp_loanout_index', None)
+    except Exception:
+        pass
+
+
+def same_payee(a, b, index=None):
+    """THE rule (2026-11-04): do `a` and `b` pay the same payee? Each side
+    is a name, a (name, qbo_vendor_id) pair, a dict or a Transaction-like
+    object. True when
+      * both carry the same QuickBooks vendor id, or
+      * the names are equal by vendor_match_key (or by payee_key — the same
+        name with / without "LLC"), or
+      * one is a loan-out of the other's person, or both are loan-outs of
+        the same person (actuals.loanout_index — PayeeLoanout rows).
+    Two different names with no loan-out link are different payees, even
+    when both end in LLC (You Choose, LLC ≠ Sarah Caye Productions)."""
+    na, ra = _payee_parts(a)
+    nb, rb = _payee_parts(b)
+    if ra and rb and ra == rb:
+        return True
+    ka, kb = vendor_match_key(na), vendor_match_key(nb)
+    if ka and kb and (ka == kb or payee_key(na) == payee_key(nb)):
+        return True
+    idx = index if index is not None else loanout_index()
+    if not idx:
+        return False
+    pa, pb = idx.person_for(a), idx.person_for(b)
+    return pa is not None and pa == pb
+
+
+def loanout_person_for(x, index=None):
+    """The person a name / QuickBooks vendor id is a loan-out of (or the
+    person themself when they own a loan-out), else None."""
+    idx = index if index is not None else loanout_index()
+    return idx.person_for(x) if idx else None
+
+
+def loanout_via(payee_id, *names_or_refs, index=None):
+    """The loan-out company of `payee_id` that any of `names_or_refs` (the
+    charge's vendor, its QuickBooks EntityRef, the document's vendor)
+    names — "Two Foot Shuffle LLC" for Danielle Miller's $4,800 — or None
+    when the money went to the person directly."""
+    if not payee_id:
+        return None
+    idx = index if index is not None else loanout_index()
+    if not idx:
+        return None
+    return idx.company_for(payee_id, *names_or_refs)
+
+
+def payee_display(name, via=None):
+    """'Danielle Miller · via Two Foot Shuffle LLC' — the ONE display form."""
+    if not name:
+        return via or ''
+    return f"{name} · via {via}" if via else name
+
+
+def payee_display_for_txn(txn, payee_name, doc_vendor=None, index=None):
+    """{"name", "via", "label"} for a charge's attributed payee."""
+    pid = getattr(txn, 'payee_id', None)
+    via = loanout_via(pid, (getattr(txn, 'vendor', None), getattr(txn, 'qbo_entity_ref', None)),
+                      doc_vendor, index=index) if pid else None
+    return {"id": pid, "name": payee_name, "via": via, "label": payee_display(payee_name, via)}
+
+
+def loanout_proposal(qbo_payee, qbo_ref, other_name, people=None, qbo_vendors=None):
+    """"Same person — Two Foot Shuffle LLC is Danielle Miller's loan-out":
+    which of the two names is the person and which the company. Pure over
+    `people` (id, name, legal_name, kind, is_vendor, qbo_vendor_id) and
+    `qbo_vendors` (qbo_vendor_id, display_name, company_name). Returns
+    {person_id, person_name, company_name, qbo_vendor_id} or None when
+    neither name is a person Payee.
+
+    The QuickBooks payee wins as the person when a person Payee carries it
+    (by vendor id, else by name); else the other name, and then the
+    QuickBooks vendor IS the company (its id is linked)."""
+    g = lambda o, k: (o.get(k) if isinstance(o, dict) else getattr(o, k, None))
+
+    def _is_person(p):
+        kind = g(p, 'kind') or ('vendor' if g(p, 'is_vendor') else 'person')
+        return kind == 'person'
+
+    def _person_named(n, ref=None):
+        if ref:
+            for p in people or ():
+                if g(p, 'qbo_vendor_id') and str(g(p, 'qbo_vendor_id')) == str(ref) and _is_person(p):
+                    return p
+        k = payee_key(n)
+        if not k:
+            return None
+        hits = [p for p in (people or ()) if _is_person(p)
+                and k in (payee_key(g(p, 'name')), payee_key(g(p, 'legal_name')))]
+        return hits[0] if len(hits) == 1 else None
+
+    def _qbo_vendor_named(n):
+        k = payee_key(n)
+        if not k:
+            return None
+        hits = [v for v in (qbo_vendors or ())
+                if k in (payee_key(g(v, 'display_name')), payee_key(g(v, 'company_name')))]
+        return str(g(hits[0], 'qbo_vendor_id')) if len(hits) == 1 else None
+
+    if not (qbo_payee or '').strip() or not (other_name or '').strip():
+        return None
+    p = _person_named(qbo_payee, qbo_ref)
+    if p is not None and not same_payee(other_name, g(p, 'name'), index=LoanoutIndex()):
+        return {"person_id": g(p, 'id'), "person_name": g(p, 'name'),
+                "company_name": other_name.strip(), "qbo_vendor_id": _qbo_vendor_named(other_name)}
+    p = _person_named(other_name)
+    if p is not None:
+        return {"person_id": g(p, 'id'), "person_name": g(p, 'name'),
+                "company_name": qbo_payee.strip(),
+                "qbo_vendor_id": (str(qbo_ref) if qbo_ref else _qbo_vendor_named(qbo_payee))}
+    return None
+
+
+class LoanoutError(ValueError):
+    pass
+
+
+def add_loanout(person, company_name, qbo_vendor_id=None, user_id=None):
+    """Link a loan-out company to a person Payee. Does NOT commit.
+    Refuses (LoanoutError): an empty name, the person's own name, a company
+    that is already another person's loan-out, a QuickBooks vendor that is
+    not in the mirror or is another person's. Already linked → the existing
+    row, created=False (a QuickBooks vendor id fills in when it was blank).
+
+    Then re-attributes (Transaction.payee_id → the person): synced charges
+    whose EntityRef is the company's QuickBooks vendor (replacing an earlier
+    'qbo' value — the company's own record), and charges whose vendor string
+    names the company with no payee yet or an 'alias' / 'qbo' value on the
+    company's own Payee record ('alias'). A person's manual pick and a
+    document owner are never replaced. Returns (row, created, n_attributed)."""
+    from models import PayeeLoanout, CrewMember, QBOVendor
+    name = (company_name or '').strip()[:200]
+    key = vendor_match_key(name)
+    if not key:
+        raise LoanoutError("Type the loan-out company's name.")
+    if payee_key(name) in {payee_key(person.name), payee_key(getattr(person, 'legal_name', None))}:
+        raise LoanoutError(f"{name} is {person.name}'s own name, not a loan-out company.")
+    ref = str(qbo_vendor_id).strip() if qbo_vendor_id not in (None, '') else None
+    if ref and QBOVendor.query.get(ref) is None:
+        raise LoanoutError("That QuickBooks vendor is not in the mirror — sync vendors first.")
+    pk = payee_key(name)
+    mine = None
+    for e in PayeeLoanout.query.all():
+        same_name = payee_key(e.company_name) == pk
+        same_ref = bool(ref and e.qbo_vendor_id and str(e.qbo_vendor_id) == ref)
+        if not (same_name or same_ref):
+            continue
+        if e.payee_id != person.id:
+            other = CrewMember.query.get(e.payee_id)
+            raise LoanoutError(f"{e.company_name} is already {other.name if other else 'another person'}'s "
+                               f"loan-out. Remove it there first.")
+        if same_name:
+            mine = e
+    created = False
+    if mine is None:
+        mine = PayeeLoanout(payee_id=person.id, company_name=name, vendor_match_key=key,
+                            qbo_vendor_id=ref, created_at=datetime.utcnow(), created_by=user_id)
+        db.session.add(mine)
+        created = True
+    elif ref and not mine.qbo_vendor_id:
+        mine.qbo_vendor_id = ref
+    db.session.flush()
+    invalidate_loanout_index()
+    return mine, created, _attribute_loanout(person.id, mine)
+
+
+def _attribute_loanout(person_id, lo):
+    """See add_loanout. Does NOT commit."""
+    from models import CrewMember
+    n = 0
+    if lo.qbo_vendor_id:
+        for t in Transaction.query.filter(Transaction.qbo_entity_ref == str(lo.qbo_vendor_id)).all():
+            if set_txn_payee(t, person_id, 'qbo', replace=('qbo',)):
+                n += 1
+    pk = payee_key(lo.company_name)
+    company_ids = set()
+    for cm in CrewMember.query.filter(CrewMember.id != person_id).all():
+        if pk in (payee_key(cm.name), payee_key(cm.legal_name)) or (
+                lo.qbo_vendor_id and cm.qbo_vendor_id and str(cm.qbo_vendor_id) == str(lo.qbo_vendor_id)):
+            company_ids.add(cm.id)
+    first = (pk.split() or [''])[0]
+    if first:
+        from sqlalchemy import func as _f
+        q = Transaction.query.filter(Transaction.vendor.isnot(None),
+                                     _f.lower(Transaction.vendor).like(f"%{first}%"))
+        for t in q.all():
+            if payee_key(t.vendor) != pk:
+                continue
+            if t.payee_id in company_ids and t.payee_source in ('alias', 'qbo'):
+                t.payee_id, t.payee_source = person_id, 'alias'
+                n += 1
+            elif set_txn_payee(t, person_id, 'alias', replace=()):
+                n += 1
+    return n
+
+
+def remove_loanout(lo):
+    """Delete a loan-out link. Charges the link attributed through the
+    company's QuickBooks vendor go back to that vendor's own Payee (or to
+    nobody). Does NOT commit. Returns the number of rows re-attributed."""
+    from models import CrewMember
+    n = 0
+    if lo.qbo_vendor_id:
+        direct = CrewMember.query.filter(CrewMember.qbo_vendor_id == str(lo.qbo_vendor_id)).first()
+        for t in Transaction.query.filter(Transaction.qbo_entity_ref == str(lo.qbo_vendor_id),
+                                          Transaction.payee_id == lo.payee_id,
+                                          Transaction.payee_source == 'qbo').all():
+            t.payee_id = direct.id if direct is not None else None
+            t.payee_source = 'qbo' if direct is not None else None
+            n += 1
+    db.session.delete(lo)
+    db.session.flush()
+    invalidate_loanout_index()
+    return n
+
+
+def paid_via_loanouts(payee_ids=None, year=None, index=None):
+    """{person_id: {company_name: amount}} — what each person with a
+    loan-out was paid THROUGH each company (the 1099 view: QuickBooks
+    reports the vendor the money went to). Rows: counts_as_spend
+    transactions attributed to the person (payee_id) whose vendor string,
+    QuickBooks EntityRef or document vendor names one of the person's
+    loan-outs; signed. Money paid to the person directly is not listed."""
+    idx = index if index is not None else loanout_index()
+    owners = [p for p in idx.companies] if idx else []
+    if payee_ids is not None:
+        owners = [p for p in owners if p in set(payee_ids)]
+    if not owners:
+        return {}
+    q = Transaction.query.filter(counts_as_spend(), Transaction.payee_id.in_(owners))
+    if year is not None:
+        q = q.filter(Transaction.txn_date.like(f"{int(year)}-%"))
+    rows = q.all()
+    doc_vendor = {}
+    dids = {t.doc_upload_id for t in rows if t.doc_upload_id}
+    if dids:
+        doc_vendor = {d.id: d.vendor for d in DocUpload.query.filter(DocUpload.id.in_(list(dids))).all()}
+    out = {}
+    for t in rows:
+        via = idx.company_for(t.payee_id, (t.vendor, t.qbo_entity_ref), doc_vendor.get(t.doc_upload_id))
+        if not via:
+            continue
+        b = out.setdefault(t.payee_id, {})
+        b[via] = round(b.get(via, 0.0) + signed_amount_value(t.amount, t.is_expense), 2)
+    return out
+
+
+# ── Compare duplicates in place (2026-11-04) ──────────────────────────────
+# Owner, Nov 4: "when I go to Actuals → Unclaimed I see 'possible
+# duplicate'. Great. Can I compare them? … compare and settle this right in
+# this view, and then apply that other places wherever the duplicates go."
+# The Compare panel (static/dup-compare.js) reads ONE payload built from the
+# ONE duplicate rule (find_duplicate_groups / pick_keeper); settling goes
+# through the existing safe paths (Keep both = TransactionDupDismissal,
+# Keep this one = merge_duplicate_into per extra, Not project =
+# mark_not_project).
+
+COMPARE_FIELDS = (
+    ('source',   'Source'),
+    ('date',     'Date'),
+    ('amount',   'Amount'),
+    ('payee',    'Vendor · payee'),
+    ('card',     'Card / account'),
+    ('qbo',      'QuickBooks'),
+    ('memo',     'Memo'),
+    ('coding',   'Line · section · split'),
+    ('backup',   'Backup'),
+    ('match',    'Match'),
+    ('imported', 'Imported'),
+)
+
+
+def _cmp_key(field, row):
+    v = row.get(field)
+    if field == 'amount':
+        try:
+            return _cents(v)
+        except ValueError:
+            return None
+    if field == 'qbo':
+        return (v or {}).get('type') if isinstance(v, dict) else v
+    if field == 'backup':
+        return (v or {}).get('doc_id') if isinstance(v, dict) else v
+    if field == 'imported':
+        return ((v or {}).get('at') or '')[:10] if isinstance(v, dict) else v
+    if field == 'payee':
+        return None   # decided by same_payee below
+    if isinstance(v, str):
+        return v.strip().lower()
+    return v
+
+
+def compare_columns(rows, keeper_id, keeper_reason, index=None):
+    """Pure. `rows`: one dict per member of a duplicate group (route
+    _dup_compare_row) carrying the display values for COMPARE_FIELDS plus
+    `payee_ref` (vendor, QuickBooks vendor id) and `delete_mode`. Returns
+
+      {"fields": [{key, label}],
+       "columns": [row + is_keeper + keep_effect], keeper first,
+       "diff": [field keys whose values differ across the columns],
+       "same_payee": bool, "payee_note": str|None,
+       "keeper_id", "keeper_reason"}
+
+    The payee row differs only when the members are NOT the same payee by
+    actuals.same_payee (a person and their loan-out are the same payee —
+    noted, not highlighted). QuickBooks ids always differ in a group (one
+    id is one row), so the QuickBooks row compares the record TYPE."""
+    cols = sorted((dict(r) for r in rows), key=lambda r: (r.get('id') != keeper_id, r.get('date') or '', r.get('id') or 0))
+    diff = []
+    for key, _label in COMPARE_FIELDS:
+        if key == 'payee':
+            continue
+        vals = {repr(_cmp_key(key, r)) for r in cols}
+        if len(vals) > 1:
+            diff.append(key)
+    refs = [r.get('payee_ref') or (r.get('vendor'), None) for r in cols]
+    same = all(same_payee(refs[0], x, index=index) for x in refs[1:]) if refs else True
+    keys = {vendor_match_key(x[0] if isinstance(x, (tuple, list)) else x) for x in refs}
+    note = None
+    if not same:
+        diff.insert(3 if len(diff) >= 3 else len(diff), 'payee')
+        note = 'Different payees — likely two real charges.'
+    elif len(keys) > 1:
+        note = 'Same payee under different names (a person and their loan-out, or a renamed vendor).'
+    order = [k for k, _ in COMPARE_FIELDS]
+    diff.sort(key=order.index)
+    for c in cols:
+        others = [o for o in cols if o is not c]
+        parts = []
+        for o in others:
+            if o.get('delete_mode') == 'merge':
+                carry = [w for w, has in (('coding', o.get('coding')), ('receipt', o.get('backup')),
+                                          ('notes', o.get('memo'))) if has]
+                parts.append(f"#{o.get('id')} is removed after its {', '.join(carry)} move{'s' if len(carry) == 1 else ''} here"
+                             if carry else f"#{o.get('id')} is removed (nothing on it to move)")
+            else:
+                parts.append(f"#{o.get('id')} is deleted (nothing on it)")
+        c['is_keeper'] = (c.get('id') == keeper_id)
+        c['keep_effect'] = '; '.join(parts)
+    return {"fields": [{"key": k, "label": lbl} for k, lbl in COMPARE_FIELDS],
+            "columns": cols, "diff": diff, "same_payee": same, "payee_note": note,
+            "keeper_id": keeper_id, "keeper_reason": keeper_reason}

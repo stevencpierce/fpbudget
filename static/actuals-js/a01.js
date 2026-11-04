@@ -149,7 +149,7 @@
     if (S.q) {
       const q = S.q.toLowerCase();
       const hay = ((t.vendor || '') + ' ' + (t.memo || '') + ' ' + (t.name || '') + ' ' + (t.card_last4 || '') + ' ' +
-                   ((t.assigned_line || {}).label || '') + ' ' + (t.payee || '')).toLowerCase();
+                   ((t.assigned_line || {}).label || '') + ' ' + (t.payee || '') + ' ' + (t.payee_name || '') + ' ' + (t.payee_via || '')).toLowerCase();
       const amt = t.amount != null ? Math.abs(Number(t.amount)).toFixed(2) : '';
       if (!hay.includes(q) && !amt.includes(q.replace(/[$,]/g, ''))) return false;
     }
@@ -248,7 +248,7 @@
     if (yel.includes('counted_twice')) return `<button type="button" class="aw-flag yellow linky" data-act="detail" data-tid="${t.id}" title="Its invoice is counted on its own as well — open to attach it to the charge">Counted twice</button>`;
     // A possible duplicate outranks the red flags here: the person should
     // settle whether it is one charge or two before coding it.
-    if (yel.includes('possible_duplicate') && t.dup_group) return `<button type="button" class="aw-flag yellow linky" data-act="open-dup" data-key="${esc(t.dup_group)}" title="Open this duplicate group">Possible duplicate</button>`;
+    if (yel.includes('possible_duplicate') && t.dup_group) return `<button type="button" class="aw-flag yellow linky" data-act="open-dup" data-key="${esc(t.dup_group)}" data-tid="${t.id}" title="Compare and settle this duplicate here (D)">Possible duplicate</button>`;
     if (red.includes('no_line')) return '<span class="aw-flag red">No line</span>';
     if (red.includes('split_mismatch')) return '<span class="aw-flag red">Split does not sum</span>';
     if (red.includes('needs_backup')) return '<span class="aw-flag red">Needs backup</span>';
@@ -289,7 +289,9 @@
   function txnRow(t, idx, view) {
     const selected = S.sel.has(t.id);
     const amtCls = Number(t.amount) < 0 ? 'amt credit' : 'amt';
-    const memo = t.memo && t.memo !== t.vendor ? `<span class="sub ell">${esc(t.memo)}</span>` : '';
+    // Loan-out (2026-11-04): the person behind the company, "Danielle Miller · via Two Foot Shuffle LLC".
+    const via = t.payee_via && t.payee_name ? `<span class="sub ell" title="Paid to ${esc(t.payee_name)} through the loan-out ${esc(t.payee_via)}">${esc(t.payee_name)} · via ${esc(t.payee_via)}</span>` : '';
+    const memo = via || (t.memo && t.memo !== t.vendor ? `<span class="sub ell">${esc(t.memo)}</span>` : '');
     const container = AW.isContainer(t);
     return `<div role="row" class="aw-row" draggable="true" tabindex="0" data-tid="${t.id}" data-idx="${idx}" aria-selected="${selected}"
          ${container ? 'data-container="1"' : ''} ${t.receipt ? 'data-has-doc="1"' : ''}>
@@ -301,7 +303,12 @@
       <div class="aw-cell">${sourceChip(t)}</div>
       <div class="aw-cell">${lineCell(t, view)}</div>
       <div class="aw-cell flagcell">${flagChip(t)}<span class="aw-rowacts">
-        ${view === 'needs_backup' && !t.receipt
+        ${t.dup_group
+          // 2026-11-04: hovering a row hides its flag chip under these
+          // actions, so a possible duplicate offers Compare right here —
+          // settle one charge or two before coding it.
+          ? `<button type="button" class="aw-btn sm warn" data-act="open-dup" data-key="${esc(t.dup_group)}" data-tid="${t.id}" title="Compare the possible duplicates side by side and settle them here (D)">Compare</button>`
+          : view === 'needs_backup' && !t.receipt
           ? `<button type="button" class="aw-btn sm" data-act="find-backup" data-tid="${t.id}" title="Ranked receipts for this charge">Find backup</button>`
           : `<button type="button" class="aw-btn sm" data-act="assign-one" data-tid="${t.id}" ${container ? 'disabled title="Split or itemized rows carry their coding on the sublines"' : ''}>${AW.isAssigned(t) ? 'Move' : 'Assign'}</button>`}
         <button type="button" class="aw-btn sm" data-act="detail" data-tid="${t.id}" title="Open the details (Enter)">Details</button>
@@ -337,7 +344,7 @@
       const groups = (d.duplicates || []), voided = (d.voided || []);
       summary.textContent = `${groups.length} group${groups.length === 1 ? '' : 's'}${voided.length ? ` · ${voided.length} voided in QuickBooks` : ''}`;
       host.innerHTML = AW.renderDuplicates ? AW.renderDuplicates(groups, voided, matchesFilters) : '';
-      hint.innerHTML = 'Each group is one event that arrived twice. Keep both remembers your answer; Delete the extra moves its coding to the keeper first · <kbd>D</kbd> opens the selected row\'s group';
+      hint.innerHTML = 'Each group is one event that arrived twice. Compare shows them side by side; Keep both remembers your answer; Delete the extra moves its coding to the keeper first · <kbd>D</kbd> compares the selected row\'s group';
       return;
     }
     if (S.view === 'not_project') {
@@ -850,6 +857,7 @@
   // input or an open dialog.
   document.addEventListener('keydown', e => {
     if (document.querySelector('dialog[open]')) return;
+    if (window.FPCompare && FPCompare.isOpen()) return;      // the Compare panel owns the keys
     const tag = (e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -868,7 +876,8 @@
       return;
     }
     if (e.key === 'd' || e.key === 'D') {
-      if (S.sel.size === 1) { const t = S.byId.get(Array.from(S.sel)[0]); if (t && t.dup_group && AW.openDupGroup) { e.preventDefault(); AW.openDupGroup(t.dup_group); } }
+      // 2026-11-04: D compares the selected row's duplicate group in place.
+      if (S.sel.size === 1) { const t = S.byId.get(Array.from(S.sel)[0]); if (t && t.dup_group && AW.openCompare) { e.preventDefault(); AW.openCompare({ key: t.dup_group, tid: t.id }); } }
       return;
     }
     if (!S.sel.size || S.view === 'receipts' || S.view === 'not_project') return;

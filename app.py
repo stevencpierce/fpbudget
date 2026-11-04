@@ -29114,6 +29114,23 @@ def _web_worker_essential_columns():
                 "  ON transaction_pool_dismissal (transaction_id, project_id)",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_pool_dismissal_project_id "
                 "  ON transaction_pool_dismissal (project_id)",
+                # Loan-out companies on a person Payee (2026-11-04, alembic
+                # 0028 — mirrored per CLAUDE.md). Read by actuals.same_payee.
+                """CREATE TABLE IF NOT EXISTS payee_loanout (
+                     id               SERIAL PRIMARY KEY,
+                     payee_id         INTEGER NOT NULL REFERENCES crew_member(id),
+                     company_name     VARCHAR(200) NOT NULL,
+                     vendor_match_key VARCHAR(200) NOT NULL,
+                     qbo_vendor_id    VARCHAR(40),
+                     created_at       TIMESTAMP,
+                     created_by       INTEGER
+                   )""",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_payee_loanout "
+                "  ON payee_loanout (payee_id, vendor_match_key)",
+                "CREATE INDEX IF NOT EXISTS ix_payee_loanout_payee_id ON payee_loanout (payee_id)",
+                "CREATE INDEX IF NOT EXISTS ix_payee_loanout_vendor_match_key "
+                "  ON payee_loanout (vendor_match_key)",
+                "CREATE INDEX IF NOT EXISTS ix_payee_loanout_qbo_vendor_id ON payee_loanout (qbo_vendor_id)",
                 """CREATE TABLE IF NOT EXISTS transaction_merge_log (
                      id                 SERIAL PRIMARY KEY,
                      qbo_txn_id         VARCHAR(50),
@@ -31069,6 +31086,7 @@ def docs_inbox_json(pid):
     """
     ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'viewer')
+    from actuals import loanout_via as _loanout_via
 
     # ── Bulk load docs (defer the heavy OCR JSON blob) ──────────────────
     from sqlalchemy.orm import defer as _defer_inbox
@@ -31336,6 +31354,8 @@ def docs_inbox_json(pid):
             "owner_payee_id": _owner_id,
             "person_name":    pname,
             "payee_name":     pname,
+            # Loan-out (2026-11-04): "Danielle Miller · via Two Foot Shuffle LLC".
+            "payee_via":      (_loanout_via(_owner_id, d.vendor) if _owner_id else None),
             "payee_suggestion": _sugg,
             "doc_class":      _doc_class_of(cat),
             "tax_form_kind":  d.tax_form_kind,
@@ -33392,8 +33412,20 @@ def _crew_suggest_for(upload, all_cm, proj_ids, ocr_text=None):
     one pass (DOCUMENTS_HANDOFF Phase 2 — the Payee column's ghost chip).
     `ocr_text` is the OCR text when the caller already has it; None means
     read it from the row's veryfi_data."""
-    from actuals import _vendor_similarity
+    from actuals import _vendor_similarity, loanout_person_for
     vendor = (upload.vendor or '').strip()
+    # A loan-out company names its PERSON (2026-11-04): an invoice from
+    # "Two Foot Shuffle LLC" suggests Danielle Miller, with the company.
+    if vendor:
+        _lo_pid = loanout_person_for(vendor)
+        if _lo_pid:
+            _lo_cm = next((c for c in all_cm if c.id == _lo_pid), None)
+            if _lo_cm is not None:
+                return {"crew_member_id": _lo_cm.id, "name": _lo_cm.name,
+                        "is_vendor": bool(getattr(_lo_cm, 'is_vendor', False)),
+                        "on_project": _lo_cm.id in proj_ids,
+                        "confidence": 0.97, "matched_on": f"loan-out {vendor}",
+                        "via": vendor}
     ocr = ocr_text
     if ocr is None:
         ocr = ''

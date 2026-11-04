@@ -920,15 +920,26 @@ def repair_is_expense(project_sheet, conn, db, start_date, end_date, apply=False
 
 
 def _payee_by_qbo_vendor(db):
-    """{qbo_vendor_id: crew_member_id} for every linked Payee."""
+    """{qbo_vendor_id: crew_member_id} for every linked Payee — and, over
+    that, every loan-out company's QuickBooks vendor → its PERSON (owner,
+    Nov 4: "we want the individuals"): a VendorRef to Two Foot Shuffle LLC
+    attributes the charge to Danielle Miller (models.PayeeLoanout)."""
     from models import CrewMember
     try:
-        return {str(v): i for i, v in
-                db.session.query(CrewMember.id, CrewMember.qbo_vendor_id)
-                .filter(CrewMember.qbo_vendor_id.isnot(None)).all()}
+        out = {str(v): i for i, v in
+               db.session.query(CrewMember.id, CrewMember.qbo_vendor_id)
+               .filter(CrewMember.qbo_vendor_id.isnot(None)).all()}
     except Exception as _e:
         log.warning(f"[qbo] payee map unavailable: {_e}")
         return {}
+    try:
+        from models import PayeeLoanout
+        for pid_, ref in (db.session.query(PayeeLoanout.payee_id, PayeeLoanout.qbo_vendor_id)
+                          .filter(PayeeLoanout.qbo_vendor_id.isnot(None)).all()):
+            out[str(ref)] = pid_
+    except Exception as _e:
+        log.warning(f"[qbo] loan-out vendor map unavailable: {_e}")
+    return out
 
 
 def _attribute_from_entity_ref(txn, entity_ref, payee_by_vendor):

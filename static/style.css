@@ -5809,7 +5809,8 @@ select.pay-select { height: 34px; width: auto; padding: 0 28px 0 10px; border: 1
 .pay-row-cell.r { justify-content: flex-end; }
 .pay-row-cell.b { font-weight: 600; }
 .pay-row-cell.m { color: var(--text-muted); }
-.pay-row-cell .sub { font-size: .72rem; color: var(--text-muted); margin-left: 6px; }
+.pay-row-cell .sub { font-size: .72rem; color: var(--text-muted); margin-left: 6px; overflow: hidden; text-overflow: ellipsis; }
+.pay-row-cell a.name { flex-shrink: 0; }
 .pay-num { font-variant-numeric: tabular-nums; }
 .pay-empty { padding: 28px 16px; text-align: center; color: var(--text-muted); font-size: .85rem; }
 
@@ -6328,3 +6329,49 @@ dialog.fpd-newline::backdrop { background: rgba(26,29,46,.45); }
   .fpd-srow { grid-template-columns: minmax(0, 1fr) 90px 30px; } .fpd-srow .fpd-snote { grid-column: 1 / -1; grid-row: 2; }
 }
 .fpd-noprev { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--text-muted); font-size: 11px; text-align: center; padding: 8px; }
+
+/* ══ Compare duplicates in place (static/dup-compare.js, 2026-11-04) ══
+   The detail window's shell (.fpd), wider: one column per charge, the
+   fields that differ highlighted, the suggested keeper marked. At iPad
+   1024 more than two columns sit two-up with a horizontal scroll (the
+   column width is set by dup-compare.js from the panel width). */
+.fpd.fpc { width: min(1120px, 100vw); }
+.fpc-body { padding: 4px 20px 24px; display: flex; flex-direction: column; gap: 12px; }
+.fpc-sum { font-size: 13px; padding-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.fpc-scroll { flex-shrink: 0; overflow-x: auto; overflow-y: visible; -webkit-overflow-scrolling: touch; padding-bottom: 4px; }
+.fpc-grid { display: grid; grid-template-columns: 112px repeat(var(--n, 2), minmax(220px, 1fr)); column-gap: 10px; row-gap: 0; align-items: stretch; min-width: 0; }
+.fpc-lab { position: sticky; left: 0; z-index: 2; background: var(--bg-2); color: var(--text-muted); font-size: 11px; font-weight: 600;
+           letter-spacing: .04em; text-transform: uppercase; padding: 9px 8px 9px 0; border-top: 1px solid color-mix(in srgb, var(--border) 55%, var(--bg-2));
+           display: flex; align-items: flex-start; gap: 6px; }
+.fpc-lab.fpc-corner { border-top: 0; }
+.fpc-lab.diff { color: var(--text); }
+.fpc-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); margin-top: 3px; flex-shrink: 0; }
+.fpc-h, .fpc-v { padding: 9px 10px; min-width: 0; overflow-wrap: anywhere; border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+                 background: var(--bg); }
+.fpc-v { border-top: 1px solid color-mix(in srgb, var(--border) 55%, var(--bg-2)); display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.fpc-h { border-top: 1px solid var(--border); border-radius: 8px 8px 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; outline: none; }
+.fpc-acts { border-bottom: 1px solid var(--border); border-radius: 0 0 8px 8px; flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: flex-start; padding-bottom: 12px; }
+.fpc-v.diff { background: color-mix(in srgb, var(--yellow) 13%, var(--bg)); }
+.fpc-h.focus, .fpc-v.focus { border-left-color: var(--accent); border-right-color: var(--accent); }
+.fpc-h.focus { border-top-color: var(--accent); box-shadow: inset 0 3px 0 var(--accent); }
+.fpc-acts.focus { border-bottom-color: var(--accent); }
+.fpc-h:focus-visible { box-shadow: inset 0 3px 0 var(--accent), 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
+.fpc-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: var(--bg-3); color: var(--text-muted); }
+.fpc-badge.keep { background: color-mix(in srgb, var(--green) 16%, var(--bg-2)); color: var(--green); }
+.fpc-why { font-size: 12px; color: var(--text-muted); }
+.fpc-v > .fpc-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fpc-amt { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.fpc-amt.credit { color: var(--green); }
+.fpc-strong { font-weight: 500; }
+.fpc-sub { font-size: 12px; color: var(--text-muted); }
+.fpc-eff { font-size: 12px; color: var(--text-muted); }
+.fpc-doc { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.fpc-doc img { width: 44px; height: 56px; object-fit: cover; border-radius: 4px; background: var(--bg-3); border: 1px solid var(--border); display: block; }
+.fpc-docmeta { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; }
+.fpc-docmeta .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.fpc-confirm { display: flex; flex-direction: column; gap: 6px; font-size: 12px; padding: 8px; border-radius: 6px;
+               background: color-mix(in srgb, var(--accent) 9%, var(--bg-2)); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.fpc-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.fpc-keys { font-size: 12px; }
+.fpc-keys kbd { font: inherit; font-size: 11px; padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
+.fpd-flag.yellow { color: var(--orange); }

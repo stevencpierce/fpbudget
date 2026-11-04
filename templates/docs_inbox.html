@@ -671,7 +671,9 @@
     cell.innerHTML = '';
     if (doc.payee_name) {
       var chip = document.createElement('span');
-      chip.className = 'inbx-payee-chip'; chip.textContent = doc.payee_name; chip.title = 'Payee: ' + doc.payee_name;
+      // Loan-out (2026-11-04): "Danielle Miller · via Two Foot Shuffle LLC".
+      var _pl = doc.payee_via ? (doc.payee_name + ' · via ' + doc.payee_via) : doc.payee_name;
+      chip.className = 'inbx-payee-chip'; chip.textContent = _pl; chip.title = 'Payee: ' + _pl;
       cell.appendChild(chip);
       return;
     }
@@ -679,9 +681,9 @@
     if (s && s.crew_member_id) {
       var g = document.createElement('button');
       g.type = 'button'; g.className = 'inbx-payee-ghost';
-      g.innerHTML = esc(s.name) + ' <span class="pct">' + Math.round((s.confidence || 0) * 100) + '%</span>';
+      g.innerHTML = esc(s.name) + (s.via ? ' · via ' + esc(s.via) : '') + ' <span class="pct">' + Math.round((s.confidence || 0) * 100) + '%</span>';
       g.title = 'Looks like ' + s.name + ' (matched from the ' + (s.matched_on || 'document') + ') — click to confirm';
-      g.addEventListener('click', function (e) { e.stopPropagation(); confirmPayee(doc.id, s.crew_member_id, s.name); });
+      g.addEventListener('click', function (e) { e.stopPropagation(); confirmPayee(doc.id, s.crew_member_id, s.name, s.via); });
       cell.appendChild(g);
       return;
     }
@@ -693,12 +695,12 @@
 
   // Confirm a ghost chip: ONE row, same batch action as the bulk bar, then
   // patch the row in place (chip solidifies, Why-here clears).
-  function confirmPayee(id, payeeId, name) {
+  function confirmPayee(id, payeeId, name, via) {
     postBatch('assign_payee', [id], null, payeeId).then(function (res) {
       if (res.ok && res.d && res.d.ok && res.d.done) {
         var doc = ALL.filter(function (x) { return x.id === id; })[0];
         if (doc) {
-          doc.payee_name = name; doc.person_name = name; doc.owner_payee_id = payeeId; doc.crew_member_id = payeeId;
+          doc.payee_name = name; doc.payee_via = via || null; doc.person_name = name; doc.owner_payee_id = payeeId; doc.crew_member_id = payeeId;
           doc.payee_suggestion = null;
           if (doc.why_here === 'confirm_payee') { doc.why_here = null; doc.why_label = null; }
         }
