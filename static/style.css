@@ -5568,7 +5568,13 @@ tr.sync-omitted .col-days::after {
 }
 .ctx-item:hover { background: var(--bg-3); color: var(--accent); }
 
-/* ── Floating budget total bar ───────────────────────────────────────────── */
+/* ── Floating budget total bar ───────────────────────────────────────────
+   Owner 2026-11-04: Subtotal · Prod. Fee (the viewed budget) | Estimated ·
+   Working · Actual grand totals, always, labeled | Variance labeled with
+   the basis chosen at the top. The total matching the VIEWING switch is
+   highlighted in that view's colour (estimated = --accent, working =
+   --orange — the same cue the switch uses). One row at 1440; wraps to two
+   rows on an iPad (1024) — b21.js pads the page by the bar's real height. */
 .budget-float-bar {
   position: fixed;
   bottom: 0;
@@ -5578,13 +5584,15 @@ tr.sync-omitted .col-days::after {
   background: var(--bg-2);
   border-top: 2px solid var(--border);
   box-shadow: 0 -4px 20px rgba(0,0,0,.35);
-  padding: .6rem 2rem;
+  padding: .55rem 2rem;
 }
 .float-bar-inner {
   display: flex;
   align-items: center;
-  gap: 2rem;
+  gap: 1.75rem;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  row-gap: .4rem;
   max-width: 1600px;
   margin: 0 auto;
 }
@@ -5593,9 +5601,10 @@ tr.sync-omitted .col-days::after {
   flex-direction: column;
   align-items: flex-end;
   gap: .1rem;
+  white-space: nowrap;
 }
 .float-bar-label {
-  font-size: .7rem;
+  font-size: .68rem;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: .04em;
@@ -5606,12 +5615,48 @@ tr.sync-omitted .col-days::after {
   color: var(--text);
 }
 .float-bar-fee .float-bar-value { color: var(--text-muted); font-weight: 400; }
-.float-bar-grand {
+/* The three grand totals, boxed as one group */
+.float-bar-totals {
+  display: flex;
+  align-items: stretch;
+  gap: .25rem;
   border-left: 1px solid var(--border);
-  padding-left: 2rem;
+  padding-left: 1.5rem;
 }
-.float-bar-grand .float-bar-label { color: var(--accent); }
-.float-bar-grand .float-bar-value { font-size: 1.15rem; color: var(--accent); }
+.float-bar-total {
+  padding: .25rem .7rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+.float-bar-total .float-bar-value { font-size: 1.05rem; }
+.float-bar-total.fb-empty .float-bar-value { color: var(--text-muted); font-weight: 400; font-size: .85rem; font-style: italic; }
+/* Highlight = the budget on screen (same colour as the Viewing switch) */
+.float-bar-total.fb-current { background: color-mix(in srgb, var(--accent) 14%, var(--bg-3)); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.float-bar-total.fb-current .float-bar-label,
+.float-bar-total.fb-current .float-bar-value { color: var(--accent); }
+.float-bar-total.fb-working.fb-current { background: color-mix(in srgb, var(--orange) 14%, var(--bg-3)); border-color: color-mix(in srgb, var(--orange) 45%, transparent); }
+.float-bar-total.fb-working.fb-current .float-bar-label,
+.float-bar-total.fb-working.fb-current .float-bar-value { color: var(--orange); }
+.float-bar-total.fb-current .float-bar-value { font-size: 1.15rem; font-weight: 700; }
+.float-bar-total.fb-actual .float-bar-label { color: #c084fc; }
+.float-bar-total.fb-actual .float-bar-value { color: #c084fc; }
+/* Variance — green under, red over (the grid's var-pos / var-neg colours) */
+.float-bar-variance { border-left: 1px solid var(--border); padding-left: 1.5rem; }
+.float-bar-variance .float-bar-value { font-size: 1.05rem; }
+.float-bar-variance .fb-var-pos  { color: #5fd0a0; }
+.float-bar-variance .fb-var-neg  { color: #fb7185; }
+.float-bar-variance .fb-var-zero { color: var(--text-muted); }
+.float-bar-variance .fb-var-na   { color: var(--text-muted); font-weight: 400; }
+@media (max-width: 1100px) {
+  .budget-float-bar { padding: .45rem 1rem; }
+  .float-bar-inner { gap: 1.1rem; justify-content: flex-end; }
+  .float-bar-totals { padding-left: 1rem; gap: .15rem; }
+  .float-bar-total { padding: .2rem .5rem; }
+  .float-bar-variance { padding-left: 1rem; }
+}
+@media (max-width: 700px) {
+  .float-bar-totals, .float-bar-variance { border-left: 0; padding-left: 0; }
+}
 
 /* ── Per-view color cue ──────────────────────────────────────────────────────
    2026-05-10 user spec: "make it very apparent which budget I'm in".

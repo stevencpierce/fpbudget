@@ -4936,77 +4936,68 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
   </div>
 </div>
 
-{# ── Floating budget total bar ─────────────────────────────────────────── #}
-<div id="budget-float-bar" class="budget-float-bar hidden">
+{# ── Floating budget total bar (owner 2026-11-04) ──────────────────────
+   Always three labeled grand totals — Estimated · Working · Actual — plus
+   the viewed budget's Subtotal + Prod. Fee breakdown and ONE Variance item
+   labeled with the basis chosen on the Budget tab's control. The total that
+   matches the VIEWING switch is highlighted in that view's colour. Every
+   writer goes through FP.budgetFloatBar.update(...) (static/budget-js/
+   b21.js) — nothing else writes these spans. The server values below are
+   the same ones the Top Sheet tfoot renders (est_top_sheet, sub_w / fee_w /
+   grand_w, top_sheet.grand_total_actual). #}
+{% set _fb_view = 'working' if is_working_view else 'estimated' %}
+{% set _fb_est_vn = (budget.version_number or 1) if budget.budget_mode != 'working' else vs.estimated_vn %}
+{% set _fb_sub_w = working_subtotal_pre_fee or 0 %}
+{% set _fb_fee_w = working_company_fee or 0 %}
+{% set _fb_grand_w = (working_by_section.values() | sum) if top_sheet.company_fee_dispersed else (_fb_sub_w + _fb_fee_w) %}
+<div id="budget-float-bar" class="budget-float-bar hidden"
+     data-view="{{ _fb_view }}"
+     data-estimated="{{ est_top_sheet.grand_total_estimated or 0 }}"
+     data-working="{{ _fb_grand_w if working_exists else 0 }}"
+     data-has-working="{{ '1' if working_exists else '0' }}"
+     data-actual="{{ top_sheet.grand_total_actual or 0 }}"
+     data-frozen="{{ '1' if actuals_frozen else '0' }}"
+     data-subtotal="{{ (_fb_sub_w if is_working_view else top_sheet.subtotal_estimated) or 0 }}"
+     data-fee="{{ (_fb_fee_w if is_working_view else top_sheet.company_fee) or 0 }}"
+     data-fee-text="{{ (top_sheet.company_fee_pct * 100) | round(1) }}%{% if top_sheet.company_fee_dispersed %} · Dispersed{% else %} · Line Item{% endif %}">
   <div class="float-bar-inner">
-    {# Subtotal and Prod Fee are estimated-side rollups; in Actual view
-       they'd always render as $0 (no subtotal_actual / fee_actual exist
-       server-side, and Actual = sum-of-transactions which already lives
-       in Grand Total). Hide them in Actual view so only the meaningful
-       Grand Total (Actual) is shown. 2026-05-11. #}
-    
-    <div class="float-bar-item">
-      <span class="float-bar-label">Subtotal</span>
-      <span class="float-bar-value" id="float-subtotal">{{ top_sheet.subtotal_estimated | currency }}</span>
+    <div class="float-bar-item float-bar-sub">
+      <span class="float-bar-label" id="float-subtotal-label">Subtotal · {{ 'Working' if is_working_view else 'Estimated' }}</span>
+      <span class="float-bar-value" id="float-subtotal">{{ (_fb_sub_w if is_working_view else top_sheet.subtotal_estimated) | currency }}</span>
     </div>
     <div class="float-bar-item float-bar-fee">
-      <span class="float-bar-label">Prod. Fee ({{ (top_sheet.company_fee_pct * 100) | round(1) }}%{% if top_sheet.company_fee_dispersed %} · Dispersed{% else %} · Line Item{% endif %})</span>
-      <span class="float-bar-value" id="float-fee">{{ top_sheet.company_fee | currency }}</span>
+      <span class="float-bar-label" id="float-fee-label">Prod. Fee · {{ 'Working' if is_working_view else 'Estimated' }} ({{ (top_sheet.company_fee_pct * 100) | round(1) }}%{% if top_sheet.company_fee_dispersed %} · Dispersed{% else %} · Line Item{% endif %})</span>
+      <span class="float-bar-value" id="float-fee">{{ (_fb_fee_w if is_working_view else top_sheet.company_fee) | currency }}</span>
     </div>
-    
-    <div class="float-bar-item float-bar-grand">
-      <span class="float-bar-label">Grand Total</span>
-      <span class="float-bar-value" id="float-grand">{{ top_sheet.grand_total_estimated | currency }}</span>
+    <div class="float-bar-totals" role="group" aria-label="Grand totals">
+      <div class="float-bar-item float-bar-total fb-estimated {% if not is_working_view %}fb-current{% endif %}" id="float-total-estimated" data-mode="estimated"
+           title="Grand total of the Estimated budget{% if not is_working_view %} — the budget you are viewing{% endif %}">
+        <span class="float-bar-label">Estimated{% if _fb_est_vn %} · v{{ _fb_est_vn }}{% endif %}</span>
+        <span class="float-bar-value" id="float-estimated">{{ est_top_sheet.grand_total_estimated | currency }}</span>
+      </div>
+      <div class="float-bar-item float-bar-total fb-working {% if is_working_view %}fb-current{% endif %} {% if not working_exists %}fb-empty{% endif %}" id="float-total-working" data-mode="working"
+           title="{% if working_exists %}Grand total of Working v{{ vs.working_vn }} — the live budget spend is tracked on{% if is_working_view %}; the budget you are viewing{% endif %}{% else %}No Working budget yet — start one from the version strip{% endif %}">
+        <span class="float-bar-label">Working{% if working_exists and vs.working_vn %} · v{{ vs.working_vn }}{% endif %}</span>
+        <span class="float-bar-value" id="float-working">{% if working_exists %}{{ _fb_grand_w | currency }}{% else %}— no Working{% endif %}</span>
+      </div>
+      {# Suppressed on frozen (superseded) versions — the live rollup isn't
+         that version's history. #}
+      {% if not actuals_frozen %}
+      <div class="float-bar-item float-bar-total fb-actual" id="float-total-actual" data-mode="actual"
+           title="Actual spend to date — every charge coded to this project">
+        <span class="float-bar-label">Actual</span>
+        <span class="float-bar-value" id="float-actual">{{ top_sheet.grand_total_actual | currency }}</span>
+      </div>
+      {% endif %}
     </div>
-    {# Running Actual + Variance, revealed on demand (user 2026-07-08: "now
-       that we've gotten rid of our actual tab... reveal the actual on the
-       bottom next to the grand total and the variance... hide it or reveal it
-       selectively, like a little eye button"). Hidden by default; the 👁
-       toggle persists per-browser in localStorage. Suppressed on frozen
-       (superseded) versions — the live rollup isn't that version's history. #}
-    {% if not actuals_frozen %}
-    <div class="float-bar-item fb-actual-item fb-hidden">
-      <span class="float-bar-label" style="color:#c084fc">Actual Spend</span>
-      <span class="float-bar-value" id="float-actual" style="color:#c084fc">{{ top_sheet.grand_total_actual | currency }}</span>
+    <div class="float-bar-item float-bar-variance" id="float-variance-item"
+         title="Positive = under (money left), negative = over. Change the basis with the Variance control on the Budget tab.">
+      <span class="float-bar-label" id="float-variance-label">Variance</span>
+      <span class="float-bar-value" id="float-variance">—</span>
     </div>
-    <div class="float-bar-item fb-actual-item fb-hidden">
-      <span class="float-bar-label">Variance</span>
-      <span class="float-bar-value" id="float-variance"
-            style="color:{{ '#5fd0a0' if (top_sheet.grand_variance or 0) >= 0 else '#fb7185' }}">{{ top_sheet.grand_variance | currency }}</span>
-    </div>
-    <button type="button" id="float-actual-eye"
-            title="Show / hide running actual spend + variance"
-            style="background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-muted);cursor:pointer;font-size:.95rem;padding:3px 9px;margin-left:2px;line-height:1.2">👁</button>
-    {% endif %}
   </div>
 </div>
-<style>.fb-hidden { display:none !important; }</style>
-{% if not actuals_frozen %}
-<script>
-(function floatBarActualEye() {
-  var KEY = 'fpbudget.floatbar.showActual';
-  var eye = document.getElementById('float-actual-eye');
-  if (!eye) return;
-  window._FB_GRAND = Number('{{ top_sheet.grand_total_estimated or 0 }}');
-  function apply(on) {
-    document.querySelectorAll('.fb-actual-item').forEach(function (el) {
-      el.classList.toggle('fb-hidden', !on);
-    });
-    eye.style.color = on ? '#c084fc' : 'var(--text-muted)';
-    eye.style.borderColor = on ? '#c084fc' : 'var(--border)';
-    eye.title = (on ? 'Hide' : 'Show') + ' running actual spend + variance';
-  }
-  var on = false;
-  try { on = localStorage.getItem(KEY) === '1'; } catch (_) {}
-  apply(on);
-  eye.addEventListener('click', function () {
-    on = !on;
-    try { localStorage.setItem(KEY, on ? '1' : '0'); } catch (_) {}
-    apply(on);
-  });
-})();
-</script>
-{% endif %}
+<script src="{{ url_for('static', filename='budget-js/b21.js') }}?v={{ APP_COMMIT }}"></script>
 
 {# ── Budget Gut Check (super_admin only) ─────────────────────────────────
    Read-only diagnostic: re-runs the canonical calc engine, cross-checks each
@@ -6475,22 +6466,16 @@ window.saveInlinePo = async function() {
       delete _sectionCache[code];
       if (!v) row.style.display = 'none';
     });
-    // Float bar: keep the revealed Actual Spend + Variance current (the 👁
-    // items next to Grand Total). Sum = every line cell + section-only spend —
-    // same source the cells themselves use. (User 2026-07-08.)
+    // Float bar: keep the Actual total (and so the Variance) current. Sum =
+    // every line cell + section-only spend — same source the cells themselves
+    // use. ONE writer: FP.budgetFloatBar.update (b21.js). Not on a frozen
+    // (superseded) version — the bar has no Actual slot there.
     try {
-      const fa = document.getElementById('float-actual');
-      const fv = document.getElementById('float-variance');
-      if (fa && d.lines) {
+      if (d.lines && window.FP && FP.budgetFloatBar && !FP.budgetFloatBar.get().frozen) {
         let tot = 0;
         Object.values(d.lines).forEach(v => { tot += (v || 0); });
         Object.values(d.sections || {}).forEach(v => { tot += (v || 0); });
-        fa.textContent = _money(tot);
-        if (fv && window._FB_GRAND != null && !isNaN(window._FB_GRAND)) {
-          const varr = window._FB_GRAND - tot;
-          fv.textContent = _money(varr);
-          fv.style.color = varr >= 0 ? '#5fd0a0' : '#fb7185';
-        }
+        FP.budgetFloatBar.update({ actual: tot });
       }
     } catch (_) {}
     _lastRefresh = Date.now();
@@ -7722,12 +7707,14 @@ function updateFloatBar() {
     fee = _FLOAT_FEE_MODE === 'flat' ? _FLOAT_FEE_FLAT : feeBase * _FLOAT_FEE_PCT;
   }
   const grand = subtotal + fee;
-  const subEl   = document.getElementById('float-subtotal');
-  const feeEl   = document.getElementById('float-fee');
-  const grandEl = document.getElementById('float-grand');
-  if (subEl)   subEl.textContent   = fmtCurrency(subtotal);
-  if (feeEl)   feeEl.textContent   = fmtCurrency(fee);
-  if (grandEl) grandEl.textContent = fmtCurrency(grand);
+  // ONE writer (b21.js): the viewed budget's Subtotal + Prod. Fee and ITS
+  // grand total slot (Estimated or Working); the other slots keep their
+  // server values.
+  if (window.FP && FP.budgetFloatBar) {
+    const patch = { subtotal, fee, view: _IS_WORKING_MODE ? 'working' : 'estimated' };
+    patch[_IS_WORKING_MODE ? 'working' : 'estimated'] = grand;
+    FP.budgetFloatBar.update(patch);
+  }
 }
 
 function applyFeeDisplay() {
@@ -7775,10 +7762,9 @@ function applyFeeDisplay() {
     refreshSectionTotals(table);
   });
 
-  // 4. Float bar fee label
-  const feeLabel = document.querySelector('#budget-float-bar .float-bar-fee .float-bar-label');
-  if (feeLabel) {
-    feeLabel.textContent = 'Prod. Fee (' + pctLbl + (_FLOAT_DISPERSED ? ' · Dispersed' : ' · Line Item') + ')';
+  // 4. Float bar fee label (ONE writer: b21.js)
+  if (window.FP && FP.budgetFloatBar) {
+    FP.budgetFloatBar.update({ feeText: pctLbl + (_FLOAT_DISPERSED ? ' · Dispersed' : ' · Line Item') });
   }
 
   // 5. Recalculate float bar totals
@@ -7789,7 +7775,9 @@ function _showFloatBar(show) {
   const bar = document.getElementById('budget-float-bar');
   if (!bar) return;
   bar.classList.toggle('hidden', !show);
-  document.body.style.paddingBottom = show ? '56px' : '';
+  // The bar may wrap to two rows (iPad) — pad the page by its real height.
+  if (window.FP && FP.budgetFloatBar) FP.budgetFloatBar.syncBodyPadding();
+  else document.body.style.paddingBottom = show ? '56px' : '';
 }
 
 // ── Resizable budget columns ──────────────────────────────────────────────
@@ -9118,6 +9106,8 @@ async function _saveSettingsInner() {
     });
     applyVariance(basis);
     applyBasisHighlight(basis);
+    // The float bar's Variance item carries the chosen basis (b21.js).
+    if (window.FP && FP.budgetFloatBar) FP.budgetFloatBar.update({ basis: basis });
     try { localStorage.setItem(_BASIS_KEY, basis); } catch (e) {}
   }
   window.setVarianceBasis = setActiveBasis;

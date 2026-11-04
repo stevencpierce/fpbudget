@@ -65,6 +65,10 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   `DOCUMENT_TYPES` / `DOC_TYPE_LABELS`, `PAYMENT_METHODS`, `MODE_META` —
   never a private copy. The lists reach templates through
   `app.inject_globals` and JS through `window.__FP_*` in base.html.
+  The budget page's float bar (`#budget-float-bar`, 2026-11-04) has ONE
+  writer, `FP.budgetFloatBar.update({estimated, working, actual, subtotal,
+  fee, basis, view, feeText})` in `static/budget-js/b21.js`; its variance
+  is `window.computeVariance` (the Cleanup C rule) — never write its spans.
 - Matching and duplicates (Actuals Phase 5, 2026-11-03): matching is
   `actuals.match_candidates` (score_match / rank_candidates / suggest_pairs),
   ONE rule for the chip, the candidate panel, Find backup, Review matches and

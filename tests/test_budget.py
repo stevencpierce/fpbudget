@@ -120,3 +120,68 @@ def test_version_picker(budget_page: Page):
     menu = page.locator(".version-menu").first
     expect(menu).to_be_visible(timeout=3_000)
     expect(menu.locator(".version-item-name").first).to_have_text(re.compile(r"v\d+"))
+
+
+# ---------------------------------------------------------------------------
+# Floating total bar (owner 2026-11-04): three labeled grand totals, the
+# viewed budget highlighted, Variance labeled with the chosen basis. Runs
+# LAST in this module because it starts a Working budget on the shared
+# project (test_version_picker expects a one-version project).
+# ---------------------------------------------------------------------------
+
+def _float_bar(page: Page) -> dict:
+    return page.evaluate("""() => {
+      const t = id => ((document.getElementById(id) || {}).textContent || '').trim();
+      return {
+        subLabel: t('float-subtotal-label'), estimated: t('float-estimated'),
+        working: t('float-working'), actual: t('float-actual'),
+        varLabel: t('float-variance-label'), variance: t('float-variance'),
+        current: [...document.querySelectorAll('#budget-float-bar .float-bar-total.fb-current')].map(e => e.dataset.mode),
+      };
+    }""")
+
+
+def test_float_bar_totals_view_and_variance(project):
+    page = project.page
+    page.goto(f"{project.budget_url}?tab=working", wait_until="networkidle")
+    bar = page.locator("#budget-float-bar")
+    expect(bar).to_be_visible(timeout=10_000)
+    # The three totals, labeled.
+    for label in ("Estimated", "Working", "Actual", "Variance"):
+        expect(bar).to_contain_text(label)
+    st = _float_bar(page)
+    assert st["subLabel"] == "Subtotal · Estimated", st
+    assert st["current"] == ["estimated"], st
+    assert "no Working" in st["working"], st
+    assert "$" in st["estimated"] and "$" in st["actual"], st
+    # The eye toggle is gone: Actual is always on.
+    assert page.locator("#float-actual-eye").count() == 0
+
+    # VARIANCE control relabels the bar's Variance item with its exact wording.
+    for basis, wording in (("vs_estimated", "Actual vs Estimated"),
+                           ("est_to_working", "Estimated → Working"),
+                           ("vs_working", "Actual vs Working")):
+        page.locator(f'.var-btn[data-basis="{basis}"]').click()
+        assert _float_bar(page)["varLabel"] == f"Variance · {wording}", (basis, _float_bar(page))
+    page.locator('.var-btn[data-basis="vs_estimated"]').click()
+    assert "$" in _float_bar(page)["variance"]
+
+    # Start a Working → VIEWING = Working: highlight + Subtotal label follow.
+    with page.expect_navigation(wait_until="networkidle", timeout=30_000):
+        page.locator("#start-working-btn").click()
+    page.goto(page.url.split("?")[0] + "?tab=working", wait_until="networkidle")
+    expect(bar).to_be_visible(timeout=10_000)
+    st = _float_bar(page)
+    assert st["subLabel"] == "Subtotal · Working", st
+    assert st["current"] == ["working"], st
+    assert "$" in st["working"], st
+    take_step_screenshot(page, "float-bar-working")
+
+    # Back to Estimated through the Viewing switch.
+    with page.expect_navigation(wait_until="networkidle", timeout=30_000):
+        page.locator('.viewing-seg a.mode-seg-btn:has-text("Estimated")').click()
+    page.goto(page.url.split("?")[0] + "?tab=working", wait_until="networkidle")
+    st = _float_bar(page)
+    assert st["subLabel"] == "Subtotal · Estimated", st
+    assert st["current"] == ["estimated"], st
+    assert "$" in st["working"], st   # the live Working still shows, labeled
