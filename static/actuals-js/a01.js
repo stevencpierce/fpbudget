@@ -72,6 +72,7 @@
     data: null, view: VIEWS.includes(AJ.initialView) ? AJ.initialView : 'unclaimed',
     q: '', card: '', from: '', to: '',
     sel: new Set(), lastIdx: null, rows: [],      // rows: txn rows in render order (for shift-click)
+    quick: null, quickInit: false,                // quick date chip last clicked; stored filter applied once
     lineFilter: null, loading: false, focusTxn: AJ.focusTxn || null,
     byId: new Map(), lineById: new Map(), sectionOfLine: new Map(),
     // Phase 5: the selected receipt (Receipts view), the charge ticked in
@@ -101,6 +102,14 @@
       }));
       // Drop selections that no longer exist in the pool.
       Array.from(S.sel).forEach(id => { if (!S.byId.has(id)) S.sel.delete(id); });
+      // First load: the quick date range this person chose for this
+      // project last time (needs the payload — Project dates live in it).
+      if (!S.quickInit) {
+        S.quickInit = true;
+        const k = quickStored();
+        const r = k ? AW.quickRange(k) : null;
+        if (r) { S.quick = k; S.from = r.from; S.to = r.to; $('aw-from').value = r.from; $('aw-to').value = r.to; }
+      }
       AW.render();
       if (S.focusTxn && !opts.keepFocus) AW.focusTransaction(S.focusTxn);
       S.focusTxn = null;
@@ -208,6 +217,7 @@
       sel.value = S.card;
     }
     if (AW.panelActive && AW.panelActive()) { if (AW.renderPanel) AW.renderPanel(); } else renderBudget();
+    renderQuick();
     renderTable();
     renderActionBar();
     if (AW.renderRecent) AW.renderRecent();
@@ -371,8 +381,7 @@
       rows.forEach(t => { html += txnRow(t, S.rows.length, S.view); S.rows.push(t); });
     }
     host.innerHTML = html;
-    const all = $('aw-selall');
-    if (all) { all.checked = S.rows.length > 0 && S.rows.every(t => S.sel.has(t.id)); all.indeterminate = !all.checked && S.rows.some(t => S.sel.has(t.id)); }
+    syncSelectAll();
     hint.innerHTML = S.view === 'unclaimed'
       ? 'Drag rows onto a budget line, or select and press <kbd>A</kbd> to assign · <kbd>N</kbd> marks not project · <kbd>M</kbd> approves a suggested receipt · <kbd>Esc</kbd> clears'
       : S.view === 'assigned' ? 'Drag a row onto another line to move it · the row menu has Unassign, Split, Attach and Add reason'
@@ -578,9 +587,32 @@
   // ── Selection ────────────────────────────────────────────────────────
   AW.selectedTxns = () => Array.from(S.sel).map(id => S.byId.get(id)).filter(Boolean);
   AW.selTotal = () => AW.selectedTxns().reduce((a, t) => a + Number(t.amount || 0), 0);
+  // The header checkbox mirrors the VISIBLE rows (S.rows, this view and
+  // filter): checked when every one is selected, indeterminate when some,
+  // unchecked when none, disabled when the list is empty. (Owner, Nov 4:
+  // "select all doesn't toggle off" — clearing used to skip this sync, so
+  // the rows stayed ticked after the selection was already empty.)
+  function syncSelectAll() {
+    const all = $('aw-selall');
+    if (!all) return;
+    const n = S.rows.length;
+    const picked = S.rows.reduce((a, t) => a + (S.sel.has(t.id) ? 1 : 0), 0);
+    all.checked = n > 0 && picked === n;
+    all.indeterminate = picked > 0 && picked < n;
+    all.disabled = n === 0;
+  }
+  // Every row checkbox, its aria-selected and the header box follow S.sel —
+  // run on EVERY selection change, including the one that empties it.
+  function syncSelectionUi() {
+    document.querySelectorAll('#aw-table .aw-row[data-tid]').forEach(r => r.setAttribute('aria-selected', S.sel.has(+r.dataset.tid) ? 'true' : 'false'));
+    document.querySelectorAll('#aw-table input[data-sel]').forEach(cb => { cb.checked = S.sel.has(+cb.dataset.sel); });
+    syncSelectAll();
+  }
+  AW.syncSelectionUi = syncSelectionUi;
   function renderActionBar() {
     const bar = $('aw-actionbar');
     const n = S.sel.size;
+    syncSelectionUi();
     if (!n) { bar.hidden = true; return; }
     bar.hidden = false;
     const ts = AW.selectedTxns();
@@ -592,12 +624,16 @@
     bar.querySelector('[data-act="attach"]').disabled = n !== 1 || (one && !!one.receipt);
     bar.querySelector('[data-act="assign"]').disabled = inReceipts || ts.some(AW.isContainer);
     bar.querySelector('[data-act="not-project"]').disabled = inReceipts;
-    document.querySelectorAll('#aw-table .aw-row[data-tid]').forEach(r => r.setAttribute('aria-selected', S.sel.has(+r.dataset.tid) ? 'true' : 'false'));
-    document.querySelectorAll('#aw-table input[data-sel]').forEach(cb => { cb.checked = S.sel.has(+cb.dataset.sel); });
-    const all = $('aw-selall');
-    if (all) { all.checked = S.rows.length > 0 && S.rows.every(t => S.sel.has(t.id)); all.indeterminate = !all.checked && S.rows.some(t => S.sel.has(t.id)); }
     if (inReceipts) renderTable();
   }
+  // Select all = every visible row (this view and filter); clearing it
+  // empties the whole selection, hidden rows included, so the floating
+  // bar's count and the row ticks always agree with the header box.
+  AW.toggleSelectAll = function (on) {
+    if (on) S.rows.forEach(t => S.sel.add(t.id)); else S.sel.clear();
+    S.lastIdx = null;
+    renderActionBar();
+  };
   AW.setSelection = ids => { S.sel = new Set(ids); renderActionBar(); if (S.view === 'receipts') renderTable(); };
   AW.clearSelection = () => { S.sel.clear(); S.lastIdx = null; renderActionBar(); if (S.view === 'receipts') renderTable(); };
   function clickRow(row, e) {
@@ -621,7 +657,7 @@
     if (!t) { AW.toast('That transaction is not in this project\'s pool.', 'yellow'); return; }
     const d = S.data;
     const view = (d.not_project || []).some(x => x.id === tid) ? 'not_project' : (AW.isAssigned(t) ? 'assigned' : 'unclaimed');
-    S.q = ''; S.card = ''; S.from = ''; S.to = ''; S.lineFilter = null;
+    S.q = ''; S.card = ''; S.from = ''; S.to = ''; S.lineFilter = null; S.quick = null;
     $('aw-q').value = ''; $('aw-card').value = ''; $('aw-from').value = ''; $('aw-to').value = '';
     if (view !== 'not_project') S.sel = new Set([tid]);
     AW.setView(view);
@@ -648,8 +684,76 @@
   let qTimer = null;
   $('aw-q').addEventListener('input', e => { clearTimeout(qTimer); qTimer = setTimeout(() => { S.q = e.target.value.trim(); renderTable(); }, 120); });
   $('aw-card').addEventListener('change', e => { S.card = e.target.value; renderTable(); });
-  $('aw-from').addEventListener('change', e => { S.from = e.target.value; renderTable(); });
-  $('aw-to').addEventListener('change', e => { S.to = e.target.value; renderTable(); });
+  // A hand edit to either date is a custom range: no chip stays chosen or
+  // remembered (renderQuick still lights a chip whose range it happens to equal).
+  $('aw-from').addEventListener('change', e => { S.from = e.target.value; S.quick = null; quickRemember(null); renderQuick(); renderTable(); });
+  $('aw-to').addEventListener('change', e => { S.to = e.target.value; S.quick = null; quickRemember(null); renderQuick(); renderTable(); });
+
+  // ── Quick date ranges ────────────────────────────────────────────────
+  // Chips beside From / To (owner, Nov 4). Each one FILLS the two inputs,
+  // so matchesFilters stays the one date rule; nothing else filters.
+  // Project dates = the live budget's Start / End (workspace.json
+  // project.start_date / end_date; edited on the Settings tab).
+  const QUICK_KEY = `aw-quick:${PID}:${AJ.uid || 'anon'}`;
+  const isoDay = d => { const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+  function quickRemember(key) { try { if (key) localStorage.setItem(QUICK_KEY, key); else localStorage.removeItem(QUICK_KEY); } catch (e) {} }
+  function quickStored() { try { return localStorage.getItem(QUICK_KEY) || ''; } catch (e) { return ''; } }
+  // {from, to} for a chip (local calendar; '' = open-ended), null when the
+  // chip has nothing to offer (Project dates with no dates set).
+  AW.quickRange = function (key, now) {
+    const t = now ? new Date(now) : new Date();
+    const y = t.getFullYear(), m = t.getMonth(), q = Math.floor(m / 3);
+    const span = (a, b) => ({ from: isoDay(a), to: isoDay(b) });
+    switch (key) {
+      case 'project': {
+        const p = (S.data || {}).project || {};
+        if (!p.start_date && !p.end_date) return null;
+        return { from: p.start_date || '', to: p.end_date || '' };
+      }
+      case 'month': return span(new Date(y, m, 1), new Date(y, m + 1, 0));
+      case 'last_month': return span(new Date(y, m - 1, 1), new Date(y, m, 0));
+      case 'quarter': return span(new Date(y, q * 3, 1), new Date(y, q * 3 + 3, 0));
+      case 'last_quarter': return span(new Date(y, q * 3 - 3, 1), new Date(y, q * 3, 0));
+      case 'ytd': return span(new Date(y, 0, 1), t);
+      case 'all': return { from: '', to: '' };
+    }
+    return null;
+  };
+  AW.applyQuick = function (key) {
+    const r = AW.quickRange(key);
+    if (!r) return false;
+    S.quick = key; S.from = r.from; S.to = r.to;
+    $('aw-from').value = r.from; $('aw-to').value = r.to;
+    quickRemember(key);
+    renderQuick();
+    renderTable();
+    return true;
+  };
+  function renderQuick() {
+    const host = $('aw-quick'); if (!host) return;
+    const p = (S.data || {}).project || {};
+    const haveDates = !!(p.start_date || p.end_date);
+    // The lit chip is the one the inputs hold: the last clicked while its
+    // range still matches, else the first whose range matches (both empty
+    // = All). A hand edit to another range lights nothing.
+    const matches = k => { const r = AW.quickRange(k); return !!r && r.from === S.from && r.to === S.to; };
+    const chips = Array.from(host.querySelectorAll('[data-quick]'));
+    chips.forEach(b => {
+      if (b.dataset.quick !== 'project') return;
+      b.disabled = !haveDates;
+      b.title = haveDates ? `${p.start_date || '…'} to ${p.end_date || '…'}` : 'Set the project dates in Settings';
+    });
+    let active = (S.quick && matches(S.quick)) ? S.quick : null;
+    if (!active) { const hit = chips.find(b => !b.disabled && matches(b.dataset.quick)); active = hit ? hit.dataset.quick : null; }
+    chips.forEach(b => b.setAttribute('aria-pressed', b.dataset.quick === active ? 'true' : 'false'));
+    const link = $('aw-quick-set');
+    if (link) { link.hidden = haveDates; link.href = (AJ.urls || {}).settings || '#'; link.title = 'Set the project dates in Settings'; }
+  }
+  AW.renderQuick = renderQuick;
+  $('aw-quick').addEventListener('click', e => {
+    const b = e.target.closest('[data-quick]'); if (!b || b.disabled) return;
+    AW.applyQuick(b.dataset.quick);
+  });
 
   $('aw-table').addEventListener('click', e => {
     const act = e.target.closest('[data-act]');
@@ -658,10 +762,7 @@
       if (AW.actions && AW.actions[act.dataset.act]) { e.preventDefault(); AW.actions[act.dataset.act](act, e); }
       return;
     }
-    if (e.target.id === 'aw-selall') {
-      if (e.target.checked) S.rows.forEach(t => S.sel.add(t.id)); else S.rows.forEach(t => S.sel.delete(t.id));
-      renderActionBar(); return;
-    }
+    if (e.target.id === 'aw-selall') { AW.toggleSelectAll(e.target.checked); return; }
     const ghost = e.target.closest('.aw-chip.ghost[data-tid]');
     if (ghost) { if (AW.actions && AW.actions['accept-suggestion']) AW.actions['accept-suggestion'](ghost, e); return; }
     if (e.target.closest('a')) return;

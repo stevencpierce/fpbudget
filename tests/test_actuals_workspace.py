@@ -468,6 +468,109 @@ def test_assign_picker_searches_and_offers_a_whole_section(ws):
     page.keyboard.press("Escape")
 
 
+# ── Select all + quick date chips (owner reports, 2026-11-04) ─────────────
+
+def _header_box(page: Page):
+    return page.evaluate("(() => { const b = document.getElementById('aw-selall'); return { checked: b.checked, indeterminate: b.indeterminate, disabled: b.disabled }; })()")
+
+
+def test_select_all_toggles_off_and_reflects_the_rows(ws):
+    page, pid = ws
+    _reload_ws(page, pid)
+    rows = page.locator("#aw-table .aw-row[data-tid]")
+    n = rows.count()
+    assert n >= 2
+    ticked = page.locator("#aw-table .aw-row[data-tid] input[data-sel]:checked")
+    box = page.locator("#aw-selall")
+    assert _header_box(page) == {"checked": False, "indeterminate": False, "disabled": False}
+    # Check: every visible row is selected and the bar counts them.
+    box.click()
+    expect(ticked).to_have_count(n)
+    expect(page.locator("#aw-selinfo")).to_contain_text(f"{n} selected")
+    assert _header_box(page)["checked"] is True
+    # Check again: everything is deselected — rows, bar and the header box.
+    box.click()
+    expect(ticked).to_have_count(0)
+    expect(page.locator("#aw-actionbar")).to_be_hidden()
+    expect(page.locator("#aw-table .aw-row[aria-selected='true']")).to_have_count(0)
+    assert _header_box(page) == {"checked": False, "indeterminate": False, "disabled": False}
+    # Select all, untick one row: indeterminate, and the count follows.
+    box.click()
+    rows.nth(0).locator("input[data-sel]").click()
+    expect(page.locator("#aw-selinfo")).to_contain_text(f"{n - 1} selected")
+    assert _header_box(page) == {"checked": False, "indeterminate": True, "disabled": False}
+    # Tick it back by hand: the header box fills in on its own.
+    rows.nth(0).locator("input[data-sel]").click()
+    assert _header_box(page)["checked"] is True
+    # Clear from the bar: rows and header box follow.
+    page.locator('#aw-actionbar [data-act="clear"]').click()
+    expect(ticked).to_have_count(0)
+    assert _header_box(page) == {"checked": False, "indeterminate": False, "disabled": False}
+    # A filter that empties the list disables the header box.
+    page.fill("#aw-q", "zzz-nothing-matches-this")
+    page.wait_for_timeout(300)
+    expect(page.locator("#aw-table .aw-empty")).to_be_visible()
+    page.fill("#aw-q", "")
+    page.wait_for_timeout(300)
+    expect(page.locator("#aw-table .aw-row[data-tid]")).to_have_count(n)
+    take_step_screenshot(page, "actuals-ws-select-all")
+
+
+def test_quick_date_chips_fill_the_inputs_and_filter(ws):
+    page, pid = ws
+    bid = _fetch(page, f"/projects/{pid}/actuals/workspace.json")["json"]["budget_id"]
+    assert bid
+    # Two charges a year apart from the seed, so a project window keeps one.
+    for d in ("2025-03-10", "2025-03-20"):
+        _post_json(page, f"/projects/{pid}/actuals/manual-expense", {
+            "vendor": "QF Vendor", "amount": 42, "txn_date": d, "payment_method": "company_card", "note": "e2e quick"})
+    # No project dates: the chip is disabled and points at Settings.
+    _post_json(page, f"/projects/{pid}/budget/{bid}/settings", {"start_date": "", "end_date": ""})
+    _reload_ws(page, pid)
+    proj = page.locator('#aw-quick [data-quick="project"]')
+    expect(proj).to_be_disabled()
+    expect(proj).to_have_attribute("title", "Set the project dates in Settings")
+    expect(page.locator("#aw-quick-set")).to_be_visible()
+    assert "tab=settings" in page.locator("#aw-quick-set").get_attribute("href")
+    expect(page.locator('#aw-quick [data-quick="all"]')).to_have_attribute("aria-pressed", "true")
+    # This month fills BOTH inputs with the page's own month range and lights up.
+    page.click('#aw-quick [data-quick="month"]')
+    want = page.evaluate("AW.quickRange('month')")
+    expect(page.locator("#aw-from")).to_have_value(want["from"])
+    expect(page.locator("#aw-to")).to_have_value(want["to"])
+    expect(page.locator('#aw-quick [data-quick="month"]')).to_have_attribute("aria-pressed", "true")
+    expect(page.locator("#aw-table .aw-row[data-tid]", has_text="QF Vendor")).to_have_count(0)
+    # Set the project dates on the Settings route the Settings tab saves through.
+    _post_json(page, f"/projects/{pid}/budget/{bid}/settings", {"start_date": "2025-03-15", "end_date": "2025-03-31"})
+    _reload_ws(page, pid)
+    proj = page.locator('#aw-quick [data-quick="project"]')
+    expect(proj).to_be_enabled()
+    expect(page.locator("#aw-quick-set")).to_be_hidden()
+    proj.click()
+    expect(page.locator("#aw-from")).to_have_value("2025-03-15")
+    expect(page.locator("#aw-to")).to_have_value("2025-03-31")
+    expect(proj).to_have_attribute("aria-pressed", "true")
+    qf = page.locator("#aw-table .aw-row[data-tid]", has_text="QF Vendor")
+    expect(qf).to_have_count(1)
+    expect(qf).to_contain_text("Mar 20")
+    take_step_screenshot(page, "actuals-ws-quick-dates")
+    # Remembered per project per person: a reload re-applies it.
+    _reload_ws(page, pid)
+    expect(page.locator("#aw-from")).to_have_value("2025-03-15")
+    expect(page.locator('#aw-quick [data-quick="project"]')).to_have_attribute("aria-pressed", "true")
+    expect(page.locator("#aw-table .aw-row[data-tid]", has_text="QF Vendor")).to_have_count(1)
+    # A hand edit un-lights the chip and widens the range.
+    page.fill("#aw-from", "2025-03-01")
+    page.wait_for_timeout(300)
+    expect(page.locator('#aw-quick [aria-pressed="true"]')).to_have_count(0)
+    expect(page.locator("#aw-table .aw-row[data-tid]", has_text="QF Vendor")).to_have_count(2)
+    # All clears both inputs and is remembered as the default again.
+    page.click('#aw-quick [data-quick="all"]')
+    expect(page.locator("#aw-from")).to_have_value("")
+    expect(page.locator("#aw-to")).to_have_value("")
+    expect(page.locator('#aw-quick [data-quick="all"]')).to_have_attribute("aria-pressed", "true")
+
+
 def test_resizable_divider_persists_its_width(seeded):
     page, pid = seeded
     _reload_ws(page, pid)

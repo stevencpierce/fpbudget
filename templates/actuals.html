@@ -131,6 +131,13 @@
   .aw-filters input[type="date"] { width: 150px; }
   .aw-filters[hidden] { display: none; }
   .aw-filters .spacer { flex: 1 1 auto; }
+  /* Quick date chips: one group that wraps as a unit beside the date inputs
+     (a second row at iPad 1024), and wraps inside itself when narrower. */
+  .aw-quick { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; max-width: 100%; }
+  .aw-quick .aw-pill[aria-pressed="true"] { border-color: var(--accent); background: var(--aw-accent-soft); color: var(--accent-dim); font-weight: 600; }
+  .aw-quick .aw-pill:disabled { opacity: .5; cursor: not-allowed; background: var(--bg-3); }
+  .aw-quick-set { font-size: 12px; color: var(--accent); white-space: nowrap; }
+  .aw-quick-set[hidden] { display: none; }
   .aw-summary { font-size: 12px; color: var(--text-muted); }
   .aw-banner { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; font-size: 13px; background: color-mix(in srgb, var(--orange) 14%, var(--bg-2)); color: var(--text); border: 1px solid color-mix(in srgb, var(--orange) 40%, var(--border)); }
   .aw-banner[hidden] { display: none; }
@@ -533,6 +540,24 @@
           <input id="aw-from" type="date" title="From date">
           <label for="aw-to" class="vis-hidden">To date</label>
           <input id="aw-to" type="date" title="To date">
+          {# Quick date ranges (owner, Nov 4: "a quick button to filter the
+             transactions for the project dates … then maybe this quarter,
+             last quarter"). Each chip fills From / To, so the one date
+             filter applies; the chip whose range the inputs hold is lit,
+             a hand edit un-lights it. The choice is remembered per project
+             per user (localStorage) and re-applied on reload. Project dates
+             are the live budget's Start / End (Settings tab); without them
+             that chip is disabled and "Set dates" links to Settings. #}
+          <div class="aw-quick" id="aw-quick" role="group" aria-label="Quick date ranges">
+            <button type="button" class="aw-pill" data-quick="project" aria-pressed="false"><span>Project dates</span></button>
+            <a class="aw-quick-set" id="aw-quick-set" href="#" hidden>Set dates</a>
+            <button type="button" class="aw-pill" data-quick="month" aria-pressed="false"><span>This month</span></button>
+            <button type="button" class="aw-pill" data-quick="last_month" aria-pressed="false"><span>Last month</span></button>
+            <button type="button" class="aw-pill" data-quick="quarter" aria-pressed="false"><span>This quarter</span></button>
+            <button type="button" class="aw-pill" data-quick="last_quarter" aria-pressed="false"><span>Last quarter</span></button>
+            <button type="button" class="aw-pill" data-quick="ytd" aria-pressed="false"><span>Year to date</span></button>
+            <button type="button" class="aw-pill" data-quick="all" aria-pressed="false"><span>All</span></button>
+          </div>
           <span class="spacer"></span>
           {# Phase 5: every receipt↔charge suggestion waits here for a click —
              the Review-matches dialog (Approve / Not a match / Approve all strong). #}
@@ -835,7 +860,10 @@ __AJ.urls = {
   oauth: "{{ url_for('admin_panel') }}#company-qbo",
   accounts: "{{ url_for('admin_qbo_accounts') }}",
   docs: "{{ url_for('docs_project', pid=project.id) }}",
-  upload: "{{ url_for('mobile_upload') }}"
+  upload: "{{ url_for('mobile_upload') }}",
+  {# The Settings tab of the live budget (same link the project nav uses):
+     where the project's Start / End dates are edited. #}
+  settings: "{% if budget_id %}{{ url_for('budget_view', pid=project.id, bid=budget_id) }}?tab=settings{% else %}{{ url_for('project_budget_redirect', pid=project.id) }}?tab=settings{% endif %}"
 };
 </script>
 {# The ONE detail window + line picker (shared with the budget page). #}

@@ -4442,6 +4442,13 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
               "pooled": sum(1 for r in transactions if r.get("pooled"))}
     return {"ok": True, "project_id": pid,
             "budget_id": (budget.id if budget else None),
+            # The project's dates (2026-11-04, quick date filters): they live
+            # on the Budget ("Project settings" block, models.py) and the
+            # Settings tab edits the live budget's — the same one the
+            # workspace codes to. ProjectSheet carries no dates.
+            "project": {"id": pid,
+                        "start_date": (budget.start_date.isoformat() if budget and budget.start_date else None),
+                        "end_date": (budget.end_date.isoformat() if budget and budget.end_date else None)},
             "transactions": transactions, "receipts": receipts,
             "not_project": not_project,
             "duplicates": duplicates, "voided": voided,
