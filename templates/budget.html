@@ -1390,7 +1390,11 @@
           <td class="col-num"></td>
           <td class="col-num">{{ (amount + fee_share) | currency }}</td>
           <td class="col-num col-working">{{ (amount + fee_share) | currency }}</td>
-          <td class="col-num col-actual">{% if actual %}{{ actual | currency }}{% endif %}</td>
+          {# The Actual cell drills down like any other line's (owner
+             2026-11-04: "I cannot drop down the actuals in Administrative
+             the way I do any other section") — the computed rows are backed
+             by a real hidden BudgetLine, so the ledger works on them too. #}
+          <td class="col-num col-actual{% if line_id %} line-actual{% endif %}"{% if line_id %} data-acell-line="{{ line_id }}"{% endif %}>{% if actual %}{{ actual | currency }}{% endif %}</td>
           {% if actual %}
           {% set _v = (amount + fee_share - actual) %}
           <td class="col-num col-variance" style="color:{% if _v < 0 %}#fb7185{% else %}#5fd0a0{% endif %};font-style:normal">{{ _v | currency }}</td>
