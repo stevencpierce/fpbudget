@@ -291,7 +291,7 @@ def actuals_link_split(pid):
         if not txn:
             continue
         try:
-            claim_for(txn, pid, why='split receipt linked')
+            claim_for(txn, pid, why='split receipt linked', receipt=True)
         except ClaimError as e:
             db.session.rollback()
             return jsonify({"error": str(e)}), 409
@@ -506,14 +506,36 @@ def actuals_recover_not_project(pid, tid):
         return jsonify({"ok": True, "transaction_id": tid, "restored_dismissal": True,
                         "activity_id": (_act.id if _act else None),
                         "transaction": _txn_state_json(txn)})
+    # A row this project holds never needs its own dismissal; a legacy one
+    # (the 2026-11-04 migration wrote them on kept rows) goes with the
+    # flag so Restore leaves no Not project mark behind (2026-11-05).
+    _held_dis = pool_dismissal(txn.id, pid) if txn.project_id == pid else None
     if not txn.not_project_expense:
-        return jsonify({"ok": True, "already": True,
+        if _held_dis is None:
+            return jsonify({"ok": True, "already": True,
+                            "transaction": _txn_state_json(txn)})
+        _before_h = {'pool_dismissed': True, 'excluded_reason': _held_dis.reason}
+        undismiss(txn, pid)
+        db.session.commit()
+        _act = None
+        try:
+            _act = _log_activity(
+                action='update', entity_type='transaction', entity_id=txn.id,
+                entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
+                project_id=pid, before=_before_h, after={'pool_dismissed': False},
+                note=f'Dropped a stale Not project mark on ${float(txn.amount or 0):,.2f} this project holds')
+        except Exception: pass
+        return jsonify({"ok": True, "transaction_id": tid, "restored_dismissal": True,
+                        "activity_id": (_act.id if _act else None),
                         "transaction": _txn_state_json(txn)})
     _before = {'not_project_expense': True,
                'excluded_at': (txn.excluded_at.isoformat(timespec='minutes')
                                if txn.excluded_at else None),
                'excluded_by_user_id': txn.excluded_by_user_id,
                'excluded_reason': txn.excluded_reason}
+    if _held_dis is not None:
+        _before['pool_dismissed'] = True
+        undismiss(txn, pid)
     # Phase 5: recovering a row QuickBooks voided means "keep it anyway" —
     # the red Voided flag (carried by no_charge_reason) comes off with it.
     from actuals import VOIDED_IN_QBO_REASON as _VOID
@@ -554,10 +576,19 @@ def actuals_not_project_json(pid):
     project claimed is simply not in this project's pool.)"""
     ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'viewer')
+    # Same rule as the workspace (2026-11-05): a coded row is never here.
+    try:
+        from actuals import repair_hidden_coded as _rhc_np
+        _rhc_np(pid, how='found when the Not project list loaded')
+    except Exception as _rhe:
+        logging.warning(f"[not-project.json] hidden-coded repair failed (continuing): {_rhe}")
     rows = (Transaction.query
             .filter(Transaction.project_id == pid,
                     Transaction.not_project_expense == True,      # noqa: E712
-                    Transaction.backup_of_txn_id.is_(None))
+                    Transaction.backup_of_txn_id.is_(None),
+                    Transaction.budget_line_id.is_(None),
+                    Transaction.account_code.is_(None),
+                    ~db.exists().where(TransactionSplit.transaction_id == Transaction.id))
             .all())
     _proj_names = {}
     def _pname(_p):
@@ -3019,7 +3050,7 @@ def actuals_link_existing_doc(pid, tid):
     _undo_before = _link_undo_before(txn, doc.id)
     # Attaching a receipt claims the charge for this project (company ledger).
     try:
-        claim_for(txn, pid, why='receipt attached')
+        claim_for(txn, pid, why='receipt attached', receipt=True)
     except ClaimError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 409
@@ -3511,7 +3542,7 @@ def actuals_upload_receipt_to_transaction(pid, tid):
     # ledger) — refused before any file is touched when another project
     # holds it.
     try:
-        claim_for(txn, pid, why='receipt uploaded')
+        claim_for(txn, pid, why='receipt uploaded', receipt=True)
     except ClaimError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 409
@@ -4251,6 +4282,17 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
         except Exception as _ae:
             logging.warning(f"[workspace.json] AI batch failed (continuing): {_ae}")
 
+    # A row this project coded (line / section / split) is never under its
+    # Not project (2026-11-05): a stale dismissal or exclusion flag on one
+    # is repaired here, on read — logged once per charge — so the Assigned
+    # list and the line rollups agree (actuals.repair_hidden_coded, the
+    # same rule Maintenance → "Coded charges hidden under Not project" runs).
+    try:
+        from actuals import repair_hidden_coded as _rhc
+        _rhc(pid, how='found when the Actuals workspace loaded')
+    except Exception as _rhe:
+        logging.warning(f"[workspace.json] hidden-coded repair failed (continuing): {_rhe}")
+
     budget, lines_by_id = _ws_working_budget_and_lines(pid)
     _any_line = {}
     def _line_label_any(lid):
@@ -4489,7 +4531,11 @@ def _build_workspace(pid, run_matchers=True, with_budget=True):
         }
         if row["counted_twice"] and 'counted_twice' not in flags["yellow"]:
             flags["yellow"].insert(0, 'counted_twice')
-        if t.not_project_expense or t.id in _dismissed_ids:
+        # Belt and braces for the rule above: a row this project holds with
+        # a line, a section or a split is Assigned, whatever marks it carries.
+        _coded_here = (t.project_id == pid
+                       and bool(t.budget_line_id or t.account_code or splits))
+        if (t.not_project_expense or t.id in _dismissed_ids) and not _coded_here:
             not_project.append(row)
         else:
             transactions.append(row)

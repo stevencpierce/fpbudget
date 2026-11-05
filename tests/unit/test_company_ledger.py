@@ -885,3 +885,302 @@ def test_25_payee_flag_only_against_a_real_quickbooks_vendor():
     assert not ledger.payee_flag_applies("Coco Lee", "River Bar", False), "raw text is never enough"
     assert ledger.payee_flag_applies("Ryan Mauskopf", "Joel Knutson", True)
     assert not ledger.payee_flag_applies("Lyft", "LYFT", True)
+
+
+# ── 9. a coded charge is never hidden under Not project (2026-11-05) ──────
+# Live on GrubHub (project 309): the $20,000 Steven Pierce BillPayment
+# (txn 7038, split 6,000 + 14,000 to the two 1100 Director lines) and the
+# $9,600 Nahuel Attar one (7037) sat under Not project with a dismissal the
+# ledger migration had written for the project that KEPT them (plus the
+# legacy flag) — off the Assigned list, their lines at $0.
+
+def _line_actual(ws, lid):
+    for sec in ws["budget"]["sections"]:
+        for ln in sec["lines"]:
+            if ln["id"] == lid:
+                return ln["actual"]
+    return None
+
+
+def _ws(ctx, p):
+    r = ctx["client"].get(f"/projects/{p}/actuals/workspace.json")
+    assert r.status_code == 200, r.get_json()
+    return r.get_json()
+
+
+def test_26_the_7038_shape_split_plus_dismissal_goes_to_assigned_and_counts(ctx):
+    from models import TransactionPoolDismissal, ActivityLog
+    with ctx["app"].app_context():
+        G, uid = S["grub"], S["uid"]
+        l0, l1 = S[f"lines_{G}"][:2]
+        wsb = _ws(ctx, G)
+        line0_before, line1_before = _line_actual(wsb, l0), _line_actual(wsb, l1)
+        t = _txn(G, "Steven Pierce", 20000, "2026-10-28", source="qbo_sync",
+                 qbo_txn_id="7038", qbo_txn_type="BillPayment",
+                 not_project_expense=True)            # the legacy flag, excluded_at NULL
+        db.session.add_all([
+            TransactionSplit(transaction_id=t.id, budget_line_id=l0, project_id=G, amount=Decimal("6000")),
+            TransactionSplit(transaction_id=t.id, budget_line_id=l1, project_id=G, amount=Decimal("14000"))])
+        db.session.add(TransactionPoolDismissal(transaction_id=t.id, project_id=G,
+                                                reason="Not project (marked before the company ledger)",
+                                                created_at=NOW, created_by=uid))
+        db.session.commit()
+        tid = t.id
+        S["t7038"] = tid
+        # the check lists it, as coded-and-hidden, nowhere else
+        hidden = actuals.hidden_coded_rows(G)
+        assert [x.id for x, _d in hidden] == [tid] and hidden[0][1] is not None
+        assert tid not in {x.id for x, _d in actuals.dismissed_receipt_only_rows(G)}
+        base0 = actuals.split_sums_by_line(G).get(l0, 0.0)       # Nahuel's 9,000 is already there
+        base1 = actuals.split_sums_by_line(G).get(l1, 0.0)
+        ws0 = _ws(ctx, G)      # NB: this load repairs it; the sums before are the hidden ones
+        # the workspace repairs it on read: Assigned, counted, dismissal gone, logged once
+        ws = ws0
+        assert tid in {x["id"] for x in ws["transactions"]}
+        assert tid not in {x["id"] for x in ws["not_project"]}
+        row = next(x for x in ws["transactions"] if x["id"] == tid)
+        assert row["excluded"] is None and len(row["splits"]) == 2
+        assert _line_actual(ws, l0) == round(line0_before + 6000.0, 2)
+        assert _line_actual(ws, l1) == round(line1_before + 14000.0, 2)
+        db.session.expire_all()
+        t = Transaction.query.get(tid)
+        assert t.project_id == G and not t.not_project_expense and t.excluded_at is None
+        assert actuals.pool_dismissal(tid, G) is None
+        sums = actuals.split_sums_by_line(G)
+        assert sums.get(l0) == round(base0 + 6000.0, 2) and sums.get(l1) == round(base1 + 14000.0, 2)
+        logs = ActivityLog.query.filter_by(entity_type='transaction', entity_id=tid).all()
+        assert len([a for a in logs if 'hidden under Not project' in (a.note or '')]) == 1
+        assert actuals.hidden_coded_rows(G) == []
+        # a second load logs nothing more
+        _ws(ctx, G)
+        logs2 = ActivityLog.query.filter_by(entity_type='transaction', entity_id=tid).all()
+        assert len([a for a in logs2 if 'hidden under Not project' in (a.note or '')]) == 1
+        # the invariant at the write: a dismissal by GrubHub on it is refused
+        with pytest.raises(actuals.DismissalError):
+            actuals.dismiss_for(Transaction.query.get(tid), G, "no")
+        db.session.rollback()
+        # ...while GINTS (which does not hold it) could still not see it, and Not project
+        # through the ONE write releases first, so it never trips
+        r = ctx["client"].post(f"/projects/{G}/actuals/transaction/{tid}/mark-not-project", json={"reason": "x"})
+        assert r.status_code == 200 and r.get_json()["mode"] == "dismissed"
+        db.session.expire_all()
+        t = Transaction.query.get(tid)
+        assert t.project_id is None and actuals.pool_dismissal(tid, G) is not None
+        assert TransactionSplit.query.filter_by(transaction_id=tid).count() == 0
+        # and the undo of that mark puts the split back, claimed, no dismissal
+        act = r.get_json()["activity_id"]
+        r = ctx["client"].post(f"/projects/{G}/budget/{S[f'b_{G}']}/activity/{act}/undo", json={})
+        assert r.status_code == 200, r.get_json()
+        db.session.expire_all()
+        t = Transaction.query.get(tid)
+        assert t.project_id == G and TransactionSplit.query.filter_by(transaction_id=tid).count() == 2
+        assert actuals.pool_dismissal(tid, G) is None
+        assert tid in {x["id"] for x in _ws(ctx, G)["transactions"]}
+
+
+def test_27_coding_a_row_with_a_stale_dismissal_unhides_it(ctx):
+    """A line, a section or a split written on a row that carries this
+    project's dismissal drops the dismissal (claim_for, even when the row is
+    already this project's). A receipt alone leaves it."""
+    from models import TransactionPoolDismissal
+    with ctx["app"].app_context():
+        G, uid = S["grub"], S["uid"]
+        l0, l1 = S[f"lines_{G}"][:2]
+        made = []
+        for n in range(4):
+            t = _txn(G, f"Stale {n}", 100 + n, "2026-10-29", source="qbo_sync",
+                     qbo_txn_id=f"7100{n}", qbo_txn_type="Purchase")
+            db.session.add(TransactionPoolDismissal(transaction_id=t.id, project_id=G, reason="legacy",
+                                                    created_at=NOW, created_by=uid))
+            made.append(t.id)
+        db.session.commit()
+        a, b, c, d = made
+        # a line (set-line → actuals.link_transaction_to_line)
+        r = ctx["client"].post(f"/projects/{G}/actuals/transaction/{a}/set-line", json={"budget_line_id": l0})
+        assert r.status_code == 200, r.get_json()
+        assert actuals.pool_dismissal(a, G) is None
+        # a section (set-coa)
+        r = ctx["client"].post(f"/projects/{G}/actuals/transaction/{b}/set-coa", json={"account_code": 3401})
+        assert r.status_code == 200, r.get_json()
+        assert actuals.pool_dismissal(b, G) is None
+        # a split
+        r = ctx["client"].post(f"/projects/{G}/actuals/transaction/{c}/split",
+                               json={"splits": [{"budget_line_id": l0, "amount": 50},
+                                                {"budget_line_id": l1, "amount": 52}]})
+        assert r.status_code == 200, r.get_json()
+        assert actuals.pool_dismissal(c, G) is None
+        # a receipt only: the dismissal stays (receipt + Not project is a legitimate state)
+        doc = _doc(G, uid, "Stale 3", 103, date(2026, 10, 29), "stale-3.pdf")
+        db.session.commit()
+        r = ctx["client"].post(f"/projects/{G}/actuals/transaction/{d}/link-doc", json={"doc_upload_id": doc.id})
+        assert r.status_code == 200, r.get_json()
+        assert actuals.pool_dismissal(d, G) is not None
+        db.session.expire_all()
+        assert Transaction.query.get(d).doc_upload_id == doc.id
+        S["stale_receipt"] = d
+        # the helper itself, on a held row: the dismissal goes with the line
+        e = _txn(G, "Stale 4", 104, "2026-10-29", source="qbo_sync", qbo_txn_id="71004", qbo_txn_type="Purchase")
+        db.session.add(TransactionPoolDismissal(transaction_id=e.id, project_id=G, reason="legacy", created_at=NOW))
+        db.session.commit()
+        actuals.link_transaction_to_line(e.id, l1, user_id=uid)
+        assert actuals.pool_dismissal(e.id, G) is None
+        for tid in (a, b, c, e.id):
+            assert tid in {x["id"] for x in _ws(ctx, G)["transactions"]}
+
+
+def test_28_receipt_only_and_dismissed_stays_under_not_project_and_is_listed_for_review(ctx):
+    from models import TransactionPoolDismissal
+    with ctx["app"].app_context():
+        G, uid = S["grub"], S["uid"]
+        # the personal Amazon charge with its receipt, excluded — the legacy
+        # shape carries the flag AND a dismissal by the holding project
+        doc = _doc(G, uid, "Amazon", 31.5, date(2026, 10, 30), "amazon-personal.pdf")
+        t = _txn(G, "Amazon", 31.5, "2026-10-30", source="reconciled", qbo_txn_id="7200",
+                 qbo_txn_type="Purchase", doc_upload_id=doc.id, match_status="confirmed",
+                 not_project_expense=True, excluded_reason="personal", excluded_at=NOW,
+                 excluded_by_user_id=uid)
+        db.session.add(TransactionPoolDismissal(transaction_id=t.id, project_id=G, reason="personal",
+                                                created_at=NOW, created_by=uid))
+        db.session.commit()
+        tid = t.id
+        ws = _ws(ctx, G)
+        assert tid in {x["id"] for x in ws["not_project"]}, "receipt + Not project stays excluded"
+        assert tid not in {x["id"] for x in ws["transactions"]}
+        assert actuals.pool_dismissal(tid, G) is not None, "nothing touched it"
+        assert tid not in {x.id for x, _d in actuals.hidden_coded_rows(G)}
+        listed = {x.id for x, _d in actuals.dismissed_receipt_only_rows(G)}
+        assert tid in listed and S["stale_receipt"] in listed
+        nj = ctx["client"].get(f"/projects/{G}/actuals/not-project.json").get_json()
+        assert tid in {x["id"] for x in nj["not_project"]}
+        # the Maintenance page: under receipt_only, not under coded
+        r = ctx["client"].get(f"/admin/actuals/hidden-coded?project={G}&format=json")
+        assert r.status_code == 200, r.get_data(as_text=True)[:300]
+        d = r.get_json()
+        assert tid not in {x["id"] for x in d["coded"]}
+        ro = next(x for x in d["receipt_only"] if x["id"] == tid)
+        assert ro["flagged"] and ro["dismissed"] and ro["signals"] == ["receipt"]
+        assert ro["restore_url"].endswith(f"/transaction/{tid}/recover")
+        r = ctx["client"].get(f"/admin/actuals/hidden-coded?project={G}")
+        assert r.status_code == 200 and b"Receipt only, under Not project" in r.data
+        # Restore (a person's call) clears the flag AND the stale dismissal; the receipt stays
+        r = ctx["client"].post(ro["restore_url"], json={})
+        assert r.status_code == 200, r.get_json()
+        db.session.expire_all()
+        t = Transaction.query.get(tid)
+        assert not t.not_project_expense and t.doc_upload_id == doc.id and t.project_id == G
+        assert actuals.pool_dismissal(tid, G) is None
+        assert tid in {x["id"] for x in _ws(ctx, G)["transactions"]}
+        # undo of the Restore: excluded again, dismissal back (a receipt is no coding)
+        act = r.get_json()["activity_id"]
+        r = ctx["client"].post(f"/projects/{G}/budget/{S[f'b_{G}']}/activity/{act}/undo", json={})
+        assert r.status_code == 200, r.get_json()
+        db.session.expire_all()
+        t = Transaction.query.get(tid)
+        assert t.not_project_expense and actuals.pool_dismissal(tid, G) is not None
+        assert tid in {x["id"] for x in _ws(ctx, G)["not_project"]}
+
+
+def test_29_the_maintenance_fix_and_its_undo_respect_the_invariant(ctx):
+    from models import TransactionPoolDismissal
+    with ctx["app"].app_context():
+        G, N, uid = S["grub"], S["gints"], S["uid"]
+        gl, nl = S[f"lines_{G}"], S[f"lines_{N}"]
+        # three hidden coded rows across two projects: a line + flag, a
+        # section + dismissal, a split + both
+        a = _txn(G, "Line + flag", 10, "2026-10-31", source="qbo_sync", qbo_txn_id="7301",
+                 qbo_txn_type="Purchase", budget_line_id=gl[0], account_code=2700, not_project_expense=True)
+        b = _txn(N, "Section + dismissal", 20, "2026-10-31", source="qbo_sync", qbo_txn_id="7302",
+                 qbo_txn_type="Purchase", account_code=3401)
+        c = _txn(N, "Split + both", 30, "2026-10-31", source="qbo_sync", qbo_txn_id="7303",
+                 qbo_txn_type="Purchase", not_project_expense=True)
+        db.session.add_all([
+            TransactionPoolDismissal(transaction_id=b.id, project_id=N, reason="legacy", created_at=NOW),
+            TransactionPoolDismissal(transaction_id=c.id, project_id=N, reason="legacy", created_at=NOW),
+            TransactionSplit(transaction_id=c.id, budget_line_id=nl[0], project_id=N, amount=Decimal("30"))])
+        db.session.commit()
+        ids = (a.id, b.id, c.id)
+        r = ctx["client"].get("/admin/actuals/hidden-coded?format=json")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert {x["id"] for x in d["coded"]} >= set(ids)
+        by = {x["id"]: x for x in d["coded"]}
+        assert by[a.id]["flagged"] and not by[a.id]["dismissed"] and by[a.id]["signals"] == ["line"]
+        assert by[b.id]["dismissed"] and by[b.id]["signals"] == ["section"]
+        assert by[c.id]["dismissed"] and by[c.id]["flagged"] and by[c.id]["signals"] == ["split"]
+        assert by[c.id]["coding"].startswith("Split:")
+        # HTML renders
+        r = ctx["client"].get("/admin/actuals/hidden-coded")
+        assert r.status_code == 200 and b"Coded and hidden" in r.data and b"Split + both" in r.data
+        # fix one
+        r = ctx["client"].post("/admin/actuals/hidden-coded/fix", json={"transaction_id": a.id})
+        assert r.status_code == 200 and r.get_json()["fixed"] == 1, r.get_json()
+        act_a = r.get_json()["rows"][0]["activity_id"]
+        db.session.expire_all()
+        assert not Transaction.query.get(a.id).not_project_expense
+        # fixing it again: no longer listed
+        r = ctx["client"].post("/admin/actuals/hidden-coded/fix", json={"transaction_id": a.id})
+        assert r.status_code == 409
+        # undo of the fix while the line stands is refused — the row would be hidden again
+        r = ctx["client"].post(f"/projects/{G}/budget/{S[f'b_{G}']}/activity/{act_a}/undo", json={})
+        assert r.status_code == 409, r.get_json()
+        assert "coded this charge" in r.get_json()["error"]
+        db.session.expire_all()
+        assert not Transaction.query.get(a.id).not_project_expense
+        # fix all (scoped to GINTS)
+        r = ctx["client"].post("/admin/actuals/hidden-coded/fix", json={"all": True, "project": N})
+        assert r.status_code == 200 and r.get_json()["fixed"] == 2, r.get_json()
+        db.session.expire_all()
+        assert actuals.pool_dismissal(b.id, N) is None and actuals.pool_dismissal(c.id, N) is None
+        assert not Transaction.query.get(c.id).not_project_expense
+        assert actuals.hidden_coded_rows() == []
+        # rollup: the split counts in GINTS now
+        assert actuals.split_sums_by_line(N).get(nl[0]) == 30.0
+        ws = _ws(ctx, N)
+        assert {b.id, c.id} <= {x["id"] for x in ws["transactions"]}
+        assert not ({b.id, c.id} & {x["id"] for x in ws["not_project"]})
+
+
+def test_30_migration_never_dismisses_the_keepers_own_project_when_it_codes_the_row(ctx):
+    """A re-run of the ledger migration on the 7038 shape: the keeper is
+    split by GrubHub and carries the legacy flag; a GINTS copy carries the
+    flag too. One dismissal — for GINTS — never one for GrubHub."""
+    from models import TransactionPoolDismissal
+    with ctx["app"].app_context():
+        db.session.execute(text("DROP INDEX IF EXISTS uq_transaction_qbo_company"))
+        G, N = S["grub"], S["gints"]
+        gl = S[f"lines_{G}"]
+        keep = _txn(G, "Steven Pierce", 20000, "2026-10-28", source="qbo_sync",
+                    qbo_txn_id="7038m", qbo_txn_type="BillPayment", not_project_expense=True)
+        copy = _txn(N, "STEVEN PIERCE", 20000, "2026-10-28", source="qbo_sync",
+                    qbo_txn_id="7038m", qbo_txn_type="BillPayment", not_project_expense=True,
+                    excluded_reason="GrubHub job")
+        db.session.add_all([
+            TransactionSplit(transaction_id=keep.id, budget_line_id=gl[0], project_id=G, amount=Decimal("6000")),
+            TransactionSplit(transaction_id=keep.id, budget_line_id=gl[1], project_id=G, amount=Decimal("14000"))])
+        # a section-coded keeper whose own copy in the other project is uncoded + flagged
+        keep2 = _txn(N, "Lyft", 12, "2026-10-28", source="qbo_sync", qbo_txn_id="7039m",
+                     qbo_txn_type="Purchase", account_code=3401, not_project_expense=True)
+        copy2 = _txn(G, "LYFT", 12, "2026-10-28", source="qbo_sync", qbo_txn_id="7039m",
+                     qbo_txn_type="Purchase", not_project_expense=True)
+        db.session.commit()
+        keys = {("7038m", "BillPayment"), ("7039m", "Purchase")}
+        pre = ledger.preflight(db, keys=keys)
+        assert pre["counts"]["dismissals_to_create"] == 2, pre["counts"]      # GINTS on 7038m, GrubHub on 7039m
+        a = ledger.analyze(db, keys=keys)
+        assert {(k, p) for k, p, *_ in a["dismissals"]} == {(keep.id, N), (keep2.id, G)}
+        r = ledger.run_migration(user_id=S["uid"], keys=keys)
+        assert r["deleted"] == 2 and r["dismissals"] == 2, r
+        assert Transaction.query.get(copy.id) is None and Transaction.query.get(copy2.id) is None
+        dis = {(d.transaction_id, d.project_id) for d in TransactionPoolDismissal.query.filter(
+            TransactionPoolDismissal.transaction_id.in_([keep.id, keep2.id])).all()}
+        assert dis == {(keep.id, N), (keep2.id, G)}
+        assert actuals.pool_dismissal(keep.id, G) is None and actuals.pool_dismissal(keep2.id, N) is None
+        # ...and the legacy flag on the coded keepers is cleared by the run itself
+        assert r["unhidden"] == 2, r
+        assert not Transaction.query.get(keep.id).not_project_expense
+        assert not Transaction.query.get(keep2.id).not_project_expense
+        assert not any(x.id in (keep.id, keep2.id) for x, _d in actuals.hidden_coded_rows())
+        assert ledger.analyze(db, keys=keys)["dismissals"] == []
+        ws = _ws(ctx, G)
+        assert keep.id in {x["id"] for x in ws["transactions"]}
+        assert keep.id not in {x["id"] for x in ws["not_project"]}

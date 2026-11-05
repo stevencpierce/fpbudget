@@ -116,6 +116,26 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   (`include_dismissed=True` for the Not project tab / Restore). Never set
   `not_project_expense` on a QuickBooks row; `release` turns a legacy mark
   into a dismissal.
+- A coded charge is never hidden under Not project (2026-11-05): a row
+  project P holds with a LINE, SECTION or SPLIT is never under P's Not
+  project — `actuals.coded_here(txn, pid)` is the rule. `dismiss_for`
+  refuses such a row (`DismissalError` / `HIDDEN_CODED_MESSAGE`);
+  `mark_not_project` uncodes and RELEASES first, so the ONE write never
+  trips it. `claim_for` drops P's own dismissal even when the row is
+  already P's (every coding path reaches it; receipt signals pass
+  `receipt=True` because receipt + Not project is a legitimate state —
+  the personal Amazon charge with its receipt). The workspace and
+  not-project.json run `actuals.repair_hidden_coded(pid)` on read (ONE
+  activity row per charge); Admin → Maintenance → "Coded charges hidden
+  under Not project" (`routes/hidden_coded.py`, `/admin/actuals/
+  hidden-coded`) is the same `hidden_coded_rows` / `unhide_coded` with
+  Fix per row, and lists `dismissed_receipt_only_rows` for a person with
+  Restore per row (never fixed on its own). `ledger.run_migration` never
+  writes a dismissal for a project that keeps a row it coded and clears
+  a legacy flag on such a keeper. An undo that would hide a still-coded
+  row (`activity_undo`) is refused with the same message. Live cause:
+  GrubHub 7038 / 7037 ($20,000 + $9,600 split BillPayments) sat under Not
+  project with the migration's dismissal + the legacy flag; lines at $0.
 - ONE split mechanism (2026-11-04): a charge is split with
   `transaction_split` rows; the one document attached to it backs every
   piece. A piece targets a line OR a section (`account_code`, Alembic 0027
