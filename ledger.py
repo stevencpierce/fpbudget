@@ -189,6 +189,14 @@ def _is_claimed_row(t, split_parents):
     return any(_signals(t, split_parents).values())
 
 
+def _is_coded_row(t, split_parents):
+    """Line, section or split — the coding signals (a receipt alone is
+    not coding). A project that keeps a row it coded never gets a
+    dismissal of that row (2026-11-05)."""
+    s = _signals(t, split_parents)
+    return bool(s['line'] or s['section'] or s['split'])
+
+
 def _qbo_payee_for_group(members, vendor_names):
     """(name, from_ref) — the payee QuickBooks names for this charge. From
     the mirrored vendor by EntityRef, or the vendor on a plain qbo_sync
@@ -384,13 +392,19 @@ def analyze(db_, keys=None):
                 actions[m.id] = ('delete', why + '; carries ' + ', '.join(
                     f"{k} '{v}'" if k == 'vendor' else k for k, v in plan.items()) + f' to #{keep.id}')
         # every not_project mark becomes a dismissal for that copy's project
+        # — NEVER for a project that keeps a row with a line, section or
+        # split (2026-11-05: the production run of 11-04 did exactly that
+        # on GrubHub's split BillPayments and hid $29,600 of coded fees).
         seen_np = set()
+        coded_keepers = {c.project_id for c in kept_list if _is_coded_row(c, split_parents)}
         for m in members:
             if m.not_project_expense and m.project_id is not None and m.project_id not in seen_np:
                 if m.id in kept_set and m.id not in unclaim_ids:
                     continue          # a claimed row's own exclusion stays as it is
                 if claimed and m.project_id in {c.project_id for c in kept_list}:
                     continue          # the claiming project holds the row itself
+                if m.project_id in coded_keepers:
+                    continue          # the keeper is coded by that project: no dismissal, ever
                 seen_np.add(m.project_id)
                 dismissals.append((keep.id, m.project_id, _np_reason(m),
                                    m.excluded_by_user_id, m.excluded_at))
@@ -646,14 +660,35 @@ def run_migration(user_id=None, keys=None):
         # every legacy not_project mark → a dismissal for that copy's project
         from models import TransactionPoolDismissal as _TPD
         n_dis = 0
+        from actuals import coded_here as _coded_here
         for kept_id, pid, reason, uid, at in a["dismissals"]:
-            if by_id.get(kept_id) is None and Transaction.query.get(kept_id) is None:
+            kept = by_id.get(kept_id) or Transaction.query.get(kept_id)
+            if kept is None:
                 continue
             if _TPD.query.filter_by(transaction_id=kept_id, project_id=pid).first():
+                continue
+            if _coded_here(kept, pid):
+                # the guard analyze() applies, re-checked on the live row at
+                # write time: a project never dismisses a row it coded
+                log.warning("[ledger migration] no dismissal for project %s on txn %s — it codes it", pid, kept_id)
                 continue
             db.session.add(_TPD(transaction_id=kept_id, project_id=pid, reason=reason,
                                 created_at=at or datetime.utcnow(), created_by=uid))
             n_dis += 1
+        # a kept row its project CODED (line / section / split) is never
+        # hidden under that project's Not project: a legacy flag on it goes
+        # (the sibling propagation stamped it on every copy) — 2026-11-05
+        unhidden = 0
+        for kept_id in a["keep"]:
+            t = by_id.get(kept_id)
+            if t is not None and t.not_project_expense and _coded_here(t, t.project_id):
+                t.not_project_expense = False
+                t.excluded_at = t.excluded_by_user_id = t.excluded_reason = None
+                t.updated_at = datetime.utcnow()
+                unhidden += 1
+                _log('update', t.id, t.project_id, t.vendor,
+                     "Company ledger: a coded row carried a legacy Not project flag — cleared "
+                     "(a charge this project coded is never hidden under its Not project)")
         accounts = seed_company_accounts()
         db.session.flush()
         remaining = db.session.execute(text(DUP_GROUPS_SQL)).scalar()
@@ -664,7 +699,7 @@ def run_migration(user_id=None, keys=None):
             index_created = True
         summary = (f"groups {a['groups']}, copies {a['dup_groups']}; deleted {deleted}, "
                    f"released {released}, flagged {flagged}, dismissals {n_dis}, "
-                   f"carried {carried}; accounts {len(accounts)}; "
+                   f"carried {carried}, unhidden {unhidden}; accounts {len(accounts)}; "
                    f"index {'created' if index_created else 'NOT created — ' + str(remaining) + ' duplicate groups remain'}")
         db.session.execute(text(
             "INSERT INTO system_task_log (task_name, last_run_at, last_result) "
@@ -674,7 +709,8 @@ def run_migration(user_id=None, keys=None):
         db.session.commit()
         log.info("[ledger migration] %s", summary)
         return {"ok": True, "deleted": deleted, "released": released, "flagged": flagged,
-                "dismissals": n_dis, "carried": carried, "moved": moved_total, "accounts": accounts, "index_created": index_created,
+                "dismissals": n_dis, "carried": carried, "unhidden": unhidden, "moved": moved_total,
+                "accounts": accounts, "index_created": index_created,
                 "remaining_duplicate_groups": int(remaining or 0), "summary": summary}
     except Exception:
         db.session.rollback()

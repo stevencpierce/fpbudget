@@ -20518,6 +20518,23 @@ def activity_undo(pid, bid, aid):
             return jsonify({"ok": False, "error": "That transaction no longer exists."}), 400
         if not before:
             return jsonify({"ok": False, "error": "No saved state to restore for this action."}), 400
+        # A row this project codes is never under its Not project
+        # (2026-11-05): an undo that would put an exclusion flag or a
+        # dismissal back on a row that stays coded here is refused — undo
+        # of a Restore after the row was coded, undo of the "hidden under
+        # Not project" repair while the coding stands.
+        if before.get('not_project_expense') or before.get('pool_dismissed'):
+            try:
+                from models import TransactionSplit as _TS_chk
+                from actuals import HIDDEN_CODED_MESSAGE as _HCM
+                _w_line = before['budget_line_id'] if 'budget_line_id' in before else txn.budget_line_id
+                _w_sec = before['account_code'] if 'account_code' in before else txn.account_code
+                _w_split = (bool(before['splits']) if isinstance(before.get('splits'), list)
+                            else _TS_chk.query.filter_by(transaction_id=txn.id).first() is not None)
+                if txn.project_id == pid and (_w_line or _w_sec or _w_split):
+                    return jsonify({"ok": False, "error": _HCM}), 409
+            except Exception as _hce:
+                logging.info(f"[undo] hidden-coded check skipped: {_hce}")
         for k in ('budget_line_id', 'account_code', 'account_code_name',
                   'doc_upload_id', 'match_status', 'match_confidence',
                   'not_project_expense',
@@ -20600,9 +20617,12 @@ def activity_undo(pid, bid, aid):
         # Coding / exclusion changed → the row's claim follows its signals
         # (company ledger): claimed when any is back, released when none.
         try:
-            from actuals import claim_for as _cf_u, release as _rel_u, is_claimed as _ic_u
-            if _ic_u(txn):
-                _cf_u(txn, pid, why='undo restored the coding')
+            from actuals import claim_for as _cf_u, release as _rel_u, claim_signals as _cs_u
+            _sig_u = _cs_u(txn)
+            if any(_sig_u.values()):
+                # a receipt alone leaves a restored dismissal in place
+                _cf_u(txn, pid, why='undo restored the coding',
+                      receipt=not (_sig_u['line'] or _sig_u['section'] or _sig_u['split']))
             else:
                 _rel_u(txn, why='undo cleared the coding')
         except Exception:
@@ -38829,6 +38849,7 @@ import routes.admin_maintenance  # noqa: E402,F401
 import routes.ledger_admin  # noqa: E402,F401
 import routes.actuals_detail  # noqa: E402,F401
 import routes.docs_relink  # noqa: E402,F401
+import routes.hidden_coded  # noqa: E402,F401
 
 
 if __name__ == "__main__":

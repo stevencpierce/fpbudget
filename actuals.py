@@ -1313,10 +1313,42 @@ def _ledger_log(action, txn, project_id, note):
         log.info("[ledger] activity log skipped for txn %s", getattr(txn, 'id', None), exc_info=True)
 
 
+class DismissalError(ValueError):
+    """A dismissal by project P on a row P holds with a line, section or
+    split is impossible (2026-11-05)."""
+
+
+HIDDEN_CODED_MESSAGE = ("This project has coded this charge (a line, a section or a split) — "
+                        "it cannot also be Not project here. Clear the coding first.")
+
+
+def coded_here(txn, project_id, has_splits=None):
+    """True when THIS project holds the row with a line, a section or a
+    split — the three coding signals (a receipt alone is not coding). The
+    ONE rule behind the invariant of 2026-11-05: such a row is never under
+    Not project for that project, so a dismissal by it is refused
+    (dismiss_for), dropped the moment it codes (claim_for) and deleted on
+    read if one is ever found (repair_hidden_coded)."""
+    if txn is None or not project_id or txn.project_id != int(project_id):
+        return False
+    s = claim_signals(txn, has_splits)
+    return bool(s['line'] or s['section'] or s['split'])
+
+
 def dismiss_for(txn, project_id, reason=None, user_id=None, at=None):
     """Write (or refresh) this project's dismissal of a pool row. Does not
-    commit. Returns the dismissal."""
+    commit. Returns the dismissal.
+
+    Refuses (DismissalError) a row this project holds with a line, section
+    or split: the ONE write, mark_not_project, uncodes and RELEASES such a
+    row first, so it never trips this; anything else that would hide a
+    coded charge (an undo, a migration re-run) is stopped here. The live
+    bug of 2026-11-05: GrubHub's $20,000 and $9,600 split BillPayments sat
+    under Not project with a dismissal the ledger migration wrote for the
+    project that held them, and their lines showed $0."""
     from models import TransactionPoolDismissal as _TPD
+    if coded_here(txn, project_id):
+        raise DismissalError(HIDDEN_CODED_MESSAGE)
     d = pool_dismissal(txn.id, project_id)
     if d is None:
         d = _TPD(transaction_id=txn.id, project_id=int(project_id), reason=(reason or None),
@@ -1402,16 +1434,29 @@ def _restore_receipt_row(txn):
     return True
 
 
-def claim_for(txn, project_id, why='coded'):
+def claim_for(txn, project_id, why='coded', receipt=False):
     """Set project_id = project_id on a QuickBooks row that is unclaimed or
     already this project's. Raises ClaimError when another project holds
     it. Returns True when the row changed hands. Claiming drops this
-    project's own dismissal of the row (it is ours now). Does not commit —
-    the caller's write path does, as it always did."""
+    project's own dismissal of the row (it is ours now) — and a CODING
+    signal (a line, a section, a split; every such write path reaches
+    here) drops it even when the row is ALREADY this project's
+    (2026-11-05), so coding a row that carried a stale dismissal always
+    un-hides it. A receipt signal passes receipt=True: a receipt on a row
+    this project excluded is a legitimate state (the personal Amazon
+    charge with its receipt), so it leaves the dismissal alone. Does not
+    commit — the caller's write path does, as it always did."""
     if txn is None or not project_id:
         return False
     project_id = int(project_id)
     if txn.project_id == project_id:
+        if not receipt:
+            try:
+                if undismiss(txn, project_id):
+                    _ledger_log('update', txn, project_id,
+                                f"Dropped this project's Not project mark on a charge it holds ({why})")
+            except Exception:
+                log.info("[ledger] undismiss skipped for txn %s", txn.id, exc_info=True)
         return False
     if txn.project_id is not None:
         other = ProjectSheet.query.get(txn.project_id)
@@ -1459,6 +1504,136 @@ def release(txn, why='last claim signal removed', has_splits=None):
                 f"Released QuickBooks {txn.qbo_txn_type or 'charge'}/{txn.qbo_txn_id or '?'} "
                 f"to the company pool ({why})")
     return True
+
+
+# ── Coded charges hidden under Not project (2026-11-05) ───────────────────
+# The invariant: a row project P holds with a line, section or split is
+# never under P's Not project. Two legacy marks could put it there — a
+# transaction_pool_dismissal by P (the ledger migration wrote one for the
+# project that KEPT the row) and a not_project_expense flag left on the
+# row — and both took the charge out of the Assigned list and the line /
+# section rollups (GrubHub 7038 / 7037, $20,000 + $9,600 of Director
+# fees at $0). hidden_coded_rows finds them, unhide_coded is the ONE
+# repair (the workspace runs it on read, Maintenance → "Coded charges
+# hidden under Not project" runs it on click), dismissed_receipt_only_rows
+# lists the receipt + Not project rows that are a legitimate state and
+# only get a person's eye.
+
+def _held_rows_query(project_id=None):
+    from models import TransactionPoolDismissal as _TPD
+    q = (db.session.query(Transaction, _TPD)
+         .outerjoin(_TPD, db.and_(_TPD.transaction_id == Transaction.id,
+                                  _TPD.project_id == Transaction.project_id))
+         .filter(Transaction.project_id.isnot(None),
+                 Transaction.backup_of_txn_id.is_(None)))
+    if project_id:
+        q = q.filter(Transaction.project_id == int(project_id))
+    return q
+
+
+def _coded_criterion():
+    from models import TransactionSplit
+    return db.or_(Transaction.budget_line_id.isnot(None),
+                  Transaction.account_code.isnot(None),
+                  db.exists().where(TransactionSplit.transaction_id == Transaction.id))
+
+
+def hidden_coded_rows(project_id=None):
+    """[(txn, dismissal | None)] — rows the holding project coded (line /
+    section / split) that are ALSO under its Not project: a dismissal by
+    that project, or a not_project_expense flag. Company-wide when
+    project_id is None. Ordered by project, then id."""
+    from models import TransactionPoolDismissal as _TPD
+    return (_held_rows_query(project_id)
+            .filter(_coded_criterion(),
+                    db.or_(_TPD.id.isnot(None),
+                           Transaction.not_project_expense == True))        # noqa: E712
+            .order_by(Transaction.project_id, Transaction.id)
+            .all())
+
+
+def dismissed_receipt_only_rows(project_id=None):
+    """[(txn, dismissal)] — rows the holding project dismissed that carry
+    ONLY a receipt (no line, section or split). A receipt plus Not project
+    is a legitimate state (a personal charge with its receipt, excluded),
+    so nothing here is fixed on its own: Maintenance lists them per
+    project for a person, with Restore per row."""
+    from models import TransactionPoolDismissal as _TPD
+    return (_held_rows_query(project_id)
+            .filter(_TPD.id.isnot(None),
+                    Transaction.doc_upload_id.isnot(None),
+                    ~_coded_criterion())
+            .order_by(Transaction.project_id, Transaction.id)
+            .all())
+
+
+def unhide_coded(txn, project_id):
+    """THE repair for one hidden coded row: delete the project's dismissal
+    and clear the not_project_expense flag + excluded_* audit columns.
+    Returns the before-state for the activity log (None when the row is
+    not hidden, or not coded by this project). Flushes; the caller
+    commits and logs."""
+    if not coded_here(txn, project_id):
+        return None
+    d = pool_dismissal(txn.id, project_id)
+    if d is None and not txn.not_project_expense:
+        return None
+    before = {'pool_dismissed': d is not None,
+              'excluded_reason': (d.reason if d is not None else txn.excluded_reason),
+              'not_project_expense': bool(txn.not_project_expense),
+              'excluded_at': (txn.excluded_at.isoformat(timespec='minutes') if txn.excluded_at else None),
+              'excluded_by_user_id': txn.excluded_by_user_id}
+    if d is not None:
+        db.session.delete(d)
+    txn.not_project_expense = False
+    txn.excluded_at = txn.excluded_by_user_id = txn.excluded_reason = None
+    txn.updated_at = datetime.utcnow()
+    db.session.flush()
+    return before
+
+
+def repair_hidden_coded(project_id=None, user_id=None, how='found on read'):
+    """Find and repair every hidden coded row (one project, or the company
+    when project_id is None), logging ONE activity row per charge (with
+    the before-state) and committing. Returns [{id, project_id,
+    activity_id}]. Fail-open: a failure rolls back and returns what was
+    done before it."""
+    done = []
+    try:
+        rows = hidden_coded_rows(project_id)
+    except Exception:
+        log.warning("[hidden-coded] scan failed", exc_info=True)
+        db.session.rollback()
+        return done
+    for t, _d in rows:
+        pid = t.project_id
+        try:
+            before = unhide_coded(t, pid)
+            if before is None:
+                continue
+            db.session.commit()
+        except Exception:
+            log.warning("[hidden-coded] repair of txn %s failed", t.id, exc_info=True)
+            db.session.rollback()
+            continue
+        act = None
+        try:
+            from app import _log_activity
+            act = _log_activity(
+                action='update', entity_type='transaction', entity_id=t.id,
+                entity_label=(t.vendor or f'Txn #{t.id}')[:80], project_id=pid,
+                before=before,
+                after={'pool_dismissed': False, 'not_project_expense': False,
+                       'excluded_at': None, 'excluded_by_user_id': None, 'excluded_reason': None},
+                note=(f"Coded charge was hidden under Not project ({how}) — back in Assigned; "
+                      f"${float(t.amount or 0):,.2f} counts on its line again")[:500])
+        except Exception:
+            log.info("[hidden-coded] activity log skipped for txn %s", t.id, exc_info=True)
+        done.append({"id": t.id, "project_id": pid, "activity_id": (act.id if act else None)})
+    if done:
+        log.info("[hidden-coded] repaired %d coded row(s) hidden under Not project (%s): %s",
+                 len(done), how, [x["id"] for x in done])
+    return done
 
 
 def claim_conflicts_for(project_id):
@@ -3117,7 +3292,7 @@ def confirm_match(qbo_transaction_id):
     try:
         _doc_for_claim = DocUpload.query.get(q.doc_upload_id)
         if _doc_for_claim is not None and _doc_for_claim.project_id:
-            claim_for(q, _doc_for_claim.project_id, why='receipt confirmed')
+            claim_for(q, _doc_for_claim.project_id, why='receipt confirmed', receipt=True)
     except ClaimError:
         raise
     except Exception:
@@ -3672,7 +3847,7 @@ def refresh_match_suggestions(project_id, days=MATCH_LOOKBACK_DAYS):
                 t.match_confidence = conf
                 t.match_source = 'heuristic'
                 t.updated_at = now
-            claim_for(t, project_id, why='receipt suggested')
+            claim_for(t, project_id, why='receipt suggested', receipt=True)
             written += 1
         elif t.doc_upload_id and t.match_status == 'suggested' and (t.match_source or '') != 'ai':
             t.doc_upload_id = None

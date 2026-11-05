@@ -459,7 +459,10 @@ def one_rule_ctx():
                    dict(amount=40, is_expense=False),
                    dict(source='doc_upload', amount=999, activated_at=None),
                    dict(amount=500, backup_of_txn_id=None),
-                   dict(amount=5, not_project_expense=True)):
+                   # a Not project row is uncoded (2026-11-05: a row the
+                   # project coded is never hidden under Not project — the
+                   # workspace repairs that shape on read)
+                   dict(amount=5, not_project_expense=True, budget_line_id=None, account_code=None)):
             base = dict(project_id=p.id, source='qbo_sync', txn_date="2026-03-01",
                         vendor="Lyft", match_status='unmatched', budget_line_id=ln.id,
                         account_code=2601)

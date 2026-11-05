@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}Coded charges hidden under Not project — FPBudget{% endblock %}
+
+{# ══════════════════════════════════════════════════════════════════════════
+   Coded charges hidden under Not project (2026-11-05). Admin → Maintenance.
+   Two lists. The first is fixable: a charge the project coded (line /
+   section / split) that also carries that project's Not project mark (a
+   dismissal, or an exclusion flag) — off the Assigned list and off the line
+   rollups. Fix is one click per row or all at once, confirmed, logged and
+   undoable. The second is review only: rows under Not project that carry
+   just a receipt — a legitimate state — with Restore per row.
+   Routes: routes/hidden_coded.py.
+   ══════════════════════════════════════════════════════════════════════ #}
+{% block content %}
+<style>
+  .hc-page { max-width: 1100px; margin: 0 auto; padding: 0 0 40px; }
+  .hc-intro { font-size: .86rem; color: var(--text-muted); margin: 0 0 16px; max-width: 820px; }
+  .hc-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 22px 0 10px; }
+  .hc-h h2 { font-size: 1rem; margin: 0; }
+  .hc-h .sub { font-size: .8rem; color: var(--text-muted); }
+  .hc-card { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 16px; margin-bottom: 10px; }
+  .hc-top { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+  .hc-top .v { font-weight: 600; }
+  .hc-top .amt { font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .hc-chip { display: inline-block; font-size: .72rem; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-left: 6px;
+             background: color-mix(in srgb, var(--yellow) 16%, var(--bg-2)); color: var(--yellow); }
+  .hc-chip.red { background: color-mix(in srgb, var(--red) 14%, var(--bg-2)); color: var(--red); }
+  .hc-facts { display: flex; gap: 14px; flex-wrap: wrap; font-size: .82rem; color: var(--text-muted); margin-top: 6px; }
+  .hc-facts b { color: var(--text); font-weight: 500; }
+  .hc-acts { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+  .hc-msg { font-size: .8rem; }
+  .hc-msg.err { color: var(--red); }
+  .hc-empty { padding: 22px; text-align: center; color: var(--text-muted); background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+</style>
+<div class="pay-page hc-page">
+  <div class="pay-head">
+    <div class="pay-crumbs">
+      <a href="{{ url_for('dashboard') }}">FPBudget</a><span class="sep">/</span>
+      <a href="{{ url_for('admin_maintenance') }}">Maintenance</a><span class="sep">/</span>
+      <span class="cur">Coded charges hidden under Not project</span>
+      {% if pid %}<span class="pay-chip">{{ names.get(pid, '') }}</span>{% endif %}
+    </div>
+    <div class="pay-actions">
+      {% if pid %}<a class="pay-btn" href="{{ url_for('admin_hidden_coded') }}">All projects</a>
+      <a class="pay-btn" href="{{ url_for('actuals_workspace_page', pid=pid) }}">Back to Actuals</a>{% endif %}
+      {% if coded %}<button type="button" class="pay-btn primary" id="hc-fix-all">Fix all {{ coded|length }}</button>{% endif %}
+    </div>
+  </div>
+  <p class="hc-intro">
+    A charge a project coded — to a line, a section or a split — can never also be Not project for that project.
+    When a Not project mark is found on one anyway (a dismissal the company-ledger migration wrote for the project
+    that kept the row, or a leftover exclusion flag), the charge is off the Assigned list and its line shows $0.
+    Fix removes the mark: the charge returns to Assigned and counts on its line again. Every Fix is logged and can be
+    undone. The project's Actuals page applies the same repair on its own when it loads, so this list is normally empty.
+  </p>
+
+  <div class="hc-h"><h2>Coded and hidden</h2><span class="sub">{{ coded|length }} charge{{ '' if coded|length == 1 else 's' }} — Fix returns each to Assigned</span></div>
+  {% if not coded %}
+  <div class="hc-empty">No coded charge is hidden under Not project{% if pid %} on {{ names.get(pid, 'this project') }}{% endif %}.</div>
+  {% endif %}
+  {% for r in coded %}
+  <div class="hc-card hc-coded" data-id="{{ r.id }}" data-pid="{{ r.project_id }}" data-bid="{{ r.undo_bid or '' }}">
+    <div class="hc-top">
+      <div><span class="v">{{ r.vendor }}</span>
+        {% if r.dismissed %}<span class="hc-chip red">Dismissed here</span>{% endif %}
+        {% if r.flagged %}<span class="hc-chip red">Excluded flag</span>{% endif %}</div>
+      <span class="amt">${{ '{:,.2f}'.format(r.amount) }}</span>
+    </div>
+    <div class="hc-facts">
+      <span>Project <b>{{ r.project }}</b></span>
+      <span>Charge <b>#{{ r.id }}</b> · {{ r.date }}{% if r.qbo %} · QuickBooks {{ r.qbo }}{% endif %}</span>
+      <span>Coded to <b>{{ r.coding or '—' }}</b></span>
+      {% if r.receipt %}<span>Receipt <b>{{ r.receipt }}</b></span>{% endif %}
+      {% if r.dismissal_reason or r.flag_reason %}<span>Reason <b>{{ r.dismissal_reason or r.flag_reason }}</b></span>{% endif %}
+    </div>
+    <div class="hc-acts">
+      <button type="button" class="pay-btn primary" data-act="fix">Fix</button>
+      <span class="hc-msg">Remove the Not project mark — back in Assigned, counts on its line.</span>
+      <a class="pay-btn" href="{{ r.actuals_url }}">Open in Actuals</a>
+    </div>
+  </div>
+  {% endfor %}
+
+  <div class="hc-h"><h2>Receipt only, under Not project</h2><span class="sub">{{ receipt_only|length }} row{{ '' if receipt_only|length == 1 else 's' }} — review only; nothing changes on its own</span></div>
+  {% if not receipt_only %}
+  <div class="hc-empty">No receipt-only row is dismissed by the project that holds it{% if pid %} on {{ names.get(pid, 'this project') }}{% endif %}.</div>
+  {% endif %}
+  {% for r in receipt_only %}
+  <div class="hc-card hc-receipt" data-id="{{ r.id }}" data-pid="{{ r.project_id }}" data-bid="{{ r.undo_bid or '' }}" data-restore="{{ r.restore_url }}">
+    <div class="hc-top">
+      <div><span class="v">{{ r.vendor }}</span>
+        <span class="hc-chip">{{ 'Receipt + Not project' if r.flagged else 'Stale mark — the row is not hidden' }}</span></div>
+      <span class="amt">${{ '{:,.2f}'.format(r.amount) }}</span>
+    </div>
+    <div class="hc-facts">
+      <span>Project <b>{{ r.project }}</b></span>
+      <span>Charge <b>#{{ r.id }}</b> · {{ r.date }}{% if r.qbo %} · QuickBooks {{ r.qbo }}{% endif %}</span>
+      {% if r.receipt %}<span>Receipt <b>{% if r.receipt_doc_id %}<a href="/docs/upload/{{ r.receipt_doc_id }}/raw" target="_blank" rel="noopener">{{ r.receipt }}</a>{% else %}{{ r.receipt }}{% endif %}</b></span>{% endif %}
+      {% if r.dismissal_reason or r.flag_reason %}<span>Reason <b>{{ r.dismissal_reason or r.flag_reason }}</b></span>{% endif %}
+      {% if r.dismissed_at %}<span>Marked <b>{{ r.dismissed_at }}</b></span>{% endif %}
+    </div>
+    <div class="hc-acts">
+      <button type="button" class="pay-btn" data-act="restore">Restore</button>
+      <span class="hc-msg">{% if r.flagged %}Legitimate as it is (a receipt on an excluded charge). Restore puts it back in Unclaimed for this project.{% else %}The project holds this row, so the mark does nothing. Restore removes it.{% endif %}</span>
+      <a class="pay-btn" href="{{ r.actuals_url }}">Open in Actuals</a>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+<script>
+(function () {
+  async function post(url, body) {
+    const r = await fetch(url, { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.ok === false) throw new Error(d.error || d.message || ('HTTP ' + r.status));
+    return d;
+  }
+  function undoButton(card, btn, msg, activityId, resetLabel) {
+    if (!activityId || !card.dataset.bid) return;
+    const u = document.createElement('button');
+    u.type = 'button'; u.className = 'pay-btn'; u.textContent = 'Undo';
+    u.addEventListener('click', async () => {
+      u.disabled = true;
+      try {
+        await post(`/projects/${card.dataset.pid}/budget/${card.dataset.bid}/activity/${activityId}/undo`, {});
+        msg.className = 'hc-msg'; msg.textContent = 'Undone.'; u.remove();
+        btn.disabled = false; btn.textContent = resetLabel;
+      } catch (e) { msg.className = 'hc-msg err'; msg.textContent = e.message; u.disabled = false; }
+    });
+    btn.after(u);
+  }
+  document.querySelectorAll('.hc-coded').forEach(card => {
+    const btn = card.querySelector('[data-act="fix"]');
+    const msg = card.querySelector('.hc-msg');
+    btn.addEventListener('click', async () => {
+      if (!confirm('Fix this one?\n\nThe Not project mark is removed; the charge is back in Assigned and counts on its line. Logged; Undo is offered after.')) return;
+      btn.disabled = true; btn.textContent = 'Fixing';
+      try {
+        const d = await post('/admin/actuals/hidden-coded/fix', { transaction_id: +card.dataset.id });
+        const row = (d.rows || [])[0] || {};
+        if (row.error) throw new Error(row.error);
+        msg.className = 'hc-msg'; msg.textContent = 'Fixed — back in Assigned.'; btn.textContent = 'Fixed';
+        undoButton(card, btn, msg, row.activity_id, 'Fix');
+      } catch (e) { msg.className = 'hc-msg err'; msg.textContent = e.message; btn.disabled = false; btn.textContent = 'Fix'; }
+    });
+  });
+  const all = document.getElementById('hc-fix-all');
+  if (all) all.addEventListener('click', async () => {
+    const n = document.querySelectorAll('.hc-coded').length;
+    if (!confirm(`Fix all ${n} coded charges hidden under Not project?\n\nEach one is logged on its own and can be undone from the activity log.`)) return;
+    all.disabled = true; all.textContent = 'Fixing';
+    try {
+      const d = await post('/admin/actuals/hidden-coded/fix', { all: true{% if pid %}, project: {{ pid }}{% endif %} });
+      all.textContent = `Fixed ${d.fixed}`;
+      (d.rows || []).forEach(r => {
+        const card = document.querySelector(`.hc-coded[data-id="${r.id}"]`);
+        if (!card) return;
+        const btn = card.querySelector('[data-act="fix"]'); const msg = card.querySelector('.hc-msg');
+        if (r.error) { msg.className = 'hc-msg err'; msg.textContent = r.error; return; }
+        btn.disabled = true; btn.textContent = 'Fixed'; msg.className = 'hc-msg'; msg.textContent = 'Fixed — back in Assigned.';
+        undoButton(card, btn, msg, r.activity_id, 'Fix');
+      });
+    } catch (e) { all.disabled = false; all.textContent = 'Fix all'; alert(e.message); }
+  });
+  document.querySelectorAll('.hc-receipt').forEach(card => {
+    const btn = card.querySelector('[data-act="restore"]');
+    const msg = card.querySelector('.hc-msg');
+    btn.addEventListener('click', async () => {
+      if (!confirm('Restore this charge for its project?\n\nIt leaves Not project and is back in Unclaimed there (its receipt stays attached). Logged; Undo is offered after.')) return;
+      btn.disabled = true; btn.textContent = 'Restoring';
+      try {
+        const d = await post(card.dataset.restore, {});
+        msg.className = 'hc-msg'; msg.textContent = 'Restored — back in Unclaimed.'; btn.textContent = 'Restored';
+        undoButton(card, btn, msg, d.activity_id, 'Restore');
+      } catch (e) { msg.className = 'hc-msg err'; msg.textContent = e.message; btn.disabled = false; btn.textContent = 'Restore'; }
+    });
+  });
+})();
+</script>
+{% endblock %}
