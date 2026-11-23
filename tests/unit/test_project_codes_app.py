@@ -264,3 +264,18 @@ def test_estimate_takes_no_charges_or_documents(ctx, monkeypatch):
     assert r.status_code == 409
     r = c.get(f"/projects/{pid}/setup")
     assert b"Estimate" in r.data
+
+
+def test_reference_numbers_reach_the_screens(ctx):
+    c = ctx["client"]
+    pid, lid, early = S['gh'], S['gh_line'], S['early']
+    with ctx["app"].app_context():
+        t = db.session.get(Transaction, early)
+        t.account_code = None
+        t.budget_line_id = lid
+        db.session.commit()
+    j = c.get(f"/projects/{pid}/actuals/transaction/{early}/detail.json").get_json()
+    assert j["txn"]["ref"] == "GH-2609-0001"
+    j = c.get(f"/projects/{pid}/actuals/line/{lid}/transactions.json").get_json()
+    refs = {r["id"]: r.get("ref") for r in j["transactions"]}
+    assert refs[early] == "GH-2609-0001"

@@ -6069,7 +6069,9 @@ window.saveInlinePo = async function() {
         + '<td style="padding:5px 6px;width:38%"><button type="button" class="wad-detail-btn" data-tid="' + t.id + '" '
         + 'title="Open the details: backup, coding, splits, history" '
         + 'style="background:none;border:0;padding:0;color:inherit;font:inherit;cursor:pointer;text-align:left;text-decoration:underline;text-decoration-color:var(--border);text-underline-offset:3px">'
-        + _esc(t.vendor || '—') + '</button>' + splitTag + '</td>'
+        + _esc(t.vendor || '—') + '</button>' + splitTag
+        + (t.ref ? ' <span class="wad-ref" title="Reference number" style="font-family:ui-monospace,Menlo,monospace;font-size:.7rem;color:var(--text-muted)">' + _esc(t.ref) + '</span>' : '')
+        + '</td>'
         + '<td style="padding:5px 6px;width:32%">' + docCell + '</td>'
         + '<td style="padding:5px 6px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;'
         + 'color:' + (amtNeg ? '#fb7185' : 'var(--text)') + '">'

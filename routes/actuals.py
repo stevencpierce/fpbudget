@@ -699,6 +699,16 @@ def actuals_line_transactions(pid, lid):
         out.sort(key=lambda r: ((r.get("date") or ""), -r["id"]), reverse=True)
     except Exception as _spe:
         logging.warning(f"[line-txns] split pieces skipped for line {lid}: {_spe}")
+    # Reference numbers (INTAKE_WRAP_HANDOFF, 2026-11-23): line → numbers →
+    # file names. A split piece shows its charge's one number.
+    try:
+        from project_codes import ref_labels
+        _refs = ref_labels(Transaction.query.filter(
+            Transaction.id.in_({r["id"] for r in out})).all()) if out else {}
+        for r in out:
+            r["ref"] = _refs.get(r["id"])
+    except Exception as _rfe:
+        logging.warning(f"[line-txns] reference numbers skipped for line {lid}: {_rfe}")
     return jsonify({
         "ok": True,
         "line": {"id": line.id, "code": line.account_code,

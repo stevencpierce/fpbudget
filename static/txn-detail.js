@@ -313,6 +313,7 @@
              : `<span class="fpd-lock" title="${esc((d.amount_edit || {}).reason || '')}">${ICON_LOCK} <span>${esc((d.amount_edit || {}).reason || '')}</span></span>`}`}
       </div>
       <dl class="fpd-kv">
+        ${t.ref ? kv('Reference', `<strong>${esc(t.ref)}</strong>`) : ''}
         ${kv('Date', esc(t.date || '—'))}
         ${kv('Card / account', t.card_last4 ? '••' + esc(t.card_last4) + (t.account ? ` · account ${esc(t.account)}` : '') : (t.payment_method_label ? esc(t.payment_method_label) + (t.paid_by ? ' · ' + esc(t.paid_by) : '') : (t.account ? 'account ' + esc(t.account) : '')))}
         ${t.qbo ? kv('QuickBooks', `${esc(t.qbo.payee || '—')} · ${esc(t.qbo.type || '')} <span class="fpd-muted">#${esc(t.qbo.id)}</span>${t.qbo.category ? ` · <span class="fpd-muted">${esc(t.qbo.category)}</span>` : ''}`) : ''}

@@ -33,6 +33,7 @@ from app import (app, _log_activity, _require_project_role, _line_picker_groups,
 from budget_calc import FP_COA_SECTIONS, FP_COA_NAMES
 from models import (ActivityLog, Budget, BudgetLine, CrewMember, DocUpload, ExpenseEvidence,
                     Transaction, TransactionSplit, User, db)
+from project_codes import ref_for
 from actuals import (build_line_picker_options, claim_for, ClaimError,
                      fold_invoice_children_onto_charge, invoice_children_of, is_bank_sourced,
                      pool_txn, split_snapshot, txn_snapshot, counted_twice_for_project,
@@ -305,7 +306,8 @@ def _detail_for_txn(pid, t):
     signed = float(t.amount or 0) * (1 if t.is_expense else -1)
     return {
         "ok": True, "kind": "transaction", "pid": pid,
-        "txn": {"id": t.id, "source": t.source, "source_label": _source_label(t, primary),
+        "txn": {"id": t.id, "ref": ref_for(t),
+                "source": t.source, "source_label": _source_label(t, primary),
                 "amount": signed, "raw_amount": float(t.amount or 0), "is_expense": bool(t.is_expense),
                 "date": (t.txn_date or '')[:10] or None, "vendor": t.vendor,
                 "memo": t.note, "card_last4": t.card_last4,

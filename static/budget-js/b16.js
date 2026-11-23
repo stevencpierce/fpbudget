@@ -65,7 +65,7 @@
         + '<div class="recon-body">'
         +   '<div class="recon-vend">'+esc(t.vendor||'(no vendor)')+'</div>'
         +   '<div class="recon-amt">'+(t.is_expense===false?'<span style="color:#22c55e">+</span>':'')+money(t.amount)+'</div>'
-        +   '<div class="recon-meta">'+esc(t.date||'')+(t.qbo_txn_id?' · QBO #'+esc(t.qbo_txn_id):'')+'</div>'
+        +   '<div class="recon-meta">'+(t.ref?'<strong>'+esc(t.ref)+'</strong> · ':'')+esc(t.date||'')+(t.qbo_txn_id?' · QBO #'+esc(t.qbo_txn_id):'')+'</div>'
         +   (t.doc_filename?'<div class="recon-meta" title="'+esc(t.doc_filename)+'">📎 '+esc(t.doc_filename.slice(0,34))+'</div>':'')
         + '</div>'
         + '<div class="recon-acts">'
