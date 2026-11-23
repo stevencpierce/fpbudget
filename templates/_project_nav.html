@@ -16,8 +16,8 @@
      nav_project   (required) the ProjectSheet (only .id is read)
      nav_active    one of: overview · topsheet · budget · schedule · people ·
                    actuals · docs · travel · pos · catering · subbudgets ·
-                   locations · callsheets · assumptions · activity · import ·
-                   settings. Anything else = nothing highlighted.
+                   locations · callsheets · assumptions · activity · setup ·
+                   import · settings. Anything else = nothing highlighted.
      nav_budget    (optional) a Budget. With it, budget-page tabs link to
                    THAT budget (budget_view?tab=…) and Schedule / Call Sheets
                    go straight to it. Without it, links go through
@@ -96,6 +96,7 @@
         {{ _page_tab('callsheets', _cs_href, 'Call Sheets', 'menu', nav_cs_count | default(none)) }}
         {{ _pane_tab('assumptions', 'assumptions', 'Assumptions', 'menu') }}
         {{ _pane_tab('activity', 'activity', 'Activity', 'menu') }}
+        {{ _page_tab('setup', url_for('project_setup', pid=_pid), 'Project setup', 'menu') }}
         {% if _role != 'viewer' %}
         {{ _pane_tab('import', 'import-tools', 'Import & Templates', 'menu') }}
         {% endif %}

@@ -146,6 +146,22 @@ class ProjectSheet(db.Model):
     # Project-wide (all budget versions) — read via get_fringe_configs.
     fringe_rollup  = db.Column(db.Boolean, default=False, nullable=False)
 
+    # ── Intake / Wrap (INTAKE_WRAP_HANDOFF Phase 1, 2026-11-23; alembic
+    # 0030 + the essential pass). `stage` sits BESIDE `status` (Steven,
+    # Nov 23): estimate | awarded | wrapping; NULL = a project from before
+    # stages (reads as awarded). Wrapped is still status='wrapped'. Read
+    # it ONLY through project_codes.project_stage(p). `project_code` is
+    # client initials + YYMM of production start (GH-2609, GH-2609B),
+    # set at Award and frozen; `ref_seq_last` is the last reference
+    # number handed out (project_codes.assign_ref_numbers).
+    stage           = db.Column(db.String(12), nullable=True)
+    project_code    = db.Column(db.String(20), nullable=True)
+    client_initials = db.Column(db.String(8), nullable=True)
+    start_date      = db.Column(db.Date, nullable=True)
+    end_date        = db.Column(db.Date, nullable=True)
+    awarded_at      = db.Column(db.DateTime, nullable=True)
+    ref_seq_last    = db.Column(db.Integer, nullable=True)
+
     # ── QBO sync state (added 2026-04-30 cutover) ──────────────────────
     # Per-project subset of QBOConnection.enabled_account_ids. Empty
     # array = sync nothing. JSON-encoded list of QBO account ids.
@@ -245,6 +261,16 @@ class Transaction(db.Model):
     # is no longer mapped.
     claim_conflict        = db.Column(db.Boolean, default=False, nullable=True)
     claim_conflict_reason = db.Column(db.String(200), nullable=True)
+
+    # Reference number (INTAKE_WRAP_HANDOFF, 2026-11-23; alembic 0030 +
+    # the essential pass): <project code>-<ref_seq:04d>, e.g. GH-2609-0147.
+    # Given on first coding in a project that has a code, never reused or
+    # renumbered; ref_project_id says which project's sequence it is from
+    # (a row released and re-coded by ANOTHER project gets a new one).
+    # Written ONLY by project_codes.assign_ref_numbers; shown through
+    # project_codes.ref_label.
+    ref_project_id        = db.Column(db.Integer, nullable=True)
+    ref_seq               = db.Column(db.Integer, nullable=True)
 
     # Required stated reason when a receipt becomes a standalone expense
     # with NO electronic charge behind it (owner 2026-10-30) — e.g.

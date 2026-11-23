@@ -1080,6 +1080,9 @@ def inject_globals():
             "PAYMENT_METHOD_LABELS": _fp_payment_method_labels,
             "MODE_META": _fp_mode_meta,                    # budget_calc
             "FP_COA_SECTIONS": FP_COA_SECTIONS,            # budget_calc
+            # Project stage / code (INTAKE_WRAP_HANDOFF, 2026-11-23).
+            "project_stage": _project_codes.project_stage,
+            "stage_label": _project_codes.stage_label,
             # The shared project nav strip (templates/_project_nav.html)
             # hides Import & Templates / Settings from viewers on EVERY
             # page with the one role rule; pages that don't already carry
@@ -1100,6 +1103,10 @@ from fp_analyzer import (DOC_TYPE_LABELS as _fp_doc_type_labels,          # noqa
 from actuals import (PAYMENT_METHODS as _fp_payment_methods,                # noqa: E402
                      PAYMENT_METHOD_LABELS as _fp_payment_method_labels)
 from budget_calc import MODE_META as _fp_mode_meta                          # noqa: E402
+import project_codes as _project_codes                                      # noqa: E402
+# Reference numbers on first coding, whatever path coded the row
+# (INTAKE_WRAP_HANDOFF Phase 1, 2026-11-23): one flush hook, one write.
+_project_codes.install_hooks()
 
 
 def _fmt_local(dt, tz_name=None):
@@ -4806,7 +4813,11 @@ def project_new():
             end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
     except ValueError:
         pass
-    p = ProjectSheet(name=name, client_name=client_name)
+    # A new project starts as an Estimate: no charges or documents until
+    # it is awarded (INTAKE_WRAP_HANDOFF, 2026-11-23). Dates help, never
+    # required.
+    p = ProjectSheet(name=name, client_name=client_name, stage='estimate',
+                     start_date=start_date, end_date=end_date)
     db.session.add(p)
     db.session.flush()
     # Generate unique Dropbox folder slug and provision the folder tree
@@ -4844,7 +4855,8 @@ def project_new():
     access = ProjectAccess(project_id=p.id, user_id=current_user.id, role="owner")
     db.session.add(access)
     db.session.commit()
-    flash(f"Project '{name}' created.", "success")
+    flash(f"Project '{name}' created as an Estimate. Award it in Project setup "
+          f"before it receives charges or documents.", "success")
     # Redirect to Working Budget with settings=1 so settings modal auto-opens
     return redirect(url_for("budget_view", pid=p.id, bid=b.id) + "?tab=working&setup=1")
 
@@ -5484,7 +5496,8 @@ def _duplicate_worker(flask_app, job_id, src_pid, new_name, include_data, user_i
                 return
             src_name = src_p.name
             # 1. Create the new ProjectSheet
-            new_p = ProjectSheet(name=new_name, client_name=src_p.client_name, status='active')
+            new_p = ProjectSheet(name=new_name, client_name=src_p.client_name, status='active',
+                                 stage='estimate')
             db.session.add(new_p)
             db.session.flush()
 
@@ -29253,6 +29266,21 @@ def _web_worker_essential_columns():
                 # Where the project folder IS when wrapped / archived
                 # (2026-11-04, alembic 0029).
                 "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS dropbox_root VARCHAR(500)",
+                # Project stage / code / dates and reference numbers
+                # (INTAKE_WRAP_HANDOFF Phase 1, 2026-11-23, alembic 0030).
+                "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS stage VARCHAR(12)",
+                "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS project_code VARCHAR(20)",
+                "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS client_initials VARCHAR(8)",
+                "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS start_date DATE",
+                "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS end_date DATE",
+                "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS awarded_at TIMESTAMP",
+                "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS ref_seq_last INTEGER",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS ref_project_id INTEGER",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS ref_seq INTEGER",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_project_sheet_code "
+                "  ON project_sheet (project_code) WHERE project_code IS NOT NULL",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_transaction_ref "
+                "  ON \"transaction\" (ref_project_id, ref_seq) WHERE ref_seq IS NOT NULL",
                 # analyzer_batch (audit H7, alembic 0002) was only ever created
                 # by db.create_all() in preDeploy — which ran against sqlite —
                 # so a worker that rehydrates a doc batch after a recycle
@@ -38850,6 +38878,7 @@ import routes.ledger_admin  # noqa: E402,F401
 import routes.actuals_detail  # noqa: E402,F401
 import routes.docs_relink  # noqa: E402,F401
 import routes.hidden_coded  # noqa: E402,F401
+import routes.project_setup  # noqa: E402,F401
 
 
 if __name__ == "__main__":

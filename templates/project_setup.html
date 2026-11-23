@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}Project setup — {{ project.name }} — FPBudget{% endblock %}
+
+{# ══════════════════════════════════════════════════════════════════════════
+   Project setup (INTAKE_WRAP_HANDOFF Phase 1, 2026-11-23): stage, project
+   code, dates, Award. Rules: project_codes.py. Routes: routes/project_setup.py.
+   ══════════════════════════════════════════════════════════════════════ #}
+{% block content %}
+<style>
+  .ps-page { max-width: 760px; margin: 0 auto; padding: 0 0 40px; }
+  .ps-intro { font-size: .86rem; color: var(--text-muted); margin: 0 0 16px; }
+  .ps-card { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px 18px; margin-bottom: 14px; }
+  .ps-card h2 { font-size: 1rem; margin: 0 0 10px; }
+  .ps-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; font-size: .9rem; }
+  .ps-facts dt { color: var(--text-muted); }
+  .ps-facts dd { margin: 0; font-weight: 500; }
+  .ps-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; letter-spacing: .02em; }
+  .ps-stage { display: inline-block; font-size: .75rem; font-weight: 600; padding: 2px 9px; border-radius: 10px;
+              background: color-mix(in srgb, var(--accent, #2563eb) 14%, var(--bg-2)); }
+  .ps-stage.estimate { background: color-mix(in srgb, var(--yellow) 18%, var(--bg-2)); color: var(--yellow); }
+  .ps-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 14px; align-items: end; }
+  .ps-form label { display: flex; flex-direction: column; gap: 4px; font-size: .8rem; color: var(--text-muted); }
+  .ps-form input, .ps-form select { font-size: .9rem; padding: 6px 8px; }
+  .ps-note { font-size: .8rem; color: var(--text-muted); margin: 8px 0 0; }
+  .ps-warn { font-size: .85rem; color: var(--yellow); margin: 0 0 10px; }
+  .ps-acts { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+</style>
+{% with nav_project=project, nav_active='setup' %}{% include "_project_nav.html" %}{% endwith %}
+<div class="pay-page ps-page">
+  <div class="pay-head">
+    <div class="pay-crumbs">
+      <a href="{{ url_for('dashboard') }}">FPBudget</a><span class="sep">/</span>
+      <span class="cur">{{ project.name }} · Project setup</span>
+    </div>
+    <div class="pay-actions">
+      <a class="pay-btn" href="{{ url_for('project_budget_redirect', pid=project.id) }}">Open budget</a>
+    </div>
+  </div>
+  <p class="ps-intro">
+    A project starts as an Estimate and cannot receive charges or documents. Award it to give it its
+    project code (client initials + the year and month production starts, e.g. GH-2609). From then on every
+    expense coded to it gets a reference number (GH-2609-0147) that never changes.
+  </p>
+
+  <div class="ps-card">
+    <h2>Now</h2>
+    <dl class="ps-facts">
+      <dt>Stage</dt><dd><span class="ps-stage {{ stage }}">{{ stage_label }}</span></dd>
+      <dt>Project code</dt><dd>{% if project.project_code %}<span class="ps-code">{{ project.project_code }}</span>{% else %}—{% endif %}</dd>
+      <dt>Client</dt><dd>{{ project.client_name or '—' }}{% if project.client_initials %} ({{ project.client_initials }}){% endif %}</dd>
+      <dt>Dates</dt><dd>{{ project.start_date.isoformat() if project.start_date else '—' }} → {{ project.end_date.isoformat() if project.end_date else '—' }}</dd>
+      <dt>Reference numbers</dt><dd>{{ project.ref_seq_last or 0 }} given{% if project.project_code and to_number %} · {{ to_number }} waiting{% endif %}</dd>
+    </dl>
+    {% if stage == 'estimate' and holdings.total %}
+    <p class="ps-warn" style="margin-top:10px">This Estimate already holds {{ holdings.transactions }} charge(s) and {{ holdings.documents }} document(s). Award it, or move them to the right project.</p>
+    {% endif %}
+  </div>
+
+  {% if can_edit and stage in ('estimate', 'awarded', 'wrapping') %}
+  {% if not project.project_code %}
+  <div class="ps-card">
+    <h2>Award</h2>
+    <form method="POST" action="{{ url_for('project_setup_award', pid=project.id) }}" id="ps-award">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="ps-form">
+        <label>Client initials<input name="initials" value="{{ initials }}" maxlength="6" required style="text-transform:uppercase"></label>
+        <label>Production start<input type="date" name="start_date" value="{{ start.isoformat() if start else '' }}" required></label>
+        <label>End (optional)<input type="date" name="end_date" value="{{ end.isoformat() if end else '' }}"></label>
+        <label>Project code<input name="code" value="{{ suggested_code or '' }}" placeholder="GH-2609" id="ps-code"></label>
+      </div>
+      <p class="ps-note" id="ps-preview">
+        {% if suggested_code %}Will be <b class="ps-code">{{ suggested_code }}</b>{% endif %}{% if to_number %} · {{ to_number }} coded expense{{ '' if to_number == 1 else 's' }} will be numbered, oldest first{% endif %}.
+        The code is frozen once numbers exist.
+      </p>
+      <div class="ps-acts"><button type="submit" class="pay-btn primary">Award</button></div>
+    </form>
+  </div>
+  {% else %}
+  <div class="ps-card">
+    <h2>Stage</h2>
+    <form method="POST" action="{{ url_for('project_setup_stage', pid=project.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="ps-form">
+        <label>Stage
+          <select name="stage">
+            {% for s in ('awarded', 'wrapping') %}<option value="{{ s }}" {{ 'selected' if stage == s }}>{{ stage_labels[s] }}</option>{% endfor %}
+          </select></label>
+      </div>
+      <p class="ps-note">Wrapped is set by Wrap Project, not here.</p>
+      <div class="ps-acts"><button type="submit" class="pay-btn">Save stage</button></div>
+    </form>
+  </div>
+  <div class="ps-card">
+    <h2>Dates</h2>
+    <form method="POST" action="{{ url_for('project_setup_dates', pid=project.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="ps-form">
+        <label>Start<input type="date" name="start_date" value="{{ project.start_date.isoformat() if project.start_date else '' }}"></label>
+        <label>End<input type="date" name="end_date" value="{{ project.end_date.isoformat() if project.end_date else '' }}"></label>
+      </div>
+      <p class="ps-note">Changing the dates never changes the project code.</p>
+      <div class="ps-acts"><button type="submit" class="pay-btn">Save dates</button></div>
+    </form>
+  </div>
+  {% if is_super_admin and not project.ref_seq_last %}
+  <div class="ps-card">
+    <h2>Correct the code</h2>
+    <form method="POST" action="{{ url_for('project_setup_code', pid=project.id) }}"
+          onsubmit="return confirm('Change the project code? Only possible while no reference number exists.')">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="ps-form"><label>Project code<input name="code" value="{{ project.project_code }}"></label></div>
+      <div class="ps-acts"><button type="submit" class="pay-btn">Save code</button></div>
+    </form>
+  </div>
+  {% endif %}
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var form = document.getElementById('ps-award');
+  if (!form) return;
+  var code = document.getElementById('ps-code'), out = document.getElementById('ps-preview');
+  var touched = false;
+  code.addEventListener('input', function () { touched = true; });
+  function refresh() {
+    var q = new URLSearchParams({initials: form.initials.value, start: form.start_date.value});
+    fetch('{{ url_for("project_setup_preview", pid=project.id) }}?' + q, {credentials: 'same-origin'})
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { out.textContent = d.error; return; }
+        if (!touched) code.value = d.code;
+        out.textContent = 'Will be ' + (touched ? code.value : d.code) +
+          (d.to_number ? ' · ' + d.to_number + ' coded expense' + (d.to_number === 1 ? '' : 's') +
+           ' will be numbered, oldest first' : '') + '. The code is frozen once numbers exist.';
+      }).catch(function () {});
+  }
+  form.initials.addEventListener('change', refresh);
+  form.start_date.addEventListener('change', refresh);
+})();
+</script>
+{% endblock %}

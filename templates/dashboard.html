@@ -61,6 +61,8 @@
     <div class="project-card-name">{{ p.name }}</div>
     <div class="project-card-meta">
       {{ budget_counts.get(p.id, 0) }} budget{{ 's' if budget_counts.get(p.id, 0) != 1 else '' }}
+      · <a href="{{ url_for('project_setup', pid=p.id) }}" onclick="event.stopPropagation()"
+           title="Project setup: stage, code, dates">{% if p.project_code %}{{ p.project_code }} · {% endif %}{{ stage_label(p) }}</a>
     </div>
     <div class="project-card-actions">
       <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-primary btn-sm">

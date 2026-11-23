@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Estimates holding charges or documents — FPBudget{% endblock %}
+
+{# Admin → Maintenance (INTAKE_WRAP_HANDOFF Phase 1, 2026-11-23): projects
+   still at Estimate that already hold charges or documents. Review only —
+   a person awards the project or moves what it holds. Routes:
+   routes/project_setup.py. #}
+{% block content %}
+<style>
+  .eh-page { max-width: 900px; margin: 0 auto; padding: 0 0 40px; }
+  .eh-intro { font-size: .86rem; color: var(--text-muted); margin: 0 0 16px; }
+  .eh-card { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg);
+             padding: 12px 16px; margin-bottom: 10px; display: flex; justify-content: space-between;
+             align-items: center; gap: 12px; flex-wrap: wrap; }
+  .eh-card .n { font-weight: 600; }
+  .eh-card .m { font-size: .82rem; color: var(--text-muted); }
+  .eh-empty { padding: 22px; text-align: center; color: var(--text-muted); background: var(--bg-2);
+              border: 1px solid var(--border); border-radius: var(--radius-lg); }
+</style>
+<div class="pay-page eh-page">
+  <div class="pay-head">
+    <div class="pay-crumbs">
+      <a href="{{ url_for('dashboard') }}">FPBudget</a><span class="sep">/</span>
+      <a href="{{ url_for('admin_maintenance') }}">Maintenance</a><span class="sep">/</span>
+      <span class="cur">Estimates holding charges or documents</span>
+    </div>
+  </div>
+  <p class="eh-intro">
+    An Estimate cannot receive charges or documents. These projects already held some when stages arrived,
+    or were set back to Estimate by hand. Award the project, or open its Actuals and Documents and move each item
+    to the right project. Nothing here changes on its own.
+  </p>
+  {% for r in rows %}
+  <div class="eh-card">
+    <div>
+      <div class="n">{{ r.project.name }}</div>
+      <div class="m">{{ r.transactions }} charge{{ '' if r.transactions == 1 else 's' }} · {{ r.documents }} document{{ '' if r.documents == 1 else 's' }}</div>
+    </div>
+    <div class="pay-actions">
+      <a class="pay-btn primary" href="{{ url_for('project_setup', pid=r.project.id) }}">Award…</a>
+      <a class="pay-btn" href="{{ url_for('actuals_workspace_page', pid=r.project.id) }}">Actuals</a>
+      <a class="pay-btn" href="{{ url_for('docs_inbox_page', pid=r.project.id) }}">Documents</a>
+    </div>
+  </div>
+  {% else %}
+  <div class="eh-empty">No Estimate holds charges or documents.</div>
+  {% endfor %}
+</div>
+{% endblock %}
