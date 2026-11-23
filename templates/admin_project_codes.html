@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Give existing projects their codes — FPBudget{% endblock %}
+
+{# Admin → Maintenance (INTAKE_WRAP_HANDOFF, 2026-11-23). Preview, then Run.
+   Rules: project_codes.backfill_plan / backfill_apply. Routes:
+   routes/project_setup.py. #}
+{% block content %}
+<style>
+  .pc-page { max-width: 1000px; margin: 0 auto; padding: 0 0 40px; }
+  .pc-intro { font-size: .86rem; color: var(--text-muted); margin: 0 0 16px; }
+  .pc-h { font-size: 1rem; margin: 22px 0 8px; }
+  .pc-table { width: 100%; border-collapse: collapse; font-size: .85rem; background: var(--bg-2); }
+  .pc-table th, .pc-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+  .pc-table td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .pc-code { font-family: ui-monospace, Menlo, monospace; font-weight: 700; }
+  .pc-guess { color: var(--yellow); font-size: .78rem; }
+  .pc-empty { padding: 14px; color: var(--text-muted); background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+</style>
+<div class="pay-page pc-page">
+  <div class="pay-head">
+    <div class="pay-crumbs">
+      <a href="{{ url_for('dashboard') }}">FPBudget</a><span class="sep">/</span>
+      <a href="{{ url_for('admin_maintenance') }}">Maintenance</a><span class="sep">/</span>
+      <span class="cur">Give existing projects their codes</span>
+    </div>
+    {% if not applied and (plan.award or plan.estimate or plan.manual) %}
+    <form method="POST" class="pay-actions"
+          onsubmit="return confirm('Give these projects their codes and number their coded expenses? Codes are frozen once numbers exist.')">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="pay-btn primary">Run</button>
+    </form>
+    {% endif %}
+  </div>
+  <p class="pc-intro">
+    {% if applied %}Done. The lists below are what was applied.{% else %}Nothing has changed yet — this is the preview.{% endif %}
+    A project with a Working budget is a real job: it gets its code (client initials + production start month) and its
+    coded expenses get reference numbers, oldest first. Earlier projects take the plain code, a later one in the same
+    month takes a letter. A project with no Working budget that holds nothing becomes an Estimate.
+  </p>
+
+  <h2 class="pc-h">Get a code ({{ plan.award|length }})</h2>
+  {% if plan.award %}
+  <table class="pc-table">
+    <tr><th>Project</th><th>Client</th><th>Start</th><th>Code</th><th class="n">Expenses numbered</th></tr>
+    {% for it in plan.award %}
+    <tr><td><a href="{{ url_for('project_setup', pid=it.id) }}">{{ it.name }}</a>{% if it.status == 'wrapped' %} <span class="pc-guess">(wrapped)</span>{% endif %}</td>
+        <td>{{ it.client or '—' }} ({{ it.initials }})</td>
+        <td>{{ it.start.strftime('%b %Y') }}{% if it.guessed %} <span class="pc-guess" title="No start date on the project or its budgets — the month from its Dropbox folder name">guessed</span>{% endif %}</td>
+        <td class="pc-code">{{ it.code }}</td>
+        <td class="n">{{ it.numbered if applied else it.to_number }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<div class="pc-empty">No project is waiting for a code.</div>{% endif %}
+
+  <h2 class="pc-h">Need a person ({{ plan.manual|length }})</h2>
+  {% if plan.manual %}
+  <table class="pc-table">
+    <tr><th>Project</th><th>Missing</th></tr>
+    {% for it in plan.manual %}
+    <tr><td><a href="{{ url_for('project_setup', pid=it.id) }}">{{ it.name }}</a></td>
+        <td>{% if not it.initials %}client initials{% endif %}{% if not it.initials and not it.start %} and {% endif %}{% if not it.start %}start month{% endif %} — set it in Project setup</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<div class="pc-empty">None.</div>{% endif %}
+
+  <h2 class="pc-h">Become Estimates ({{ plan.estimate|length }})</h2>
+  {% if plan.estimate %}
+  <table class="pc-table">
+    <tr><th>Project</th><th>Client</th></tr>
+    {% for it in plan.estimate %}<tr><td>{{ it.name }}</td><td>{{ it.client or '—' }}</td></tr>{% endfor %}
+  </table>
+  {% else %}<div class="pc-empty">None.</div>{% endif %}
+</div>
+{% endblock %}

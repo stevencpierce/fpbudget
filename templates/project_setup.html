@@ -39,9 +39,10 @@
     </div>
   </div>
   <p class="ps-intro">
-    A project starts as an Estimate and cannot receive charges or documents. Award it to give it its
-    project code (client initials + the year and month production starts, e.g. GH-2609). From then on every
-    expense coded to it gets a reference number (GH-2609-0147) that never changes.
+    A project starts as an Estimate and cannot receive charges or documents. Making its first Working budget awards it:
+    it gets its project code (client initials + the year and month production starts, e.g. GH-2609) and from then on
+    every expense coded to it gets a reference number (GH-2609-0147) that never changes. Award here only if you need
+    to do it before the Working budget exists, or when the code could not be worked out.
   </p>
 
   <div class="ps-card">
@@ -50,6 +51,7 @@
       <dt>Stage</dt><dd><span class="ps-stage {{ stage }}">{{ stage_label }}</span></dd>
       <dt>Project code</dt><dd>{% if project.project_code %}<span class="ps-code">{{ project.project_code }}</span>{% else %}—{% endif %}</dd>
       <dt>Client</dt><dd>{{ project.client_name or '—' }}{% if project.client_initials %} ({{ project.client_initials }}){% endif %}</dd>
+      {% if project.project_code and not project.start_date %}<dt></dt><dd class="ps-note" style="margin:0">Start month guessed from the Dropbox folder name. {% if not project.ref_seq_last %}A super-admin can still correct the code below.{% endif %}</dd>{% endif %}
       <dt>Dates</dt><dd>{{ project.start_date.isoformat() if project.start_date else '—' }} → {{ project.end_date.isoformat() if project.end_date else '—' }}</dd>
       <dt>Reference numbers</dt><dd>{{ project.ref_seq_last or 0 }} given{% if project.project_code and to_number %} · {{ to_number }} waiting{% endif %}</dd>
     </dl>
@@ -61,7 +63,7 @@
   {% if can_edit and stage in ('estimate', 'awarded', 'wrapping') %}
   {% if not project.project_code %}
   <div class="ps-card">
-    <h2>Award</h2>
+    <h2>{% if stage == 'estimate' %}Award{% else %}Give it its code{% endif %}</h2>
     <form method="POST" action="{{ url_for('project_setup_award', pid=project.id) }}" id="ps-award">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="ps-form">
@@ -74,7 +76,7 @@
         {% if suggested_code %}Will be <b class="ps-code">{{ suggested_code }}</b>{% endif %}{% if to_number %} · {{ to_number }} coded expense{{ '' if to_number == 1 else 's' }} will be numbered, oldest first{% endif %}.
         The code is frozen once numbers exist.
       </p>
-      <div class="ps-acts"><button type="submit" class="pay-btn primary">Award</button></div>
+      <div class="ps-acts"><button type="submit" class="pay-btn primary">{% if stage == 'estimate' %}Award{% else %}Save code{% endif %}</button></div>
     </form>
   </div>
   {% else %}

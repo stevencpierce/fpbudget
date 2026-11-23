@@ -1083,6 +1083,7 @@ def inject_globals():
             # Project stage / code (INTAKE_WRAP_HANDOFF, 2026-11-23).
             "project_stage": _project_codes.project_stage,
             "stage_label": _project_codes.stage_label,
+            "needs_code": _project_codes.needs_code,
             # The shared project nav strip (templates/_project_nav.html)
             # hides Import & Templates / Settings from viewers on EVERY
             # page with the one role rule; pages that don't already carry

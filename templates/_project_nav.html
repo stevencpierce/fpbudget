@@ -122,4 +122,9 @@
   <b>Estimate.</b> This project cannot receive charges or documents until it is awarded.
   <a href="{{ url_for('project_setup', pid=_pid) }}">Project setup → Award</a>
 </div>
+{% elif needs_code is defined and nav_project.stage is defined and needs_code(nav_project) %}
+<div class="fp-stage-banner" role="status" style="margin:8px 0;padding:8px 12px;border-radius:8px;font-size:.85rem;background:color-mix(in srgb, var(--yellow) 14%, var(--bg-2));border:1px solid color-mix(in srgb, var(--yellow) 35%, var(--border))">
+  <b>No project code yet.</b> Add the client's initials or the production start month so expenses get reference numbers.
+  <a href="{{ url_for('project_setup', pid=_pid) }}">Project setup</a>
+</div>
 {% endif %}

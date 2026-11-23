@@ -218,3 +218,42 @@ def project_ledger_export(pid, fmt):
         mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     return Response(body, mimetype=mime, headers={
         'Content-Disposition': f'attachment; filename="{lx.ledger_filename(pid, fmt)}"'})
+
+
+@app.route("/admin/projects/codes", methods=["GET", "POST"])
+@login_required
+@maintenance_required
+def admin_project_codes_backfill():
+    """Admin → Maintenance → "Give existing projects their codes"
+    (2026-11-23). GET previews project_codes.backfill_plan(); POST runs it:
+    every project with a Working budget gets its code (earliest start
+    first) and its coded expenses numbered; an active project with no
+    Working budget and nothing in it becomes an Estimate. Logged per
+    project."""
+    if request.method == "GET":
+        plan = pc.backfill_plan()
+        db.session.rollback()
+        if request.args.get('format') == 'json':
+            return jsonify(_plan_json(plan))
+        return render_template("admin_project_codes.html", plan=plan, applied=False)
+    plan = pc.backfill_apply()
+    db.session.commit()
+    for it in plan['award']:
+        p = db.session.get(ProjectSheet, it['id'])
+        _log(p, {'project_code': None},
+             f'Given code {it["code"]} (existing project){"; numbered " + str(it["numbered"]) + " expenses" if it.get("numbered") else ""}')
+    for it in plan['estimate']:
+        p = db.session.get(ProjectSheet, it['id'])
+        _log(p, {'stage': None}, 'Marked Estimate (no Working budget, holds nothing)')
+    db.session.commit()
+    if request.args.get('format') == 'json' or request.is_json:
+        return jsonify(_plan_json(plan))
+    flash(f"{len(plan['award'])} project(s) given codes; {len(plan['estimate'])} marked Estimate; "
+          f"{len(plan['manual'])} need a person.", 'success')
+    return render_template("admin_project_codes.html", plan=plan, applied=True)
+
+
+def _plan_json(plan):
+    def _row(it):
+        return {k: (v.isoformat() if hasattr(v, 'isoformat') else v) for k, v in it.items()}
+    return {k: [_row(i) for i in v] for k, v in plan.items()}

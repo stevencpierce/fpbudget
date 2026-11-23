@@ -226,6 +226,9 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   written ONLY by `assign_ref_numbers`, run from the flush hook installed
   in app.py and at Award; never set `ref_seq` by hand, never renumber.
   Codes are matched in text only against the real list (`find_codes_in`).
+  The first Working budget awards a project automatically (`auto_award`,
+  same flush hook); existing projects get codes only from Admin →
+  Maintenance → "Give existing projects their codes" (never at boot).
 
 ## Splitting app.py (M1, ongoing)
 Route slices move to `routes/<name>.py` — plain modules using `@app.route` on

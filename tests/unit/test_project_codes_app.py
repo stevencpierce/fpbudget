@@ -304,3 +304,83 @@ def test_ledger_export(ctx):
     by_line = list(wb["By line"].iter_rows(min_row=2, values_only=True))
     assert any("GH-2609-0001" in (row[6] or "") for row in by_line)
     assert c.get(f"/projects/{pid}/ledger.pdf").status_code == 404
+
+
+def test_first_working_budget_awards_the_project(ctx):
+    with ctx["app"].app_context():
+        # A new project starts as an Estimate …
+        pid, _ = _project("Cliburn Recital", "Cliburn Foundation", stage='estimate')
+        assert pc.project_stage(db.session.get(ProjectSheet, pid)) == 'estimate'
+        # … and its first Working budget awards it: code from the client's
+        # initials + the budget's start month.
+        db.session.add(Budget(project_id=pid, name="Cliburn Working v1", budget_mode='working',
+                              start_date=date(2027, 3, 10)))
+        db.session.commit()
+        p = db.session.get(ProjectSheet, pid)
+        db.session.refresh(p)
+        assert pc.project_stage(p) == 'awarded' and p.project_code == "CF-2703"
+        assert not pc.needs_code(p)
+        # A budget switched to Working awards too; no client and no dates →
+        # awarded (it takes charges) but Project setup asks for the code.
+        pid2, _ = _project("Untitled Pitch", None, stage='estimate')
+        b = Budget.query.filter_by(project_id=pid2).first()
+        b.budget_mode = 'working'
+        db.session.commit()
+        p2 = db.session.get(ProjectSheet, pid2)
+        db.session.refresh(p2)
+        assert pc.project_stage(p2) == 'awarded' and p2.project_code is None
+        assert pc.needs_code(p2)
+        # Saving the Working budget again changes nothing.
+        b = Budget.query.filter_by(project_id=pid).filter(Budget.budget_mode == 'working').first()
+        b.name = "Cliburn Working v1 (renamed)"
+        db.session.commit()
+        assert db.session.get(ProjectSheet, pid).project_code == "CF-2703"
+
+
+def test_backfill_existing_projects(ctx):
+    c = ctx["client"]
+    with ctx["app"].app_context():
+        # Projects from before stages (stage NULL) with Working budgets.
+        later, _ = _project("Veolia Spring", "Veolia")
+        db.session.add(Budget(project_id=later, name="W", budget_mode='working', start_date=date(2026, 5, 20)))
+        earlier, lid = _project("Veolia Providence", "Veolia")
+        db.session.add(Budget(project_id=earlier, name="W", budget_mode='working', start_date=date(2026, 5, 2)))
+        db.session.commit()
+        # The hook awards new Working budgets; undo that to model the
+        # projects that existed before this release.
+        for x in (later, earlier):
+            p = db.session.get(ProjectSheet, x)
+            p.project_code = p.client_initials = p.stage = p.awarded_at = p.start_date = None
+            p.ref_seq_last = None
+        db.session.commit()
+        coded = _txn(earlier, "2026-05-05", 1200, budget_line_id=lid)
+        noclient, _ = _project("Mystery Job", None)
+        db.session.add(Budget(project_id=noclient, name="W", budget_mode='working'))
+        wrapped, _ = _project("Old Wrapped Show", "Ventana", status='wrapped')
+        db.session.add(Budget(project_id=wrapped, name="W", budget_mode='working', start_date=date(2025, 1, 4)))
+        idle, _ = _project("Idle Estimate", "Nobody")
+        db.session.commit()
+        for x in (noclient, wrapped):
+            p = db.session.get(ProjectSheet, x)
+            p.project_code = p.stage = p.client_initials = p.awarded_at = None
+        db.session.commit()
+    j = c.get("/admin/projects/codes?format=json").get_json()
+    codes = {it['id']: it['code'] for it in j['award']}
+    assert codes[earlier] == "VE-2605" and codes[later] == "VE-2605B"
+    assert codes[wrapped] == "VE-2501"
+    assert noclient in {it['id'] for it in j['manual']}
+    assert idle in {it['id'] for it in j['estimate']}
+    with ctx["app"].app_context():
+        assert db.session.get(ProjectSheet, earlier).project_code is None   # preview wrote nothing
+    r = c.post("/admin/projects/codes", data={"csrf_token": "t"})
+    assert r.status_code == 200
+    with ctx["app"].app_context():
+        assert db.session.get(ProjectSheet, earlier).project_code == "VE-2605"
+        assert _ref(coded) == "VE-2605-0001"
+        w = db.session.get(ProjectSheet, wrapped)
+        assert w.project_code == "VE-2501" and pc.project_stage(w) == 'wrapped'
+        assert pc.project_stage(db.session.get(ProjectSheet, idle)) == 'estimate'
+        assert pc.needs_code(db.session.get(ProjectSheet, noclient))
+    # Run again: nothing left to do.
+    j = c.get("/admin/projects/codes?format=json").get_json()
+    assert not any(it['id'] in (earlier, later, wrapped) for it in j['award'])

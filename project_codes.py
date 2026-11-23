@@ -23,13 +23,13 @@ one remembering to.
 """
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime
 
 import sqlalchemy as sa
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from models import db, ProjectSheet, Transaction, TransactionSplit
+from models import db, Budget, ProjectSheet, Transaction, TransactionSplit
 
 log = logging.getLogger(__name__)
 
@@ -101,20 +101,24 @@ def set_stage(p, stage):
 
 # ── Project code ─────────────────────────────────────────────────────────
 
-def suggest_initials(client_name):
+def suggest_initials(client_name, conn=None):
     """A first guess a person corrects: the initials already used for this
     client, else the capitals of a one-word name (GrubHub → GH) or the
     first letter of each word (Global Industrial → GI)."""
     name = (client_name or '').strip()
     if not name:
         return ''
-    prior = (ProjectSheet.query
-             .filter(sa.func.lower(ProjectSheet.client_name) == name.lower(),
-                     ProjectSheet.client_initials.isnot(None))
-             .order_by(ProjectSheet.id.desc()).first())
-    if prior and prior.client_initials:
-        return prior.client_initials
-    words = [w for w in re.split(r'[\s,/]+', name) if w and w.upper() not in _COMPANY_WORDS]
+    conn = conn or db.session.connection()
+    prior = conn.execute(sa.text(
+        "SELECT client_initials FROM project_sheet WHERE lower(client_name) = :n "
+        "AND client_initials IS NOT NULL ORDER BY id DESC LIMIT 1"), {'n': name.lower()}).first()
+    if prior and prior[0]:
+        return prior[0]
+    return initials_from_name(name)
+
+
+def initials_from_name(name):
+    words = [w for w in re.split(r'[\s,/]+', name or '') if w and w.upper() not in _COMPANY_WORDS]
     if not words:
         return ''
     if len(words) == 1:
@@ -136,11 +140,12 @@ def code_base(initials, start_date):
     return f"{normalize_initials(initials)}-{start_date.strftime('%y%m')}"
 
 
-def next_free_code(base, exclude_pid=None):
+def next_free_code(base, exclude_pid=None, conn=None):
     """GH-2609 if free, else GH-2609B, GH-2609C …"""
-    taken = {c for (c,) in db.session.query(ProjectSheet.project_code)
-             .filter(ProjectSheet.project_code.like(base + '%'),
-                     ProjectSheet.id != (exclude_pid or 0)).all() if c}
+    conn = conn or db.session.connection()
+    taken = {r[0] for r in conn.execute(sa.text(
+        "SELECT project_code FROM project_sheet WHERE project_code LIKE :b AND id <> :x"),
+        {'b': base + '%', 'x': int(exclude_pid or 0)}) if r[0]}
     if base not in taken:
         return base
     for letter in 'BCDEFGHIJKLMNOPQRSTUVWXYZ':
@@ -287,27 +292,199 @@ def assign_ref_numbers(pid, conn=None):
     return len(ids)
 
 
+# ── Automatic Award: a Working budget means the job is real ─────────────
+# Steven, Nov 23: making a Working budget IS the award, so it must not be a
+# second step. The first Working budget (new, or a budget switched to
+# Working) awards the project: stage awarded, code from the client's
+# initials + the production start month, then its coded expenses are
+# numbered. When the initials or the start month cannot be worked out the
+# project is still awarded (it takes charges) and Project setup asks for
+# the code once (needs_code). Core SQL only — it runs inside a flush.
+
+_SLUG_MONTH_RE = re.compile(r'^(\d{4})-(\d{2})_')
+
+
+def _plan_code(conn, pid):
+    """(initials, start_date, start_guessed, code) for a project, the code
+    None when a person must supply initials or a start month. The start
+    month is the project's start date, else a budget's, else — guessed,
+    and said so on Project setup — the month in its Dropbox folder name
+    (the month it was created)."""
+    row = conn.execute(sa.text(
+        "SELECT client_name, client_initials, start_date, dropbox_folder FROM project_sheet "
+        "WHERE id = :pid"), {'pid': int(pid)}).first()
+    client, initials, start, slug = row if row else (None, None, None, None)
+    initials = initials or suggest_initials(client, conn) or ''
+    guessed = False
+    if not start:
+        b = conn.execute(sa.text(
+            "SELECT start_date FROM budget WHERE project_id = :pid AND start_date IS NOT NULL "
+            "ORDER BY CASE WHEN budget_mode = 'working' THEN 0 ELSE 1 END, id DESC LIMIT 1"),
+            {'pid': int(pid)}).first()
+        start = b[0] if b else None
+    if isinstance(start, str):
+        try:
+            start = datetime.strptime(start[:10], '%Y-%m-%d').date()
+        except ValueError:
+            start = None
+    if not start and slug:
+        m = _SLUG_MONTH_RE.match(slug)
+        if m and 1 <= int(m.group(2)) <= 12:
+            start, guessed = date(int(m.group(1)), int(m.group(2)), 1), True
+    try:
+        initials = normalize_initials(initials) if initials else ''
+    except StageError:
+        initials = ''
+    if not initials or not start:
+        return initials or None, start, guessed, None
+    return initials, start, guessed, next_free_code(code_base(initials, start), pid, conn)
+
+
+def auto_award(pid, conn=None):
+    """Award project `pid` if it has no code yet. Returns {'code', 'numbered',
+    'needs_code'} or None when there was nothing to do."""
+    conn = conn or db.session.connection()
+    row = conn.execute(sa.text(
+        "SELECT id, name, client_name, client_initials, start_date, project_code, stage, status "
+        "FROM project_sheet WHERE id = :pid"), {'pid': int(pid)}).first()
+    if not row or (row[7] or 'active') == 'archived':
+        return None
+    if row[5]:
+        if row[6] == 'estimate':
+            conn.execute(sa.text("UPDATE project_sheet SET stage = 'awarded' WHERE id = :pid"),
+                         {'pid': int(pid)})
+        return None
+    initials, start, guessed, code = _plan_code(conn, pid)
+    stage = 'awarded' if (row[7] or 'active') == 'active' else row[6]
+    conn.execute(sa.text(
+        "UPDATE project_sheet SET stage = :stage, project_code = :code, client_initials = "
+        "COALESCE(:ini, client_initials), start_date = COALESCE(start_date, :start), "
+        "awarded_at = COALESCE(awarded_at, :now) WHERE id = :pid"),
+        {'stage': stage, 'code': code, 'ini': initials, 'start': None if guessed else start,
+         'now': datetime.utcnow(), 'pid': int(pid)})
+    n = assign_ref_numbers(pid, conn) if code else 0
+    return {'code': code, 'numbered': n, 'needs_code': code is None}
+
+
+def needs_code(p):
+    """Awarded (or later) but no code yet — Project setup asks for it. A
+    project from before stages (stage NULL) is left to the Maintenance
+    backfill rather than nagged on every page."""
+    return (p is not None and not p.project_code and getattr(p, 'stage', None) is not None
+            and project_stage(p) in ('awarded', 'wrapping'))
+
+
+def _has_working(conn, pid):
+    return conn.execute(sa.text(
+        "SELECT 1 FROM budget WHERE project_id = :pid AND budget_mode = 'working' "
+        "AND COALESCE(is_actual, :f) = :f LIMIT 1"), {'pid': int(pid), 'f': False}).first() is not None
+
+
+def backfill_plan():
+    """Existing projects, as Admin → Maintenance previews them: every
+    active or wrapped project with a Working budget and no code gets one
+    (earliest production start first, so it takes the plain code and a
+    later one the letter); an active project with NO Working budget that
+    holds no charges or documents becomes an Estimate. Nothing is written."""
+    conn = db.session.connection()
+    rows = conn.execute(sa.text(
+        "SELECT id, name, client_name, client_initials, start_date, status, stage "
+        "FROM project_sheet WHERE project_code IS NULL AND status IN ('active', 'wrapped')")).fetchall()
+    award, estimate, manual = [], [], []
+    for r in rows:
+        if _has_working(conn, r[0]):
+            initials, start, guessed, _ = _plan_code(conn, r[0])
+            item = {'id': r[0], 'name': r[1], 'client': r[2], 'status': r[5],
+                    'initials': initials, 'start': start, 'guessed': guessed,
+                    'to_number': eligible_count(r[0], conn)}
+            (award if (initials and start) else manual).append(item)
+        elif r[5] == 'active' and r[6] != 'estimate' and not estimate_holdings(r[0])['total']:
+            estimate.append({'id': r[0], 'name': r[1], 'client': r[2]})
+    award.sort(key=lambda x: (x['start'], x['id']))
+    # Codes in that order, each seeing the ones before it.
+    planned = set()
+    for it in award:
+        it['code'] = next_free_code_after(code_base(it['initials'], it['start']), planned,
+                                          it['id'], conn)
+        planned.add(it['code'])
+    return {'award': award, 'manual': manual, 'estimate': estimate}
+
+
+def next_free_code_after(base, also_taken, exclude_pid, conn):
+    taken = {r[0] for r in conn.execute(sa.text(
+        "SELECT project_code FROM project_sheet WHERE project_code LIKE :b AND id <> :x"),
+        {'b': base + '%', 'x': int(exclude_pid or 0)}) if r[0]} | set(also_taken)
+    for cand in [base] + [base + c for c in 'BCDEFGHIJKLMNOPQRSTUVWXYZ']:
+        if cand not in taken:
+            return cand
+    raise StageError(f"Every code from {base} to {base}Z is taken.")
+
+
+def backfill_apply():
+    """Apply backfill_plan(). Does not commit. Returns the plan with
+    'numbered' on each awarded project."""
+    plan = backfill_plan()
+    conn = db.session.connection()
+    for it in plan['award']:
+        conn.execute(sa.text(
+            "UPDATE project_sheet SET project_code = :code, client_initials = :ini, "
+            "start_date = COALESCE(start_date, :start), awarded_at = COALESCE(awarded_at, :now), "
+            "stage = CASE WHEN status = 'active' THEN 'awarded' ELSE stage END "
+            "WHERE id = :pid AND project_code IS NULL"),
+            {'code': it['code'], 'ini': it['initials'],
+             'start': None if it['guessed'] else it['start'],
+             'now': datetime.utcnow(), 'pid': it['id']})
+        it['numbered'] = assign_ref_numbers(it['id'], conn)
+    for it in plan['manual']:
+        conn.execute(sa.text(
+            "UPDATE project_sheet SET stage = 'awarded' WHERE id = :pid AND status = 'active' "
+            "AND (stage IS NULL OR stage = 'estimate')"), {'pid': it['id']})
+    for it in plan['estimate']:
+        conn.execute(sa.text("UPDATE project_sheet SET stage = 'estimate' WHERE id = :pid "
+                             "AND project_code IS NULL"), {'pid': it['id']})
+    return plan
+
+
 # ── Flush hook: number on first coding, whatever path coded it ───────────
 
 _KEY = '_fp_ref_pids'
 
 
+_AWARD_KEY = '_fp_award_pids'
+
+
 def _note_pids(session, flush_context):
     pids = session.info.setdefault(_KEY, set())
+    award = session.info.setdefault(_AWARD_KEY, set())
     for obj in list(session.new) + list(session.dirty):
         if isinstance(obj, (Transaction, TransactionSplit)) and obj.project_id:
             pids.add(int(obj.project_id))
+        elif isinstance(obj, Budget) and obj.project_id and obj.budget_mode == 'working' \
+                and not getattr(obj, 'is_actual', False):
+            # A new Working budget, or a budget switched to Working.
+            if obj in session.new or sa.inspect(obj).attrs.budget_mode.history.has_changes():
+                award.add(int(obj.project_id))
 
 
 def _number_noted(session, flush_context):
-    pids = session.info.pop(_KEY, None)
-    if not pids:
+    award = session.info.pop(_AWARD_KEY, None) or set()
+    pids = (session.info.pop(_KEY, None) or set()) - award
+    if not pids and not award:
         return
     try:
         conn = session.connection()
     except Exception:
         return
     pg = conn.dialect.name == 'postgresql'
+    for pid in sorted(award):
+        try:
+            if pg:
+                with conn.begin_nested():
+                    auto_award(pid, conn)
+            else:
+                auto_award(pid, conn)
+        except Exception:
+            log.warning("[refs] automatic award skipped for project %s", pid, exc_info=True)
     for pid in sorted(pids):
         try:
             if pg:
