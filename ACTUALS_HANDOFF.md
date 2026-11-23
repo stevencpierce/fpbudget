@@ -271,7 +271,7 @@ Five phases, each shippable on its own, each ending with the CLAUDE.md pre-deplo
 - [x] Compare panel (`static/dup-compare.js`): row hover → Compare (the chip itself hides under the hover actions — why it never opened), D, the row menu, the Duplicates group's Compare button. Columns per charge, differences highlighted, suggested keeper + reason, "If kept" effect; Keep this one (`…/duplicates/settle`, click-to-confirm, Undo toast), Keep both (remembered company-wide for `dup:` keys), Not project for one. ←/→, Enter, Esc. Two-up with horizontal scroll at 1024 when there are more than two.
 - Not done: a person picker in the "Same person" offer when neither name is a person Payee (it points at the Payee page instead); the legacy `CrewMember.loan_out_vendor_id` / `ProjectCrewMember.loan_out_vendor_id` links are NOT read by `same_payee` (only `payee_loanout` rows are).
 
-**Phase 6 — Later: upload pathway for external users.** Not in this build. One entry point for crew and vendors to drop receipts and invoices from the app or a computer, replacing the three paths above with one. Scope it after Phase 3 ships.
+**Phase 6 — Moved to `INTAKE_WRAP_HANDOFF.md` (Nov 23, 2026).** The upload pathway for external users is now Intake's upload tier (Intake Phase 4): a per-project upload link carrying the project code. Not built here.
 
 **Acceptance**
 
@@ -310,6 +310,15 @@ States to show for every component: default, hover, selected, drop-target, disab
 - Receipt matches, including exact ones, require a click to confirm.
 - Upload paths: Dropbox `_INBOX` sweep, web upload and mobile upload are all in use and all stay. A later phase cleans this pathway up so external users can upload from the app or a computer.
 - QuickBooks For Review: Steven will keep charges accepted manually; no bank-rule work in this build.
+
+## Decisions (Steven, Nov 23, 2026)
+
+Nothing else was recorded on this side between Nov 4 and Nov 23. Intake and Wrap now have their own handoff, `INTAKE_WRAP_HANDOFF.md`; it sits in front of and behind this module.
+
+- Two same-amount payments a day apart to different people are not duplicates (Joel Knutson $4,500 Oct 19, Ryan Mauskopf $4,500 Oct 20). Checked against the code: `is_duplicate_twin` already says different QuickBooks payees are never twins when **both** rows carry `qbo_entity_ref`. Open gap: when one row has no QuickBooks payee it falls back to vendor text, so confirm such pairs cannot match on amount and date alone.
+- Duplicate handling is better but still produces too many. The next step is to stop them at ingest (a fingerprint and several sources on one record), which moves to Intake Phase 3.
+- Every assigned expense gets a reference number (`GH-2609-0147`) on first assignment, through `claim_for`; see `INTAKE_WRAP_HANDOFF.md`.
+- Status of the phases above: take it from the repo, not from Steven's notes. No changes were reported.
 
 ## Sources
 

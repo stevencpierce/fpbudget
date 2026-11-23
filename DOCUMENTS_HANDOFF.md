@@ -158,7 +158,7 @@ Same rules as the Actuals handoff: CLAUDE.md pre-deploy checks after every phase
 **Phase 5 — Wrap sweep and the Documents tab overhaul (after the Actuals tab is right).** Scoped Nov 2, 2026 from Steven's first live test; not started.
 
 - [ ] **Discard duplicate on the row.** The inbox's "Possible duplicate" chip gains the action it is missing: a **Discard duplicate** button on the row and in the bulk bar (with **Keep both** beside it) that calls the existing `resolve-duplicate` `confirm` path — the file moves to the project's `_DUPLICATES/` folder in Dropbox and the row leaves the inbox; the coded-or-matched guard stays. `_DUPLICATES/` stays per project.
-- [ ] **Dropbox matches the record at Wrap, not on every edit.** Editing vendor, amount, date, type or payee in FPBudget does not touch Dropbox. A **Wrap sweep** (button on the Wrap Book, dry-run report first, then Apply) renames and re-folders every document to match its record — `{date}_{PREFIX}_{vendor}_{total}` and the type's folder, paperwork under the Payee — and lists anything it could not reconcile. The point: at wrap, searching Finder or Dropbox finds the file by what the OCR and the edits say it is.
+- [ ] **Dropbox matches the record at Wrap, not on every edit.** *Moved Nov 23, 2026: this is now one step of the Wrap run in `INTAKE_WRAP_HANDOFF.md` (Phase 2), and file names lead with the reference number: `GH-2609-0147_2026-10-01_INVOICE_Igor-Kropotov_6400.00.pdf`.* Editing vendor, amount, date, type or payee in FPBudget does not touch Dropbox. A **Wrap sweep** (button on the Wrap Book, dry-run report first, then Apply) renames and re-folders every document to match its record — `{date}_{PREFIX}_{vendor}_{total}` and the type's folder, paperwork under the Payee — and lists anything it could not reconcile. The point: at wrap, searching Finder or Dropbox finds the file by what the OCR and the edits say it is.
 - [ ] **OCR pulls everything useful.** Keep every field the OCR returns as document metadata (PO number, invoice number, payee, line items, tax, payment method, notes), not only the fields the filename uses; show them in the editor. Low-confidence pulls raise a review pop-up instead of filing silently.
 - [ ] **Documents tab overhaul, in the Actuals idiom.** The Documents tab gets the same treatment the Actuals tab got: one workspace with views, a row-level action set, bulk bar, keyboard shortcuts and drag-and-drop where it makes sense — and tools that line up with the Actuals tab (a receipt dropped on a charge there is the same object as a charge linked from a receipt here). Design pass on the Claude Design canvas first, then build.
 
@@ -198,6 +198,18 @@ Same rules as the Actuals canvas: FPBudget's own light-theme tokens and Inter, H
 - Dropbox renaming and re-foldering happens at Wrap only (for now), not on each edit; names carry what the OCR and the edits say.
 - Pull every useful OCR field into metadata; more data is better. Low confidence → review pop-up.
 - A possible duplicate needs a one-click Discard that moves the file to `_DUPLICATES/` in Dropbox and off the inbox.
+
+## Decisions (Steven, Nov 23, 2026)
+
+Intake and Wrap now have their own handoff, `INTAKE_WRAP_HANDOFF.md`.
+
+- Elliemade is Milton Ladd. A Payee shows both names, as QuickBooks does. FPBudget vendors match against QuickBooks vendors and work cleanly in both directions. The existing rule stands: Create in QuickBooks is allowed, Overwrite never.
+- A person with a loan-out can exist twice as a QuickBooks vendor. Seen Nov 23: Hyo Jin An under two vendor names, with the W-9 in the name of ARTra Productions INC. The vendor Link screen should surface these pairs (`same_payee` / `payee_loanout` already model the link).
+- Discard duplicate and `_DUPLICATES/` stay here. Preventing duplicates at ingest (a fingerprint in `_ingest_document_bytes`, several sources on one record) moves to Intake Phase 3.
+- The Wrap sweep (Phase 5, second item) moves to the Wrap run.
+- The Wrap Book `tax_check` becomes one flag on the wrap gate. Phase 1's `payee_w9_status` still feeds it.
+- The Wrapbook handshake (Phase 4) stays here.
+- Seen in production Nov 18, not fixed: the same GrubHub sound invoice (`Invoice(Sept29 2026_GrubHub_Sound).pdf`) and cab receipts came in twice through the Dropbox path. There are two `_SOURCE_ARCHIVE` copies about eleven minutes apart, and one copy is still in `_INBOX/_imported`. Worth tracing in the `_INBOX` sweep before Intake's fingerprint lands.
 
 ## Sources
 
