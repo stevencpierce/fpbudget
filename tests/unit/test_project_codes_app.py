@@ -279,3 +279,28 @@ def test_reference_numbers_reach_the_screens(ctx):
     j = c.get(f"/projects/{pid}/actuals/line/{lid}/transactions.json").get_json()
     refs = {r["id"]: r.get("ref") for r in j["transactions"]}
     assert refs[early] == "GH-2609-0001"
+
+
+def test_ledger_export(ctx):
+    import io
+    from openpyxl import load_workbook
+    c = ctx["client"]
+    pid = S['gh']
+    r = c.get(f"/projects/{pid}/ledger.csv")
+    assert r.status_code == 200 and "GH-2609_cost-ledger_" in r.headers["Content-Disposition"]
+    text = r.data.decode("utf-8-sig")
+    assert text.splitlines()[0].startswith("Reference,Date,Payee")
+    assert "GH-2609-0001" in text and "GH-2609-0003" in text
+    # The split charge is one row per piece and keeps its one number.
+    assert text.count("GH-2609-0002") == 1
+    # Not project / absorbed receipts never appear.
+    assert ",70.0," not in text
+    r = c.get(f"/projects/{pid}/ledger.xlsx")
+    wb = load_workbook(io.BytesIO(r.data))
+    assert wb.sheetnames == ["Ledger", "By line", "Payees", "Documents", "Waivers", "Read me"]
+    ws = wb["Ledger"]
+    refs = [row[0] for row in ws.iter_rows(min_row=2, values_only=True)]
+    assert "GH-2609-0001" in refs
+    by_line = list(wb["By line"].iter_rows(min_row=2, values_only=True))
+    assert any("GH-2609-0001" in (row[6] or "") for row in by_line)
+    assert c.get(f"/projects/{pid}/ledger.pdf").status_code == 404

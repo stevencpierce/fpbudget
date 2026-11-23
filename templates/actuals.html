@@ -520,6 +520,8 @@
     <div class="aw-head-right">
       <span class="aw-status" id="aw-syncstatus"><span class="aw-dot off" id="aw-syncdot" aria-hidden="true"></span><span id="aw-synctext">Loading</span></span>
       <button type="button" class="aw-btn" id="aw-syncnow" data-act="sync-now">Sync now</button>
+      <a class="aw-btn" href="{{ url_for('project_ledger_export', pid=project.id, fmt='xlsx') }}"
+         title="The cost ledger: one row per expense with its reference number, line, payee and files">Ledger</a>
     </div>
   </header>
 

@@ -194,3 +194,27 @@ def admin_estimate_holdings():
                                       'transactions': r['transactions'],
                                       'documents': r['documents']} for r in rows]})
     return render_template("admin_estimate_holdings.html", rows=rows)
+
+
+@app.route("/projects/<int:pid>/ledger.<fmt>")
+@login_required
+def project_ledger_export(pid, fmt):
+    """The cost ledger, any time (ledger_export.py): .xlsx (every sheet)
+    or .csv (the Ledger sheet)."""
+    from flask import Response
+    import ledger_export as lx
+    _require_project_role(pid, 'viewer')
+    ProjectSheet.query.get_or_404(pid)
+    if fmt not in ('xlsx', 'csv'):
+        abort(404)
+    # Number anything coded since the last flush before writing.
+    pc.assign_ref_numbers(pid)
+    db.session.commit()
+    sheets = lx.build_ledger(pid)
+    if fmt == 'csv':
+        body, mime = lx.ledger_csv(sheets), 'text/csv; charset=utf-8'
+    else:
+        body = lx.ledger_xlsx(sheets)
+        mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    return Response(body, mimetype=mime, headers={
+        'Content-Disposition': f'attachment; filename="{lx.ledger_filename(pid, fmt)}"'})

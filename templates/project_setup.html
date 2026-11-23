@@ -33,6 +33,8 @@
       <span class="cur">{{ project.name }} · Project setup</span>
     </div>
     <div class="pay-actions">
+      <a class="pay-btn" href="{{ url_for('project_ledger_export', pid=project.id, fmt='xlsx') }}">Ledger (.xlsx)</a>
+      <a class="pay-btn" href="{{ url_for('project_ledger_export', pid=project.id, fmt='csv') }}">Ledger (.csv)</a>
       <a class="pay-btn" href="{{ url_for('project_budget_redirect', pid=project.id) }}">Open budget</a>
     </div>
   </div>

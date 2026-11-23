@@ -79,3 +79,5 @@ requests<3
 sentry-sdk[flask]<3
 # Versioned migrations (audit H5, 2026-07-20) — runs in preDeployCommand.
 alembic<2
+# Cost ledger .xlsx export (INTAKE_WRAP_HANDOFF Phase 1, 2026-11-23).
+openpyxl>=3.1,<4
