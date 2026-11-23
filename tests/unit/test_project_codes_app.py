@@ -227,3 +227,40 @@ def test_routes(ctx):
         assert p.project_code == "VE-2610" and pc.project_stage(p) == 'awarded'
     r = c.get(f"/admin/projects/estimate-holdings?format=json")
     assert not any(x['id'] == pid for x in r.get_json()['projects'])
+
+
+def test_estimate_takes_no_charges_or_documents(ctx, monkeypatch):
+    import actuals
+    c = ctx["client"]
+    with ctx["app"].app_context():
+        pid, lid = _project("Pitch Deck Estimate", "Ventana", stage='estimate')
+        p = db.session.get(ProjectSheet, pid)
+        p.dropbox_folder = "2026-12_Ventana_Pitch"
+        db.session.commit()
+        pool = Transaction(project_id=None, txn_date="2026-12-01", amount=99, vendor="Pool row",
+                           qbo_txn_id="Q-EST-1", qbo_txn_type="Purchase", source="qbo_sync")
+        db.session.add(pool)
+        db.session.commit()
+        pool_id = pool.id
+        # The company pool is not offered to an Estimate …
+        ids = {t.id for t in Transaction.query.filter(actuals.pool_filter(pid)).all()}
+        assert pool_id not in ids
+        assert pool_id in {t.id for t in Transaction.query.filter(actuals.pool_filter(S['gh'])).all()}
+        assert not actuals.in_pool(db.session.get(Transaction, pool_id), pid)
+        # … and cannot be claimed by it.
+        with pytest.raises(actuals.ClaimError):
+            actuals.claim_for(db.session.get(Transaction, pool_id), pid)
+        db.session.rollback()
+        # Documents are refused before anything is saved.
+        payload, code = fpapp._ingest_document_bytes(pid, p, "r.pdf", "application/pdf", b"%PDF-1.4",
+                                                     uploader=db.session.get(User, S['uid']))
+        assert code == 409 and payload.get("estimate")
+        # The _INBOX sweep leaves the files where they are.
+        monkeypatch.setattr(fpapp, "_dbx_client", lambda: (_ for _ in ()).throw(AssertionError("no Dropbox")))
+        res = fpapp._sweep_project_drop_folder(p)
+        assert res["ok"] and res["estimate"] and res["imported"] == 0
+    r = c.post(f"/projects/{pid}/actuals/manual-expense",
+               json={"vendor": "X", "amount": 10, "txn_date": "2026-12-02", "payment_method": "company_card"})
+    assert r.status_code == 409
+    r = c.get(f"/projects/{pid}/setup")
+    assert b"Estimate" in r.data

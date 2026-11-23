@@ -13,7 +13,8 @@
      {% endwith %}
 
    Context keys
-     nav_project   (required) the ProjectSheet (only .id is read)
+     nav_project   (required) the ProjectSheet (.id, and its stage for the
+                   Estimate banner)
      nav_active    one of: overview · topsheet · budget · schedule · people ·
                    actuals · docs · travel · pos · catering · subbudgets ·
                    locations · callsheets · assumptions · activity · setup ·
@@ -114,3 +115,11 @@
     {% endif %}
   </div>
 </nav>
+{# An Estimate takes no charges or documents (INTAKE_WRAP_HANDOFF,
+   2026-11-23) — said once, here, on every project page. #}
+{% if project_stage is defined and nav_project.stage is defined and project_stage(nav_project) == 'estimate' %}
+<div class="fp-stage-banner" role="status" style="margin:8px 0;padding:8px 12px;border-radius:8px;font-size:.85rem;background:color-mix(in srgb, var(--yellow) 14%, var(--bg-2));border:1px solid color-mix(in srgb, var(--yellow) 35%, var(--border))">
+  <b>Estimate.</b> This project cannot receive charges or documents until it is awarded.
+  <a href="{{ url_for('project_setup', pid=_pid) }}">Project setup → Award</a>
+</div>
+{% endif %}

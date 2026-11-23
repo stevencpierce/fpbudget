@@ -3973,6 +3973,9 @@ def actuals_import_bank_csv(pid):
     (User 2026-06-02.)"""
     if current_user.role == 'viewer':
         return jsonify({"error": "Forbidden — viewers cannot import"}), 403
+    import project_codes as _pc
+    if not _pc.accepts_spend_id(pid):
+        return jsonify({"error": _pc.ESTIMATE_MESSAGE, "estimate": True}), 409
     ProjectSheet.query.get_or_404(pid)
     apply = (request.args.get('apply') == '1')
     include_payments = (request.args.get('include_payments') == '1')
@@ -4898,6 +4901,9 @@ def actuals_manual_expense(pid):
     from actuals import validate_manual_expense, link_transaction_to_line
     ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'editor')
+    import project_codes as _pc
+    if not _pc.accepts_spend_id(pid):
+        return jsonify({"error": _pc.ESTIMATE_MESSAGE, "estimate": True}), 409
     clean, err = validate_manual_expense(request.get_json(silent=True) or {})
     if err:
         return jsonify({"error": err}), 400

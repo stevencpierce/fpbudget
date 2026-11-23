@@ -58,11 +58,11 @@ def project_stage(p):
     """estimate | awarded | wrapping | wrapped | archived — the ONE rule."""
     if p is None:
         return None
-    if (p.status or 'active') == 'wrapped':
-        return 'wrapped'
-    if (p.status or 'active') == 'archived':
-        return 'archived'
-    return p.stage if p.stage in SETTABLE_STAGES else 'awarded'
+    status = getattr(p, 'status', None) or 'active'
+    if status in ('wrapped', 'archived'):
+        return status
+    stage = getattr(p, 'stage', None)
+    return stage if stage in SETTABLE_STAGES else 'awarded'
 
 
 def stage_label(p):

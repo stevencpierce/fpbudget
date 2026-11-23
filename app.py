@@ -31856,6 +31856,10 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
     payee_mode = (project is None and owner_payee is not None)
     if project is None and owner_payee is None:
         return {"error": "A document needs a project or a payee to belong to."}, 400
+    # An Estimate receives no documents (INTAKE_WRAP_HANDOFF, 2026-11-23):
+    # refused before anything is saved or filed.
+    if project is not None and not _project_codes.accepts_spend(project):
+        return {"error": _project_codes.ESTIMATE_MESSAGE, "estimate": True}, 409
 
     # Duplicate detection: hash match against an existing row in this
     # project that actually has a file in Dropbox. The strict rule —
@@ -32541,8 +32545,15 @@ def _sweep_project_drop_folder(project, uploader=None):
     """Core _INBOX sweep for ONE project — shared by the Docs-tab route
     (uploader=the person sweeping) and the scheduled background sweeper
     (uploader=None; DocUpload.uploader_id stays NULL). Returns a summary
-    dict; raises only on total Dropbox unavailability."""
+    dict; raises only on total Dropbox unavailability.
+
+    An Estimate is not swept (INTAKE_WRAP_HANDOFF, 2026-11-23): its files
+    stay in _INBOX untouched until the project is awarded."""
     import mimetypes
+    if not _project_codes.accepts_spend(project):
+        return {"ok": True, "imported": 0, "skipped": 0, "estimate": True,
+                "path": _drop_folder_path(project),
+                "message": _project_codes.ESTIMATE_MESSAGE}
     dbx = _dbx_client()
     path = _drop_folder_path(project)
 

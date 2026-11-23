@@ -1227,6 +1227,13 @@ def _dismissed_by(project_id):
                                      _TPD.project_id == project_id))
 
 
+def _accepts_spend(project_id):
+    """project_codes.accepts_spend by id — an Estimate takes no charges
+    (INTAKE_WRAP_HANDOFF, 2026-11-23)."""
+    from project_codes import accepts_spend_id
+    return accepts_spend_id(project_id)
+
+
 def pool_filter(project_id, include_dismissed=False):
     """SQLAlchemy criterion: the rows a project's Actuals works with — its
     own rows plus every unclaimed QuickBooks row in the company pool that
@@ -1234,6 +1241,10 @@ def pool_filter(project_id, include_dismissed=False):
     TransactionPoolDismissal). A row claimed by another project never
     satisfies it. include_dismissed=True adds the dismissed pool rows back
     (the Not project tab and its Restore)."""
+    if not _accepts_spend(project_id):
+        # An Estimate sees no company pool (INTAKE_WRAP_HANDOFF, 2026-11-23):
+        # only what it already holds.
+        return Transaction.project_id == project_id
     pooled = db.and_(Transaction.project_id.is_(None), Transaction.qbo_txn_id.isnot(None))
     if not include_dismissed:
         pooled = db.and_(pooled, ~_dismissed_by(project_id))
@@ -1262,7 +1273,7 @@ def in_pool(txn, project_id):
         return False
     if txn.project_id == project_id:
         return True
-    return (txn.project_id is None and bool(txn.qbo_txn_id)
+    return (txn.project_id is None and bool(txn.qbo_txn_id) and _accepts_spend(project_id)
             and pool_dismissal(txn.id, project_id) is None)
 
 
@@ -1458,6 +1469,9 @@ def claim_for(txn, project_id, why='coded', receipt=False):
             except Exception:
                 log.info("[ledger] undismiss skipped for txn %s", txn.id, exc_info=True)
         return False
+    if not _accepts_spend(project_id):
+        from project_codes import ESTIMATE_MESSAGE
+        raise ClaimError(ESTIMATE_MESSAGE)
     if txn.project_id is not None:
         other = ProjectSheet.query.get(txn.project_id)
         raise ClaimError(
