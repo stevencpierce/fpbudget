@@ -516,7 +516,7 @@
       {% endif %}
       <div class="callsheet-header-company">
         <div class="callsheet-company-name">Framework Productions</div>
-        <div class="callsheet-header-sub">{{ budget.name }} <span class="callsheet-mode-pill">{{ cur_mode.short }}</span></div>
+        <div class="callsheet-header-sub">{{ budget.name }}{% if project.project_code %} · <span class="callsheet-project-code" title="Project code — please put it in email subjects and on invoices">{{ project.project_code }}</span>{% endif %} <span class="callsheet-mode-pill">{{ cur_mode.short }}</span></div>
       </div>
       <div class="callsheet-header-center">
         <div class="callsheet-project-title cs-editable" contenteditable="true"
@@ -1214,7 +1214,7 @@
     <div class="callsheet-header-p2-bar">
       <div class="callsheet-p2-left">
         <div class="callsheet-company-name">Framework Productions</div>
-        <div class="callsheet-p2-budget-sub">{{ budget.name }} <span class="callsheet-mode-pill">{{ cur_mode.short }}</span></div>
+        <div class="callsheet-p2-budget-sub">{{ budget.name }}{% if project.project_code %} · <span class="callsheet-project-code">{{ project.project_code }}</span>{% endif %} <span class="callsheet-mode-pill">{{ cur_mode.short }}</span></div>
       </div>
       <div class="callsheet-p2-center">
         <div class="callsheet-project-title">{{ project.name }}</div>

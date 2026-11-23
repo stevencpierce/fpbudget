@@ -124,7 +124,7 @@
 
 <div class="page-header" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-top:1rem">
   <h1 style="margin:0">Purchase Orders</h1>
-  <span class="muted" style="font-size:.9rem">{{ project.name }}</span>
+  <span class="muted" style="font-size:.9rem">{{ project.name }}{% if project.project_code %} · {{ project.project_code }}{% endif %}</span>
   <button class="btn btn-primary" onclick="openPoModal()" style="margin-left:auto">+ New PO</button>
 </div>
 

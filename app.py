@@ -23653,7 +23653,9 @@ def _callsheet_send_worker(flask_app, pid, bid, send_id, view_by_rec_id,
                 if subject_tmpl:
                     subject = _fill(subject_tmpl, rec.name, call_display, view_url)
                 else:
-                    subject = f"Call Sheet — {project.name} — {date_display} ({version_label})"
+                    # The project code leads so replies carry it (INTAKE_WRAP_HANDOFF).
+                    subject = (f"Call Sheet — {project.project_code + ' · ' if project.project_code else ''}"
+                               f"{project.name} — {date_display} ({version_label})")
 
                 body_tmpl = _msg_for(rtype, 'body')
                 if body_tmpl:

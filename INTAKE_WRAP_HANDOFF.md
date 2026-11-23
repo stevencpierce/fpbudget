@@ -98,14 +98,14 @@ Not discussed, so **not decided**: returned deposits, PO close-out, a formal pay
 
 Same rules as the other handoffs: CLAUDE.md pre-deploy checks after every phase, Alembic plus the essential-columns mirror, `db.Numeric`, no blueprints, `_log_activity` on every mutation, one rule per decision.
 
-**Phase 1 — Code, stage, dates, reference numbers, ledger export**
-- [ ] Stage, project code, client initials and dates on the project; settings UI; code assigned at Awarded.
-- [ ] Estimate projects refused as a target everywhere (`pool_filter`, `claim_for`, ingest, pickers) — one rule, e.g. `actuals.accepts_spend(project)`.
-- [ ] Maintenance tool for estimate projects already holding charges or documents.
-- [ ] Reference number assigned on first assignment, inside `claim_for` (the one claim path); backfill for existing assigned charges in date order, previewed from Maintenance, never at boot.
-- [ ] Line drill-down and detail window show reference numbers.
-- [ ] Ledger export (`.xlsx` + `.csv`) available at any time from the project, not only at wrap.
-- [ ] Project code printed on call sheets (all three modes), deal memos, POs.
+**Phase 1 — Code, stage, dates, reference numbers, ledger export** — built 2026-11-23 on branch `claude/relaxed-meitner-7rdg3m` (not yet on `main`). The rules live in `project_codes.py`; the screen is `routes/project_setup.py` (Project setup, in the project nav's More menu and on each dashboard card); Alembic `0030_project_stage_code_refs` + the essential pass.
+- [x] Stage, project code, client initials and dates on the project; Project setup page; code assigned at Award. **Stage sits beside status** (Steven, Nov 23): `stage` = estimate | awarded | wrapping, NULL reads as awarded (so every existing project keeps working); wrapped stays `status='wrapped'`. Read it only through `project_codes.project_stage(p)`. New and duplicated projects start as Estimates; projects imported from Dropbox folders do not.
+- [x] Estimate projects refused as a target: `project_codes.accepts_spend` is checked in `claim_for`, `pool_filter` / `in_pool` (an Estimate sees only what it holds, so the matcher suggests nothing), `_ingest_document_bytes` (409 before anything is saved), the `_INBOX` sweep (files left in place until Award), manual expense and bank CSV import. One banner in `_project_nav.html`. There are no cross-project move pickers today.
+- [x] Maintenance tool: "Estimates holding charges or documents" (`/admin/projects/estimate-holdings`), review only.
+- [x] Reference numbers: not inside `claim_for` after all — many paths code a row by writing `budget_line_id` directly, and non-QuickBooks rows never reach `claim_for`. Instead ONE write, `project_codes.assign_ref_numbers(pid)`, runs from a SQLAlchemy flush hook for every project whose transactions or split pieces were touched, and at Award (which numbers the existing coded expenses oldest first — the backfill, previewed on the Award form with a count). Stored as `transaction.ref_project_id` + `ref_seq`; shown as `<code>-0001` through `ref_label` / `ref_labels`. Kept through uncode / recode; a row re-coded by another project gets that project's next number; never reused.
+- [x] Detail window, the budget line's Actual drill-down and the reconcile tiles show reference numbers.
+- [x] Ledger export any time: `GET /projects/<pid>/ledger.xlsx|csv` (`ledger_export.py`), linked from Project setup and the Actuals header. Sheets: Ledger, By line (working vs actual + references), Payees, Documents, Waivers (empty until Phase 2), Read me. The By line sheet has no Estimate column yet — matching Estimated lines to Working lines needs a rule first.
+- [x] Project code on call sheets (pages 1 and 2, all three modes, and the default email subject) and on the POs page. **FPBudget has no deal memo feature** and POs are an internal list, not a document that goes out — revisit when either exists.
 
 **Phase 2 — Wrap gate and wrap run (run it on GrubHub)**
 - [ ] Gate flags as above, one function per flag, listed on the Wrap Book with links to the fix.
@@ -180,7 +180,6 @@ Mock before building, as with Actuals: the Intake queue (project and company-wid
 - Roles for coordinator and accountant.
 - Start-paperwork checklist at intake (deal memos, I-9s, insurance certs) and who chases it.
 - Deposits, PO close-out and payroll reconciliation at wrap.
-- Does `stage` replace `status='wrapped'` or sit beside it?
 - Wrapped-projects path: the code already uses `/_WRAPPED PROJECTS/<date>_<slug>`; confirm it stays.
 
 ## Sources

@@ -216,6 +216,17 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   `_create_drop_folder` (fresh slug from the DB, project root must exist)
   — a sweep holding a pre-rename row used to re-create the old folder.
 
+- Project stage / code / reference numbers (Intake/Wrap Phase 1,
+  2026-11-23) — `project_codes.py` is the ONE rule. `stage` sits BESIDE
+  `status`: estimate | awarded | wrapping, NULL = awarded, wrapped stays
+  `status='wrapped'`; read it only via `project_stage(p)`. An Estimate takes
+  no charges or documents: `accepts_spend` guards claim_for, pool_filter,
+  ingest, the _INBOX sweep, manual expense and CSV import — a new spend
+  entry point must check it too. Reference numbers (`GH-2609-0147`) are
+  written ONLY by `assign_ref_numbers`, run from the flush hook installed
+  in app.py and at Award; never set `ref_seq` by hand, never renumber.
+  Codes are matched in text only against the real list (`find_codes_in`).
+
 ## Splitting app.py (M1, ongoing)
 Route slices move to `routes/<name>.py` — plain modules using `@app.route` on
 the SAME app object (endpoint names/URLs unchanged; NO blueprints — url_for

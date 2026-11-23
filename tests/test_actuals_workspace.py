@@ -22,7 +22,7 @@ from playwright.sync_api import Page, expect
 
 from tests.conftest import BASE_URL, DEFAULT_TIMEOUT
 from tests.utils.helpers import (
-    create_project, delete_project, go_to_projects, take_step_screenshot,
+    award_project, create_project, delete_project, go_to_projects, take_step_screenshot,
 )
 
 PROJECT_NAME = f"ActualsWS-{int(time.time()) % 100000}"
@@ -81,6 +81,7 @@ def ws(browser):
         m = re.search(r"/projects/(\d+)/", page.url)
         assert m, f"no project id in {page.url}"
         pid = int(m.group(1))
+        award_project(page, pid, initials="AW")
     _seed_charges(page, pid, 3)
     page.goto(f"{BASE_URL}/projects/{pid}/actuals", wait_until="networkidle")
     page.wait_for_selector("#aw-table .aw-row[data-tid]", timeout=DEFAULT_TIMEOUT)

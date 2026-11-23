@@ -103,6 +103,24 @@ def create_project(page: Page, name: str, template: str = "Blank budget") -> str
     return name
 
 
+def award_project(page: Page, pid: int, initials: str = "EE", start: str = "2026-10-01") -> None:
+    """Estimate → Awarded through Project setup (INTAKE_WRAP_HANDOFF,
+    2026-11-23): a new project takes no charges or documents until it is
+    awarded, so tests that seed spend award it first."""
+    with step(f"Award project {pid}"):
+        status = page.evaluate(
+            """async ([pid, initials, start]) => {
+                const fd = new FormData();
+                fd.append('initials', initials); fd.append('start_date', start);
+                const m = document.querySelector('meta[name="csrf-token"]');
+                if (m) fd.append('csrf_token', m.content);
+                const r = await fetch(`/projects/${pid}/setup/award`,
+                                      {method: 'POST', body: fd, credentials: 'same-origin'});
+                return r.status;
+            }""", [pid, initials, start])
+        assert status in (200, 302), f"award -> {status}"
+
+
 def find_project_card(page: Page, name: str):
     """Return the .project-card locator that contains the given project name."""
     return page.locator(f".project-card:has-text('{name}')").first
