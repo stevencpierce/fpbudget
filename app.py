@@ -30961,6 +30961,89 @@ with app.app_context():
     _backfill_txn_payee()
 
 
+# ── Grandfather activated_at on legacy coded receipts (2026-11-24) ────────
+# counts_as_spend() counts a doc-born row (source='doc_upload') only once
+# activated_at is set. Rows coded BEFORE that rule (Actualizing 2.0 A1,
+# 2026-07-20) were stamped by Alembic 0003's grandfather UPDATE — but
+# production Postgres has never run Alembic (CLAUDE.md, 2026-08-18), so
+# there those rows may still be NULL and their spend reads $0 on the top
+# sheet and grid. This repeats 0003's exact rule once, per the boot data-
+# migration pattern (marker + advisory lock). Uses the row's created_at when
+# known so the stamp isn't today. Only coded rows: an uncoded receipt stays
+# evidence, never spend. Idempotent: a second run matches nothing.
+_ACTIVATED_AT_MARKER = 'grandfather_activated_at_2026_11'
+_ACTIVATED_AT_LOCK_KEY = 20261124
+
+
+def _grandfather_activated_at_body():
+    """Stamp activated_at on coded doc-born rows that lack it. Returns a
+    summary string for the task log."""
+    n = (Transaction.query
+         .filter(Transaction.source == 'doc_upload',
+                 Transaction.activated_at.is_(None),
+                 db.or_(Transaction.budget_line_id.isnot(None),
+                        Transaction.account_code.isnot(None)))
+         .update({Transaction.activated_at:
+                  func.coalesce(Transaction.created_at, func.now())},
+                 synchronize_session=False))
+    db.session.commit()
+    summary = f"coded doc_upload rows activated: {n}"
+    logging.info(f"[activated_at grandfather] {summary}")
+    return summary
+
+
+def _grandfather_activated_at():
+    """Marker + advisory-lock wrapper around _grandfather_activated_at_body."""
+    try:
+        with app.app_context():
+            is_pg = 'postgresql' in str(db.engine.url).lower()
+            with db.engine.connect() as conn:
+                try:
+                    conn.execute(text(
+                        "CREATE TABLE IF NOT EXISTS system_task_log ("
+                        " task_name VARCHAR(80) PRIMARY KEY,"
+                        " last_run_at TIMESTAMP NOT NULL,"
+                        " last_result TEXT)"))
+                    conn.commit()
+                except Exception:
+                    pass
+                if conn.execute(text("SELECT 1 FROM system_task_log WHERE task_name = :t"),
+                                {'t': _ACTIVATED_AT_MARKER}).fetchone():
+                    return
+            with db.engine.connect() as conn:
+                if is_pg and not conn.execute(text("SELECT pg_try_advisory_lock(:k)"),
+                                              {'k': _ACTIVATED_AT_LOCK_KEY}).scalar():
+                    logging.info("[activated_at grandfather] another worker holds the lock, skipping")
+                    return
+                try:
+                    if conn.execute(text("SELECT 1 FROM system_task_log WHERE task_name = :t"),
+                                    {'t': _ACTIVATED_AT_MARKER}).fetchone():
+                        return
+                    summary = _grandfather_activated_at_body()
+                    conn.execute(text(
+                        "INSERT INTO system_task_log (task_name, last_run_at, last_result) "
+                        "VALUES (:t, CURRENT_TIMESTAMP, :r) ON CONFLICT (task_name) DO NOTHING"),
+                        {'t': _ACTIVATED_AT_MARKER, 'r': summary[:2000]})
+                    conn.commit()
+                except Exception as _e:
+                    db.session.rollback()
+                    logging.error(f"[activated_at grandfather] failed: {_e}")
+                finally:
+                    if is_pg:
+                        try:
+                            conn.execute(text("SELECT pg_advisory_unlock(:k)"),
+                                         {'k': _ACTIVATED_AT_LOCK_KEY})
+                            conn.commit()
+                        except Exception:
+                            pass
+    except Exception as _e:
+        logging.warning(f"[activated_at grandfather] aborted: {_e}")
+
+
+with app.app_context():
+    _grandfather_activated_at()
+
+
 # ── Daily trash purge — soft-deleted Dropbox files >30 days hard-deleted ──
 # Runs once per worker boot if it's been >24h since the last successful run.
 # Multiple gunicorn workers booting at once: an advisory lock + UPSERT on a
